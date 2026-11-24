@@ -35,7 +35,8 @@ screen and its CLI.
       own drawing around the emulated screen, its 13 buttons and the touchpad to click,
       the keyboard, its 17 LEDs where the device has them; a front-panel link for it and
       any program (docs/PANEL_LINK.md). Drawn and connected, and the screen and its
-      backlight are live (2026-11-23); its LEDs and buttons come alive with the models
+      backlight are live (2026-11-23); drawn again part by part from measurements of the
+      device's renders (scripts/fo_body.py, 2026-11-24); its LEDs and buttons come alive with the models
       behind them (the WS2812s, the control bus's expander, the IQS7211E)
 - ◐ A launcher: run, the window, stop, status, the firmware's log (RTT), its CLI, a
       picture of the screen, where the cores are; a folder per emulated Flipper One.

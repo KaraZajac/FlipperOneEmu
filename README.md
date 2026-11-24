@@ -28,8 +28,10 @@ scripts/fetch_firmware.py    # the MCU firmware's newest build, and the RP2350 b
 ./flipperoneemu gui          # the window: it starts a device, devices/one
 ```
 
-The window draws a Flipper One of this project's own around the emulated screen (it is
-not Flipper Devices' artwork), with its LEDs where the device has them. Click its
+The window draws a Flipper One around the emulated screen, part by part where the device
+has them: this project's own vector drawing, measured from the device's published renders
+(it is not Flipper Devices' artwork, and the device's name stands where their wordmark
+is), with its LEDs where the device has them. Click its
 buttons, or use the keyboard: the arrows and Enter are the pad, Backspace or Esc is
 Back, F1 to F5 are the soft keys (Esc, View, Power, Edit, Run), Tab is App Switcher,
 Space is PTT; drag on the touchpad. It talks to the emulator over a front-panel link,
