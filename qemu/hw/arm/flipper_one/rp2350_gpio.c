@@ -167,6 +167,56 @@ void rp2350_pin_drive(RP2350State *s, int pin, int level)
     rp2350_pins_update(s, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
 }
 
+/* whether a core takes an interrupt from @pin (PROCn_INTE or INTF) */
+static bool pin_watched(RP2350State *s, int pin)
+{
+    int reg = pin / 8, shift = (pin % 8) * 4;
+
+    for (int core = 0; core < 2; core++) {
+        uint32_t base = (0x248 + core * 0x48) / 4;  /* PROCn_INTE0 */
+
+        if (((s->io_bank0.regs[base + reg] |
+              s->io_bank0.regs[base + 6 + reg]) >> shift) & 0xf) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void rp2350_pins_drive_at(RP2350State *s, uint64_t mask, uint64_t levels,
+                          int64_t when_ns)
+{
+    bool changed = false, irqs = false;
+
+    rp2350_pio_run_to(s, when_ns, false);           /* up to then, as was */
+    s->ext_drive |= mask;
+    s->ext_level = (s->ext_level & ~mask) | (levels & mask);
+    for (uint64_t m = mask; m; m &= m - 1) {
+        int pin = ctz64(m);
+        bool level = pin_compute(s, pin);
+
+        if (level == ((s->pin_level >> pin) & 1)) {
+            continue;
+        }
+        s->pin_level ^= 1ull << pin;
+        s->gpio_edges[pin / 8] |= (level ? 8u : 4u) << ((pin % 8) * 4);
+        for (int i = 0; i < 2; i++) {
+            if (s->pin_listener[pin][i].fn) {
+                s->pin_listener[pin][i].fn(s->pin_listener[pin][i].opaque, pin,
+                                           level, when_ns);
+            }
+        }
+        irqs |= pin_watched(s, pin);
+        changed = true;
+    }
+    if (irqs) {
+        gpio_irqs(s);
+    }
+    if (changed) {
+        rp2350_pio_run_to(s, when_ns, true);
+    }
+}
+
 int rp2350_pin_own(RP2350State *s, int pin)
 {
     bool out, oe;

@@ -44,8 +44,9 @@ Back, F1 to F5 are the soft keys (Esc, View, Power, Edit, Run), Tab is App Switc
 Space is PTT; drag on the touchpad. It talks to the emulator over a front-panel link,
 [docs/PANEL_LINK.md](docs/PANEL_LINK.md), which any program can use. Another,
 [docs/HOST_LINK.md](docs/HOST_LINK.md) (`devices/NAME/host.sock`), lets a program take
-the RK3576's place on its I2C link to the MCU: its registers (CPU state, LEDs, haptics,
-input) and its interrupt line.
+the RK3576's place on its link to the MCU: the I2C registers (CPU state, LEDs, haptics,
+input), the interrupt line, and the screen: frames it sends go over the display's SPI
+as Flipper OS sends them, and the MCU shows them.
 
 At its start the MCU firmware powers the Linux side, as the device does, and shows its
 screen; the RK3576 is not emulated yet, so after a few seconds that screen says "CPU not

@@ -75,8 +75,10 @@ screen and its CLI.
       voltage on a SARADC input
 
 ## M4: the link ◐
-- ◐ A program in the RK3576's place on the I2C link: the host link (docs/HOST_LINK.md,
-      `devices/NAME/host.sock`): the MCU's registers at 0x69 and CPU_INT (2026-11-24)
+- ◐ A program in the RK3576's place on the link: the host link (docs/HOST_LINK.md,
+      `devices/NAME/host.sock`): the MCU's registers at 0x69 and CPU_INT (2026-11-24);
+      the screen's frames over the display SPI, edge by edge to the MCU's PIO
+      (2026-11-24)
 - ☐ i2c0 (rk3x) with the MCU's register slave at 0x69 and its interrupt line (GPIO2_A6)
 - ☐ spi0 with the MCU's frame sampler: FlipCTL on the emulated screen
 - ☐ The console UART between the two; the CPU's state, power off, reboot; the MCU

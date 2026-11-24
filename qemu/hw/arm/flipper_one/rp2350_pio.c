@@ -197,7 +197,7 @@ static bool sm_step(RP2350State *s, RP2Pio *p, int n)
     bool do_side = ss_count > 0;
     int arg = insn & 0xff;
     int op = insn >> 13;
-    bool jumped = false, pins_changed = false;
+    bool jumped = false, pins_changed = false, on_pins = false;
     uint32_t v = 0;
     int count, flag;
     RP2Pio *tp;
@@ -264,6 +264,7 @@ static bool sm_step(RP2350State *s, RP2Pio *p, int n)
             break;
         }
         if (!ok) {
+            on_pins = ((arg >> 5) & 3) != 2;        /* GPIO, PIN, JMPPIN */
             goto stall;
         }
         break;
@@ -507,17 +508,26 @@ stall:
         pio_pins_changed(s, sm->next_ps);
     }
     sm->stalled = true;
+    sm->on_pins = on_pins;
     pio_irqs(p);
     return false;
 }
 
 /* --------------------------------------------------------------- running */
 
-static void pio_run(RP2350State *s, RP2Pio *p)
+enum { WAKE_NONE, WAKE_PINS, WAKE_ALL };
+
+/*
+ * Run @p's machines up to @now_ps.  Those that stalled look again first:
+ * every one (WAKE_ALL: the CPU, the DMA or the timer came), those that wait
+ * on a pin (WAKE_PINS: a pin changed), or none (WAKE_NONE: only the time
+ * went on); and when one goes on, the others, which it may have freed.  A
+ * machine's time never goes back: one that ran ahead of the clock with a
+ * burst of pin changes (rp2350_pins_drive_at()) looks again at its own time.
+ */
+static void pio_run_at(RP2350State *s, RP2Pio *p, int64_t now_ps, int wake)
 {
-    int64_t now_ps = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) * 1000;
     int64_t next = INT64_MAX;
-    bool tried[4] = { false };
     int budget = BUDGET;
 
     if (p->running) {
@@ -525,17 +535,23 @@ static void pio_run(RP2350State *s, RP2Pio *p)
     }
     p->running = true;
     for (int i = 0; i < 4; i++) {
-        if ((p->ctrl >> i) & 1 && p->sm[i].stalled) {
-            p->sm[i].next_ps = now_ps;              /* it looks again now */
+        RP2PioSM *sm = &p->sm[i];
+
+        if (sm->stalled &&
+            (wake == WAKE_ALL || (wake == WAKE_PINS && sm->on_pins))) {
+            sm->next_ps = MAX(sm->next_ps, now_ps);
+            sm->stalled = false;
         }
     }
     while (budget-- > 0) {
         int best = -1;
+        int64_t at;
+        bool went_on;
 
         for (int i = 0; i < 4; i++) {
             RP2PioSM *sm = &p->sm[i];
 
-            if (((p->ctrl >> i) & 1 || sm->has_exec) && !tried[i] &&
+            if (((p->ctrl >> i) & 1 || sm->has_exec) && !sm->stalled &&
                 sm->next_ps <= now_ps &&
                 (best < 0 || sm->next_ps < p->sm[best].next_ps)) {
                 best = i;
@@ -544,17 +560,24 @@ static void pio_run(RP2350State *s, RP2Pio *p)
         if (best < 0) {
             break;
         }
-        if (sm_step(s, p, best)) {
-            memset(tried, 0, sizeof(tried));        /* it may free another */
-        } else {
-            tried[best] = true;
-        }
+        at = p->sm[best].next_ps;
+        went_on = sm_step(s, p, best);
         if (fifo_moved) {
             /* a DREQ: the DMA answers at once, as on the chip, so that a
              * FIFO it feeds (or drains) does not run dry (or fill) here */
             fifo_moved = false;
             rp2350_dma_kick(s);
-            memset(tried, 0, sizeof(tried));
+            went_on = true;
+        }
+        if (went_on) {
+            for (int i = 0; i < 4; i++) {           /* it may free another */
+                RP2PioSM *sm = &p->sm[i];
+
+                if (sm->stalled) {
+                    sm->next_ps = MAX(sm->next_ps, at);
+                    sm->stalled = false;
+                }
+            }
         }
     }
     for (int i = 0; i < 4; i++) {
@@ -564,7 +587,9 @@ static void pio_run(RP2350State *s, RP2Pio *p)
             next = MIN(next, sm->next_ps);
         }
     }
-    if (next != INT64_MAX) {
+    if (s->pio_burst) {
+        /* the burst's next change runs it; its end, the timer */
+    } else if (next != INT64_MAX) {
         timer_mod(p->timer, MAX(next, now_ps + 1) / 1000 + 1);
     } else {
         timer_del(p->timer);
@@ -574,6 +599,11 @@ static void pio_run(RP2350State *s, RP2Pio *p)
         fifo_moved = false;
         rp2350_dma_kick(s);
     }
+}
+
+static void pio_run(RP2350State *s, RP2Pio *p)
+{
+    pio_run_at(s, p, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) * 1000, WAKE_ALL);
 }
 
 static void pio_timer(void *opaque)
@@ -588,6 +618,31 @@ void rp2350_pio_kick(RP2350State *s)
     for (int i = 0; i < 3; i++) {
         if (s->pio[i].ctrl & 0xf) {
             pio_run(s, &s->pio[i]);
+        }
+    }
+}
+
+void rp2350_pio_burst(RP2350State *s, bool on)
+{
+    s->pio_burst = on;
+    if (!on) {
+        int64_t now_ps = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) * 1000;
+
+        for (int i = 0; i < 3; i++) {
+            if (s->pio[i].ctrl & 0xf) {
+                pio_run_at(s, &s->pio[i], now_ps, WAKE_NONE);  /* timers */
+            }
+        }
+    }
+}
+
+void rp2350_pio_run_to(RP2350State *s, int64_t when_ns, bool pins)
+{
+    int64_t at_ps = MAX(when_ns, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)) * 1000;
+
+    for (int i = 0; i < 3; i++) {
+        if (s->pio[i].ctrl & 0xf) {
+            pio_run_at(s, &s->pio[i], at_ps, pins ? WAKE_PINS : WAKE_NONE);
         }
     }
 }
@@ -700,6 +755,10 @@ static void pio_write(RP2Block *b, hwaddr reg, uint32_t value)
         n = (reg - 0x10) / 4;
         if (!tx_push(&p->sm[n], value)) {
             p->fdebug |= 1u << (16 + n);            /* TXOVER */
+        }
+        if (p->sm[n].stalled) {                     /* it looks again */
+            p->sm[n].next_ps = MAX(p->sm[n].next_ps, now_ps);
+            p->sm[n].stalled = false;
         }
         pio_irqs(p);
         if (!p->running) {

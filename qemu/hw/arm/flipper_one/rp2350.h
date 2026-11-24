@@ -159,6 +159,7 @@ typedef struct RP2PioSM {
     uint16_t exec;                      /* an instruction to run next ... */
     bool has_exec;                      /* ... (INSTR, OUT/MOV EXEC) */
     bool stalled;
+    bool on_pins;                       /* ... on a WAIT for a pin */
     int64_t next_ps;                    /* when its next cycle is (ps) */
     bool irq_waiting;                   /* an IRQ WAIT set its flag */
 } RP2PioSM;
@@ -305,6 +306,7 @@ struct RP2350State {
 
     /* rp2350_pio.c */
     RP2Pio pio[3];
+    bool pio_burst;                     /* a burst of pins runs them */
 
     /* rp2350_ppb.c */
     RP2Ppb ppb[2];
@@ -368,6 +370,15 @@ void rp2350_gpio_reset(RP2350State *s);
 void rp2350_pins_update(RP2350State *s, int64_t when_ns);
 /* the board drives @pin: 0 low, 1 high, -1 lets go */
 void rp2350_pin_drive(RP2350State *s, int pin, int level);
+/*
+ * ... or drives @mask's pins to @levels at @when_ns, which may be ahead of
+ * the virtual clock: a fast bus clocked out in bursts (host_spi.c).  The PIO
+ * runs up to that moment with the levels as they were, then sees the change
+ * at it, so a state machine samples what it would have on the chip.  Its
+ * times must not go back: a burst starts at the virtual clock or later.
+ */
+void rp2350_pins_drive_at(RP2350State *s, uint64_t mask, uint64_t levels,
+                          int64_t when_ns);
 void rp2350_pin_listen(RP2350State *s, int pin, RP2PinFn *fn, void *opaque);
 /* the level @pin has from the chip and the pulls alone, whatever the board
  * drives: what an open-drain master on it lets the line do */
@@ -418,6 +429,12 @@ void rp2350_pio_realize(RP2350State *s);
 void rp2350_pio_reset(RP2350State *s);
 /* a pin's input changed: state machines that wait on pins look again */
 void rp2350_pio_kick(RP2350State *s);
+/* the state machines run up to @when_ns (ahead of the clock, it may be);
+ * @pins: a pin changed then, and those that wait on pins look again */
+void rp2350_pio_run_to(RP2350State *s, int64_t when_ns, bool pins);
+/* a burst of rp2350_pins_drive_at() begins (its changes run the machines;
+ * their timers wait), or ends */
+void rp2350_pio_burst(RP2350State *s, bool on);
 
 /* the RP2350's interrupt @n, which both cores' NVICs get */
 qemu_irq rp2350_irq(RP2350State *s, int n);

@@ -375,3 +375,24 @@ register headers.
     the frame's leftmost 256 columns are the ones that show, as the kernel's binding
     (`flipper,one-display.yaml`) says. The emulated screen moved one pixel left; a
     frame from the link now shows exactly.
+37. **The display link.** Flipper OS sends its screen to the MCU over SPI, a whole
+    frame at a time (the kernel's `flipper-one-display` driver): "active" (its GPIO0_D1,
+    the MCU's GPIO25) low, 258 × 144 bytes of grey (0 black, 255 white) in SPI mode 3
+    at 33 MHz on GPIO26 (SCK) and GPIO28 (MOSI), "active" high. The MCU firmware's CPU
+    app samples it with a PIO program it assembles at run time (wait for "active", then
+    a bit at each rising clock edge, eight to a byte), a DMA channel into one of two
+    buffers, and an interrupt on "active" going high that takes the frame if it is
+    whole. The host link carries frames now (`frame HH…`, `sent` when it went out;
+    `host_spi.c`): each goes out on the pins edge by edge, about 600,000 changes, in
+    bursts of 1024 bits that run ahead of the virtual clock. For that the PIO model
+    learned two things. `rp2350_pins_drive_at()` changes pins at a given time, which
+    may be ahead of the clock, running the state machines up to that moment with the
+    levels as they were before making the change, so that a machine samples what it
+    would have on the chip, whatever the host's time between bursts. And a machine's
+    time never goes back: one that ran ahead with a burst looks again at its own time
+    when the CPU comes; a pin's change wakes only the machines that wait on a pin, so
+    the LEDs' and the log's machines (PIO2) are not run again at every edge; and the
+    machines' timers wait while a burst runs them. A frame takes about 0.09 s of the
+    host's time, ten a second, and comes out on the panel pixel for pixel. The MCU
+    asks for a frame when it shows the CPU's screen again (bit 1 of the system
+    interrupt register, 0x0104); a program answers it as Flipper OS does.

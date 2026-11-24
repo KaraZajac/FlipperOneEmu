@@ -122,6 +122,33 @@ OBJECT_DECLARE_SIMPLE_TYPE(FoHost, FLIPPER_ONE_HOST)
 
 struct HostOp;
 
+/*
+ * host_spi.c: the RK3576's display link, a frame at a time as Flipper OS
+ * sends it: "active" low on GPIO25, SPI mode 3 at 33 MHz on GPIO26 (SCK) and
+ * GPIO28 (MOSI), "active" up
+ */
+typedef struct FoHostSpi {
+    struct RP2350State *soc;
+    QEMUTimer *timer;
+    GQueue *frames;                     /* GByteArray: frames to send */
+    GByteArray *cur;                    /* the one going out */
+    size_t bit;                         /* ... its next bit */
+    int phase;
+    int64_t t;                          /* the next change's time (ns) */
+    bool driving;                       /* the lines are taken */
+    bool closing;                       /* ... until this frame is out */
+    void (*sent)(void *opaque);         /* a frame went out */
+    void *opaque;
+} FoHostSpi;
+
+void fo_host_spi_init(FoHostSpi *f, struct RP2350State *soc,
+                      void (*sent)(void *opaque), void *opaque);
+void fo_host_spi_send(FoHostSpi *f, GByteArray *frame);
+/* frames not started yet */
+int fo_host_spi_waiting(FoHostSpi *f);
+/* the program went: no more frames, the lines let go after this one */
+void fo_host_spi_close(FoHostSpi *f);
+
 struct FoHost {
     DeviceState parent_obj;
 
@@ -136,6 +163,7 @@ struct FoHost {
     int state, pos;
     int64_t started;
     bool int_level;                     /* CPU_INT, as last told */
+    FoHostSpi spi;                      /* the display link */
 };
 
 /* host_link.c: CPU_INT's level (0: asserted) */

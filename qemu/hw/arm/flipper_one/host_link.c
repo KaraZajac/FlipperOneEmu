@@ -16,6 +16,10 @@
  * "timeout" (SCL held 200 ms). CPU_INT's level goes out as "int 0" or
  * "int 1" when it changes, and on connecting.
  *
+ * "frame HH..." is a frame for the screen, which goes as Flipper OS sends
+ * one, over the display's SPI (host_spi.c), alongside the I2C transfers;
+ * "sent" when it went.
+ *
  * Copyright (c) 2026, Kara Zajac
  * SPDX-License-Identifier: BSD-3-Clause
  */
@@ -29,6 +33,8 @@
 #define BYTE_NS         9000            /* a byte and its ACK at 1 MHz */
 #define HELD_NS         2000            /* SCL held: look again */
 #define TIMEOUT_NS      200000000
+#define FRAME_MAX       65536           /* bytes (a screen is 258 x 144) */
+#define FRAMES_WAITING  2               /* beyond these, lines wait */
 
 typedef enum { OP_WRITE, OP_READ, OP_SEND, OP_RECV } HostOpKind;
 
@@ -180,15 +186,68 @@ static void host_step(void *opaque)
     host_after(h, r ? BYTE_NS : HELD_NS);
 }
 
-/* "write AAAA VVVV ..." "read AAAA N" "send HH ..." "recv N" */
+/* "frame HH...": the bytes, two hex digits each, to the display link */
+static void host_frame(FoHost *h, const char *hex)
+{
+    size_t len = strlen(hex);
+    GByteArray *frame;
+
+    if (!len || len % 2 || len / 2 > FRAME_MAX) {
+        flipper_link_send(&h->lk, "error a frame is 1 to %d bytes\n",
+                          FRAME_MAX);
+        return;
+    }
+    frame = g_byte_array_sized_new(len / 2);
+    for (size_t i = 0; i < len; i += 2) {
+        int hi = g_ascii_xdigit_value(hex[i]);
+        int lo = g_ascii_xdigit_value(hex[i + 1]);
+        uint8_t b = hi << 4 | lo;
+
+        if (hi < 0 || lo < 0) {
+            g_byte_array_unref(frame);
+            flipper_link_send(&h->lk, "error a frame is hex digits\n");
+            return;
+        }
+        g_byte_array_append(frame, &b, 1);
+    }
+    fo_host_spi_send(&h->spi, frame);
+}
+
+static void host_frame_sent(void *opaque)
+{
+    FoHost *h = opaque;
+
+    if (h->lk.open) {
+        flipper_link_send(&h->lk, "sent\n");
+    }
+    flipper_link_resume(&h->lk);
+}
+
+/* a line is taken while few frames wait: a program that sends them faster
+ * than they go is held back */
+static bool host_ready(void *opaque)
+{
+    FoHost *h = opaque;
+
+    return fo_host_spi_waiting(&h->spi) < FRAMES_WAITING;
+}
+
+/* "write AAAA VVVV ..." "read AAAA N" "send HH ..." "recv N" "frame HH..." */
 static void host_line(void *opaque, char *line)
 {
     FoHost *h = opaque;
-    g_auto(GStrv) w = g_strsplit_set(g_strstrip(line), " \t", -1);
+    g_auto(GStrv) w = NULL;
     HostOp *op;
-    int n = g_strv_length(w);
+    int n;
     char *end;
 
+    line = g_strstrip(line);
+    if (g_str_has_prefix(line, "frame ")) {
+        host_frame(h, g_strstrip(line + 6));
+        return;
+    }
+    w = g_strsplit_set(line, " \t", -1);
+    n = g_strv_length(w);
     if (!n || !*w[0]) {
         return;
     }
@@ -238,6 +297,8 @@ static void host_opened(void *opaque, bool open)
     if (open) {
         flipper_link_send(&h->lk, "hello flipperoneemu host 1\n");
         flipper_link_send(&h->lk, "int %d\n", h->int_level);
+    } else {
+        fo_host_spi_close(&h->spi);
     }
 }
 
@@ -258,7 +319,9 @@ static void host_realize(DeviceState *dev, Error **errp)
     h->ops = g_queue_new();
     h->int_level = 1;
     h->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, host_step, h);
+    fo_host_spi_init(&h->spi, h->soc, host_frame_sent, h);
     flipper_link_init(&h->lk, &h->link_chr, "host", host_line, host_opened, h);
+    h->lk.ready = host_ready;
 }
 
 static const Property host_properties[] = {
