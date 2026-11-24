@@ -19,7 +19,8 @@ import math
 import random
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import (QBrush, QColor, QFont, QImage, QLinearGradient,
+from PySide6.QtGui import (QBrush, QColor, QFont, QFontMetricsF, QImage,
+                           QLinearGradient,
                            QPainter, QPainterPath, QPen, QRadialGradient,
                            QTransform)
 
@@ -34,9 +35,9 @@ LCD = QRectF(658, 324, 677, 677 * LCD_H / LCD_W)
 GLASS = QRectF(645, 306, 703, 412)              # black, around the LCD
 RIM = QRectF(636, 301, 721, 425)
 
-MODULE = ((571, 166, 12), (1428, 166, 12), (1428, 234, 12), (1384, 289, 14),
-          (1384, 753, 14), (1430, 810, 12), (1430, 958, 14), (565, 958, 14),
-          (565, 810, 12), (614, 753, 14), (614, 289, 14), (571, 234, 12))
+MODULE = ((564, 166, 12), (1431, 166, 12), (1431, 234, 12), (1381, 289, 14),
+          (1381, 753, 14), (1430, 810, 12), (1430, 958, 14), (565, 958, 14),
+          (565, 810, 12), (613, 753, 14), (613, 289, 14), (564, 234, 12))
 CAP_Y, CHIN_Y = 236, 840                # the cap's lower edge, the chin's top
 
 LEFT_UPPER = ((640, 185), (312, 185, 30), (168, 385), (110, 466),
@@ -50,8 +51,8 @@ NOSE_RIDGE = 587                        # its upper half lit, the lower not
 # shoulder's band in shade, from the recess's corner down to the bottom
 TOP_FACE = ((336, 185), (640, 185), (640, 240), (478, 240), (462, 228))
 CREASE = ((357, 808), (403, 808), (300, 937), (232, 937))
-RECESS = ((640, 240), (474, 240, 18), (336, 466, 6), (336, 744, 6),
-          (372, 806, 16), (640, 808))
+RECESS = ((640, 240), (471, 240, 14), (310, 470, 6), (312, 744, 6),
+          (366, 807, 14), (640, 808))
 STATUS_PANEL = ((468, 285, 10), (590, 285, 10), (590, 441, 10),
                 (360, 441, 10))
 PLATE = QRectF(294, 470, 294, 267)
@@ -61,6 +62,8 @@ PTT = ((404, 171, 6), (537, 171, 6), (546, 187, 2), (396, 187, 2))
 GRILLE = ((387, 861, 4), (527, 861, 4), (497, 901, 4), (358, 901, 4))
 STATUS = (("ETH 0", 465, 309, 3), ("ETH 1", 442, 342, 2),
           ("WI-FI", 418, 378, 1))               # label, the slit's x, y, LED
+LABEL_X = {"ETH 0": 514, "ETH 1": 491, "WI-FI": 466}   # their text, measured
+LABEL_W = {"ETH 0": 56, "ETH 1": 51, "WI-FI": 54}
 LINK_BOX, LINK_LED, LINK_INDEX = QRectF(386, 395, 101, 31), QPointF(415, 410.5), 0
 
 RIGHT_WING = ((1370, 185), (1640, 185), (1640, 300), (1951, 560),
@@ -90,7 +93,7 @@ MIC = QRectF(1446, 262, 152, 50)
 
 SOFT_KEYS = ("esc", "view", "power", "edit", "run")
 SOFT_X = (724.5, 860.5, 996.5, 1132.5, 1268.5)
-SOFT_TOP, SOFT_W, SOFT_H = 752.0, 120.0, 59.0
+SOFT_TOP, SOFT_W, SOFT_H = 754.0, 120.0, 54.0
 POWER_LED = 4
 
 # the power meter, down its panel's middle (measured across and along the
@@ -269,15 +272,32 @@ def font(families, px, bold=False, spacing=0.0):
     return f
 
 
-def label(p, x, y, text, px, colour=LABEL, align=Qt.AlignLeft, spacing=1.0,
-          families=MONO, bold=False):
-    """@text with its middle at @y; @x is its left (or middle, or right)."""
-    p.setFont(font(families, px, bold, spacing))
-    p.setPen(QColor(colour))
-    w = 2000
-    left = {Qt.AlignLeft: x, Qt.AlignHCenter: x - w / 2,
-            Qt.AlignRight: x - w}[align]
-    p.drawText(QRectF(left, y - px, w, 2 * px), align | Qt.AlignVCenter, text)
+def label(p, x, y, text, cap, colour=LABEL, align=Qt.AlignLeft, width=None,
+          families=SANS, bold=False):
+    """@text printed on the body: its capitals @cap tall, their middle at @y;
+    @x its left (or middle). Drawn as outlines, so that it is the same size
+    whatever fonts a machine has; with @width, spaced out to that width (the
+    render's labels, measured)."""
+    f = font(families, 100, bold)
+    path = QPainterPath()
+    path.addText(0, 0, f, text)
+    caps = QPainterPath()
+    caps.addText(0, 0, f, "H")
+    k = cap / caps.boundingRect().height()
+    if width:
+        gap = (width / k - path.boundingRect().width()) / max(1, len(text) - 1)
+        path = QPainterPath()
+        pen_x = 0.0
+        for ch in text:
+            path.addText(pen_x, 0, f, ch)
+            pen_x += QFontMetricsF(f).horizontalAdvance(ch) + gap
+    r = path.boundingRect()
+    t = QTransform()
+    t.translate(x - (r.width() * k / 2 if align == Qt.AlignHCenter else 0),
+                y + cap / 2)
+    t.scale(k, k)
+    t.translate(-r.left(), 0)
+    fill(p, t.map(path), QColor(colour))
 
 
 def glow(p, c, colour, radius, alpha=150):
@@ -419,8 +439,18 @@ def _loop(p):
 
 def _right_wing(p):
     wing = poly(RIGHT_WING, 10)
-    textured(p, wing, vgrad(185, 937, (0, "#424144"), (0.5, "#3a393c"),
-                            (1, "#38373a")))
+    textured(p, wing, vgrad(185, 937, (0, "#4b4a4e"), (0.25, "#48474b"),
+                            (0.33, "#3d3c40"), (0.5, "#353437"),
+                            (0.75, "#343336"), (1, "#38373a")))
+    # light on it below the bumper, between the pad's seat and the rail
+    p.save()
+    p.setClipPath(wing)
+    g = QRadialGradient(QPointF(1830, 645), 120)
+    g.setColorAt(0, QColor(255, 255, 255, 34))
+    g.setColorAt(0.6, QColor(255, 255, 255, 22))
+    g.setColorAt(1, QColor(255, 255, 255, 0))
+    fill(p, circle(QPointF(1830, 645), 120), QBrush(g))
+    p.restore()
     # the step under App Switcher, and the face below it
     lower = QPainterPath()
     lower.addRect(QRectF(1370, SHELF[1], 220, 937 - SHELF[1]))
@@ -506,13 +536,13 @@ def _network(p):
     fill(p, panel, vgrad(285, 441, (0, "#323234"), (1, "#3a3a3c")))
     edges(p, panel, 5, rgba("#0a0a0b", 220), rgba("#6c6a70", 170))
     for text, x, y, index in STATUS:
-        label(p, x + 49, y, text, 22.5, spacing=0.6)
+        label(p, LABEL_X[text], y, text, 14, width=LABEL_W[text])
     # LINK: a light label with a round light in it
     box = rrect(LINK_BOX, 6)
     fill(p, box, vgrad(LINK_BOX.top(), LINK_BOX.bottom(), (0, "#d6d4d9"),
                        (1, "#b3b1b6")))
     edges(p, box, 2, rgba("#ffffff", 160), rgba("#6e6c71", 200))
-    label(p, 431, 410.5, "LINK", 22.5, "#202022", spacing=0.6)
+    label(p, 432, 410.5, "LINK", 14, "#202022", width=45)
 
 
 def _network_lights(p, st):
@@ -520,7 +550,7 @@ def _network_lights(p, st):
         _slit(p, QRectF(x, y - 6.5, 37, 13), _led(st, index))
     led = _led(st, LINK_INDEX)
     if lit(led):
-        glow(p, LINK_LED, led, 26)
+        glow(p, LINK_LED, led, 17)
         fill(p, circle(LINK_LED, 9), bright(led), QPen(mix(led, "#000000", 0.4), 1.5))
     else:
         fill(p, circle(LINK_LED, 9), vgrad(401, 420, (0, "#3a3436"),
@@ -531,7 +561,7 @@ def _network_lights(p, st):
 def _slit(p, r, led):
     path = rrect(r, 4.5)
     if lit(led):
-        glow(p, r.center(), led, 34)
+        glow(p, r.center(), led, 26)
         fill(p, path, bright(led), QPen(mix(led, "#000000", 0.3), 1.2))
     else:
         fill(p, path, vgrad(r.top(), r.bottom(), (0, "#0c0c0d"),
@@ -591,11 +621,11 @@ def _ptt(p, st):
 
 
 def _speaker(p):
-    plate = poly(GRILLE)
-    fill(p, plate, vgrad(861, 901, (0, "#3a393d"), (1, "#47464b")),
-         QPen(QColor("#151517"), 2))
-    edges(p, plate, 3, rgba("#000000", 160), rgba("#8a888e", 170))
-    pen = QPen(QColor("#bebcc2"), 2.4, Qt.SolidLine, Qt.RoundCap,
+    plate = poly(GRILLE)                # raised: its top edge lit
+    fill(p, plate, vgrad(861, 901, (0, "#4b4a4e"), (1, "#3e3d41")),
+         QPen(QColor("#151517"), 1.8))
+    edges(p, plate, 2.6, rgba("#8e8c92", 230), rgba("#121213", 200))
+    pen = QPen(QColor("#acaab0"), 2.4, Qt.SolidLine, Qt.RoundCap,
                Qt.RoundJoin)
     p.setPen(pen)
     p.setBrush(Qt.NoBrush)
@@ -616,40 +646,61 @@ def _module(p):
     shape = poly(MODULE)
     p.save()
     p.setClipPath(shape)
+    # the cap: flat, a fine line and a crease low on it, then its rounded
+    # lower edge catching the light (the render's profile, 166 to 236)
     p.fillRect(QRectF(560, 160, 880, CAP_Y - 160),
-               vgrad(166, CAP_Y, (0, "#626065"), (0.68, "#57555a"),
-                     (0.7, "#47454a"), (0.74, "#5a585d"), (0.88, "#747277"),
-                     (1, "#545257")))
+               vgrad(166, CAP_Y, (0, "#5e5d61"), (0.62, "#5f5e62"),
+                     (0.66, "#69686c"), (0.71, "#545357"), (0.78, "#5c5b5f"),
+                     (0.84, "#6b6a6e"), (0.9, "#7d7c80"), (0.95, "#757478"),
+                     (1, "#5f5e62")))
+    # the face: lightest under the cap, darkest above the chin
     p.fillRect(QRectF(560, CAP_Y, 880, CHIN_Y - CAP_Y),
-               vgrad(CAP_Y, CHIN_Y, (0, "#4b4a4e"), (0.5, "#3f3e42"),
-                     (1, "#323134")))
+               vgrad(CAP_Y, CHIN_Y, (0, "#535256"), (0.07, "#444347"),
+                     (0.3, "#3d3c3f"), (0.5, "#39383b"), (0.75, "#353437"),
+                     (0.92, "#2f2e31"), (0.97, "#252427"), (1, "#2e2d30")))
+    # the chin: lighter to the left and downward, out of the face softly
     p.fillRect(QRectF(560, CHIN_Y, 880, 960 - CHIN_Y),
-               lgrad((565, 0), (1430, 0), (0, "#59575b"), (0.5, "#4b4a4e"),
-                     (1, "#454447")))
-    # the cap's shadow on the face, the chin's edge
-    p.fillRect(QRectF(560, CAP_Y, 880, 14),
-               vgrad(CAP_Y, CAP_Y + 14, (0, rgba("#000000", 90)),
-                     (1, rgba("#000000", 0))))
-    p.fillRect(QRectF(560, CHIN_Y - 2, 880, 4),
-               vgrad(CHIN_Y - 2, CHIN_Y + 2, (0, rgba("#000000", 60)),
-                     (1, rgba("#9a989d", 70))))
+               lgrad((565, 0), (1430, 0), (0, "#58575b"), (0.5, "#454447"),
+                     (1, "#3d3c40")))
+    p.fillRect(QRectF(560, CHIN_Y, 880, 960 - CHIN_Y),
+               vgrad(CHIN_Y, 958, (0, rgba("#000000", 50)),
+                     (0.15, rgba("#000000", 0)), (0.8, rgba("#ffffff", 0)),
+                     (1, rgba("#ffffff", 22))))
+    p.fillRect(QRectF(560, 951, 880, 7), vgrad(951, 958,
+                                              (0, rgba("#8c8a8f", 0)),
+                                              (1, rgba("#8c8a8f", 220))))
+    # its sides' edges lit: the cap's ends, the waist, the chin's ends
+    p.setPen(QPen(QColor("#a2a0a6"), 3))
+    for x0, x1 in ((566.5, 1428.5),):
+        p.drawLine(QPointF(x0, 172), QPointF(x0, 230))
+        p.drawLine(QPointF(x1, 172), QPointF(x1, 230))
+    p.setPen(QPen(QColor("#6f6d73"), 2.4))
+    p.drawLine(QPointF(615, 292), QPointF(615, 750))
+    p.drawLine(QPointF(1379, 292), QPointF(1379, 750))
     p.restore()
-    edges(p, shape, 5, rgba("#a9a7ad", 210), rgba("#141416", 220))
+    edges(p, shape, 2.5, rgba("#8e8c92", 150), rgba("#8e8c92", 120))
     p.setPen(QPen(QColor(0, 0, 0, 150), 1.5))
     p.setBrush(Qt.NoBrush)
     p.drawPath(shape)
 
 
 def _glass(p):
+    """The glass in its rim: the rim lit, a bright line along its outer
+    edge all round (brightest below); the glass darkest under the rim's
+    top, where its shadow falls."""
     rim = rrect(RIM, 15)
-    fill(p, rim, vgrad(RIM.top(), RIM.bottom(), (0, "#5a5456"),
-                       (1, "#3c3638")))
-    edges(p, rim, 3, rgba("#a8a2a4", 220), rgba("#1a1617", 220))
+    fill(p, rim, QColor("#58565a"))
+    p.setPen(QPen(lgrad((0, RIM.top()), (0, RIM.bottom()), (0, "#7c7a7f"),
+                        (1, "#a4a2a7")), 2.6))
+    p.setBrush(Qt.NoBrush)
+    p.drawRoundedRect(RIM.adjusted(1.8, 1.8, -1.8, -1.8), 13.5, 13.5)
     glass = rrect(GLASS, 11)
-    fill(p, glass, vgrad(GLASS.top(), GLASS.bottom(), (0, "#22201f"),
-                         (1, "#161514")))
-    label(p, 988.5, 271.5, "PORTABLE LINUX COMPUTER", 21, "#c9c7cc",
-          Qt.AlignHCenter, spacing=0.4)
+    fill(p, glass, vgrad(GLASS.top(), GLASS.bottom(), (0, "#070708"),
+                         (0.06, "#0b0b0c"), (0.5, "#18181a"),
+                         (1, "#1f1f21")))
+    edges(p, glass, 2, rgba("#000000", 200), rgba("#4a484d", 160))
+    label(p, 988.5, 271.5, "PORTABLE LINUX COMPUTER", 15, "#c9c7cc",
+          Qt.AlignHCenter, width=295)
 
 
 def _tray(p):
@@ -667,14 +718,15 @@ def _soft_keys(p, st):
         down = name in st.down
         key = rrect(r.adjusted(2, 2, -2, -2), 9)
         fill(p, key, vgrad(r.top(), r.bottom(),
-                           (0, "#222224" if down else "#38383a"),
+                           (0, "#222224" if down else "#2e2e30"),
                            (1, "#1e1e20" if down else "#29292b")),
-             QPen(QColor("#0b0b0c"), 1.6))
-        edges(p, key, 2.5, rgba("#000000", 200) if down else
-              rgba("#7e7c82", 200), rgba("#000000", 160))
+             QPen(QColor("#050506"), 1.8))
+        # its edges lit: a line along the top, the sides, the bottom
+        edges(p, key, 2.2, rgba("#000000", 200) if down else
+              rgba("#77757b", 230), rgba("#5a585d", 200))
         if st.hover == name and not down:
             _hover(p, key)
-        colour = QColor("#dcdadf")
+        colour = QColor("#bdbcc0")
         if name == "power":
             led = _led(st, POWER_LED)
             if lit(led):
@@ -684,17 +736,17 @@ def _soft_keys(p, st):
 
 
 def _icon(p, name, c, colour):
-    p.setPen(QPen(colour, 3.4, Qt.SolidLine, Qt.FlatCap, Qt.MiterJoin))
+    p.setPen(QPen(colour, 2.9, Qt.SolidLine, Qt.FlatCap, Qt.MiterJoin))
     p.setBrush(Qt.NoBrush)
     if name == "esc":
-        s = 15
+        s = 14
         p.drawLine(c + QPointF(-s, -s), c + QPointF(s, s))
         p.drawLine(c + QPointF(-s, s), c + QPointF(s, -s))
     elif name == "view":
-        for dy in (-9.5, 0, 9.5):
+        for dy in (-11, 0, 11):
             p.drawLine(c + QPointF(-15, dy), c + QPointF(15, dy))
     elif name == "power":
-        p.setPen(QPen(colour, 3.6, Qt.SolidLine, Qt.FlatCap))
+        p.setPen(QPen(colour, 3.2, Qt.SolidLine, Qt.FlatCap))
         p.drawArc(QRectF(c.x() - 14, c.y() - 12.5, 28, 28), 118 * 16, 304 * 16)
         p.drawLine(c + QPointF(0, -17), c + QPointF(0, -1))
     elif name == "edit":
@@ -987,10 +1039,13 @@ def _switch_and_back(p, st):
 
 
 def _mic(p):
-    box = rrect(MIC, 11)
-    fill(p, box, vgrad(MIC.top(), MIC.bottom(), (0, "#353437"),
-                       (1, "#3c3b3e")), QPen(QColor("#121213"), 1.6))
-    edges(p, box, 4.5, rgba("#0c0c0d", 200), rgba("#9a989e", 230))
+    box = rrect(MIC, 13)
+    textured(p, box, lgrad((MIC.left(), 0), (MIC.right(), 0), (0, "#4a494c"),
+                           (1, "#3c3b3e")))
+    p.setPen(QPen(QColor("#1a1a1b"), 1.4))
+    p.setBrush(Qt.NoBrush)
+    p.drawPath(box)
+    edges(p, box, 3.5, rgba("#000000", 80), rgba("#7c7a7f", 210))
     for y in (274, 294):
         hole = rrect(QRectF(1458, y, 38, 9.5), 3)
         fill(p, hole, QColor("#030303"))
@@ -1001,7 +1056,7 @@ def _mic(p):
     p.drawRoundedRect(QRectF(1515, 270, 11.5, 22), 5.7, 5.7)
     p.drawArc(QRectF(1509.5, 278, 22.5, 20), 180 * 16, 180 * 16)
     p.drawLine(QPointF(1520.7, 298), QPointF(1520.7, 306))
-    label(p, 1539, 290, "MIC", 20, "#d0ced3", spacing=0.6)
+    label(p, 1541, 290, "MIC", 13, "#d0ced3", width=35)
 
 
 def _hover(p, path):
