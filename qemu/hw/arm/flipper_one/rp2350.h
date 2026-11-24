@@ -246,9 +246,18 @@ typedef struct RP2350RCP {
     uint64_t prng[2];           /* random bytes and delays, from the salt */
 } RP2350RCP;
 
+/* the double-precision coprocessor (rp2350_dcp.c): a sequence's operands */
+typedef struct RP2Dcp {
+    uint64_t x, y;              /* as IEEE doubles */
+    uint32_t status;            /* ADD0's comparison: Z, C, V (bits 30..28) */
+    bool nearest;               /* NRDC: to an integer, rounded */
+    bool engaged;               /* in a sequence */
+} RP2Dcp;
+
 typedef struct RP2350Core {
     struct RP2350State *soc;
     int index;
+    RP2Dcp dcp[2];              /* the Secure DCP, the Non-secure one */
 } RP2350Core;
 
 struct RP2350State {
@@ -322,6 +331,10 @@ struct RP2350State {
 /* rp2350_coproc.c */
 void rp2350_coproc_init(RP2350State *s, int core);
 void rp2350_coproc_reset(RP2350State *s);
+/* rp2350_dcp.c: CP4's and CP5's instructions, and their reset */
+struct ARMMCoprocInsn;
+void rp2350_dcp(void *opaque, ARMCPU *cpu, struct ARMMCoprocInsn *in);
+void rp2350_dcp_reset(RP2350State *s);
 
 /* rp2350_sys.c */
 void rp2_block_init(RP2350State *s, RP2Block *b, const char *name,

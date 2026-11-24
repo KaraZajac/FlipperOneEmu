@@ -281,3 +281,21 @@ register headers.
     The CLI's floating-point numbers all come out as their last digit ("0.001V"), the
     gauge's or not: `printf` takes doubles, and the RP2350 does double arithmetic in its
     DCP coprocessor, which is not modelled yet.
+
+30. **The double-precision coprocessor.** Every floating-point number the firmware
+    printed came out as its last digit ("0.001V"): `printf` takes doubles, and on the
+    RP2350 the Pico SDK does double arithmetic and the float/double conversions in the
+    DCP (CP4), which the model only logged. The datasheet (3.6.2) outlines the DCP's
+    instructions but not their intermediate formats, and software uses them only in the
+    SDK's canned sequences: operands written unpacked, a few steps, the result read back;
+    in a multiply, divide or square root the core does the mantissas' arithmetic itself
+    and writes it back for the DCP to round, and no sequence branches on what it reads
+    in the middle. So `rp2350_dcp.c` keeps the operands as written and works each result
+    out at the read that ends its sequence, as IEEE 754 does with the DCP's three
+    differences from it (denormals are zero in and out; ties to even; the default NaN),
+    including the conversions to and from integers (truncated or rounded, saturated)
+    and floats. The engaged flag the SDK checks before using the DCP (is an interrupted
+    sequence there to save?) is N of PCMP; saving and restoring carries the operands.
+    Two DCPs a core, as the chip has: CP4 the present security state's, CP5 the
+    Non-secure one. `power show` now prints 7.960 V and 25.05 °C, and the firmware's
+    unit tests pass (`unit_tests`: buffers, NVM, the UI's layout).

@@ -2,8 +2,9 @@
  * The RP2350's coprocessors, on each Cortex-M33's coprocessor port
  * (QEMU patch 0001: arm_m_set_coproc()):
  *
- *   CP0  GPIO: the SIO's GPIO registers, fast       (not yet: logged)
- *   CP4  DCP, double-precision arithmetic           (not yet: logged)
+ *   CP0  GPIO: the SIO's GPIO registers, fast
+ *   CP4  DCP, double-precision arithmetic (rp2350_dcp.c; CP5 its
+ *        Non-secure instance)
  *   CP7  RCP, redundancy: salted stack canaries, checked booleans and
  *        integers, a sequence counter, random delays, a panic
  *
@@ -269,13 +270,6 @@ static void rp2350_gpioc_pins(void *opaque, ARMCPU *cpu, ARMMCoprocInsn *in)
     }
 }
 
-/* the DCP: logged, until it is modelled */
-static void rp2350_coproc_unimp(void *opaque, ARMCPU *cpu, ARMMCoprocInsn *in)
-{
-    coproc_log(LOG_UNIMP, cpu, in, "not modelled yet");
-    in->value = 0;
-}
-
 void rp2350_coproc_init(RP2350State *s, int core)
 {
     ARMCPU *cpu = s->cpu[core].cpu;
@@ -283,11 +277,13 @@ void rp2350_coproc_init(RP2350State *s, int core)
     s->core[core].soc = s;
     s->core[core].index = core;
     arm_m_set_coproc(cpu, 0, rp2350_gpioc_pins, &s->core[core], true);
-    arm_m_set_coproc(cpu, 4, rp2350_coproc_unimp, &s->core[core], false);
+    arm_m_set_coproc(cpu, 4, rp2350_dcp, &s->core[core], false);
+    arm_m_set_coproc(cpu, 5, rp2350_dcp, &s->core[core], false);
     arm_m_set_coproc(cpu, 7, rp2350_rcp, &s->core[core], false);
 }
 
 void rp2350_coproc_reset(RP2350State *s)
 {
     memset(&s->rcp, 0, sizeof(s->rcp));
+    rp2350_dcp_reset(s);
 }

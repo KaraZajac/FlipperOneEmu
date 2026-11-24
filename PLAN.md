@@ -15,9 +15,8 @@ screen and its CLI.
       modelled logs), and the atomic aliases (+0x1000 XOR, +0x2000 set, +0x3000 clear)
 - ☑ Both Cortex-M33s (Secure, FPU, DSP, 8 MPU and 8 SAU regions) with the RP2350's
       IDAU; PSM powers core 1, which waits in its ROM (2026-11-23)
-- ◐ The coprocessors: GPIO (CP0), double-precision (CP4), redundancy (CP7, the boot
-      ROM's). QEMU patch 0001 lets a machine have them; RCP and GPIO are modelled, the
-      DCP logs
+- ☑ The coprocessors: GPIO (CP0), double-precision (CP4 and CP5, the DCP, 2026-11-24),
+      redundancy (CP7, the boot ROM's). QEMU patch 0001 lets a machine have them
 - ◐ Boot: the boot ROM verifies the partition table and starts the firmware from
       partition A (QMI direct mode, the flash, ATRANS, SHA-256); OTP reads as blank,
       try-before-you-buy images and the watchdog's reboots to come

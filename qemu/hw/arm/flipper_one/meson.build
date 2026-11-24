@@ -7,6 +7,7 @@ arm_common_ss.add(when: 'CONFIG_FLIPPER_ONE', if_true: files(
   'flipper_link.c',
   'rp2350.c',
   'rp2350_coproc.c',
+  'rp2350_dcp.c',
   'rp2350_sys.c',
   'rp2350_sio.c',
   'rp2350_qmi.c',
