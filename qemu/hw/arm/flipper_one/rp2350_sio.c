@@ -43,12 +43,15 @@ int rp2350_current_core(RP2350State *s)
 uint32_t rp2350_sio_in(RP2350State *s, int hi)
 {
     RP2SIO *o = &s->sio;
-    uint32_t ext = o->ext[hi];
+    uint32_t qspi = o->ext[1] & 0xfc000000u;
 
-    if (hi && s->bootsel) {
-        ext &= ~SIO_HI_QSPI_CSN;
+    if (!hi) {
+        return s->pin_level;
     }
-    return (o->out[hi] & o->oe[hi]) | (ext & ~o->oe[hi]);
+    if (s->bootsel) {
+        qspi &= ~SIO_HI_QSPI_CSN;
+    }
+    return ((s->pin_level >> 32) & 0xffff) | qspi;
 }
 
 static uint64_t sio_read(void *opaque, hwaddr addr, unsigned size)
@@ -176,6 +179,9 @@ static void sio_write(void *opaque, hwaddr addr, uint64_t value,
     default:
         qemu_log_mask(LOG_UNIMP, "rp2350: SIO: write of 0x%08x to 0x%03x\n",
                       v, (unsigned)reg);
+    }
+    if (reg >= 0x10 && reg <= 0x4c) {                /* OUT, OE: the pins */
+        rp2350_pins_update(s, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
     }
 }
 

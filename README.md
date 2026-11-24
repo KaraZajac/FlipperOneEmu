@@ -12,8 +12,8 @@ does the same for the Flipper Zero.
 
 **Status (2026-11-23): just started.** The RP2350's own boot ROM verifies the flash's
 partition table and starts the MCU firmware on the emulated chip; the firmware starts
-FreeRTOS on core 0 (core 1 waits in its ROM) and stops at its log UART, a PIO program.
-PIO is next. [RESEARCH.md](RESEARCH.md) is the survey this starts from:
+FreeRTOS on core 0 (core 1 waits in its ROM), logs through its PIO UART, and waits for
+the ADC, the next model on the way to its screen. [RESEARCH.md](RESEARCH.md) is the survey this starts from:
 the device, what Flipper Devices publishes, and what emulating it takes.
 [PLAN.md](PLAN.md) is the order of work; the MCU comes first.
 [docs/BRINGUP_LOG.md](docs/BRINGUP_LOG.md) is what was found on the way.
@@ -36,13 +36,15 @@ Space is PTT; drag on the touchpad. It talks to the emulator over a front-panel 
 ```sh
 ./flipperoneemu run [-n NAME] [--detach] [--gdb PORT]   # a device without the window
 ./flipperoneemu log [-n NAME]        # the firmware's log, from its RTT buffer
+./flipperoneemu where [-n NAME]      # where each core is: its PC and function
 ./flipperoneemu shot FILE.png        # the screen as a picture
 ./flipperoneemu status | stop [-n NAME]
 ```
 
 A device is a folder, `devices/NAME`: the MCU's flash (made from the newest recovery
 `.uf2` the first time, and written to as the firmware writes its flash), its sockets,
-QEMU's log. By hand: `-M flipper-one,flash=FILE -bios bootrom-combined.bin`;
+QEMU's log, and `mcu.log`: what the firmware writes to its log UART (a PIO program on
+GPIO41). By hand: `-M flipper-one,flash=FILE -bios bootrom-combined.bin`;
 `bootsel=on` starts with the BOOTSEL button held; `-d unimp,guest_errors` logs every
 access to what is not modelled yet.
 

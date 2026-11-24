@@ -20,6 +20,7 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
 #include "hw/arm/machines-qom.h"
+#include "chardev/char.h"
 #include "flipper_one.h"
 #include "rp2350.h"
 
@@ -32,7 +33,9 @@ struct FlipperOneState {
     RP2350State mcu;
     Clock *mcu_clk;
     FlipperOnePanelState *panel;
+    CharFrontend log;
     char *flash;
+    char *log_id;
     bool bootsel;
 };
 
@@ -60,6 +63,18 @@ static void flipper_one_init(MachineState *ms)
     qdev_connect_clock_in(mcu, "sysclk", s->mcu_clk);
     sysbus_realize(SYS_BUS_DEVICE(mcu), &error_fatal);
 
+    /* the firmware's log UART: a PIO program's, on GPIO41 at 1.5 Mbaud */
+    if (s->log_id) {
+        Chardev *chr = qemu_chr_find(s->log_id);
+
+        if (!chr) {
+            error_report("flipper-one: log: no chardev '%s'", s->log_id);
+            exit(1);
+        }
+        qemu_chr_fe_init(&s->log, chr, &error_fatal);
+        rp2350_pin_uart(&s->mcu, 41, 1500000, &s->log);
+    }
+
     /* the front panel: -global flipper-one-panel.link=CHARDEV for a window */
     s->panel = FLIPPER_ONE_PANEL(qdev_new(TYPE_FLIPPER_ONE_PANEL));
     object_property_add_child(OBJECT(ms), "panel", OBJECT(s->panel));
@@ -77,6 +92,19 @@ static void flipper_one_set_flash(Object *obj, const char *value, Error **errp)
 
     g_free(s->flash);
     s->flash = g_strdup(value);
+}
+
+static char *flipper_one_get_log(Object *obj, Error **errp)
+{
+    return g_strdup(FLIPPER_ONE(obj)->log_id);
+}
+
+static void flipper_one_set_log(Object *obj, const char *value, Error **errp)
+{
+    FlipperOneState *s = FLIPPER_ONE(obj);
+
+    g_free(s->log_id);
+    s->log_id = g_strdup(value);
 }
 
 static bool flipper_one_get_bootsel(Object *obj, Error **errp)
@@ -105,6 +133,11 @@ static void flipper_one_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(oc, "flash",
         "The image of the MCU's 16 MiB QSPI flash (raw; scripts/uf2.py "
         "writes one from a recovery .uf2)");
+    object_class_property_add_str(oc, "log", flipper_one_get_log,
+                                  flipper_one_set_log);
+    object_class_property_set_description(oc, "log",
+        "Chardev id that gets the MCU firmware's log (its log UART, a PIO "
+        "program on GPIO41 at 1.5 Mbaud)");
     object_class_property_add_bool(oc, "bootsel", flipper_one_get_bootsel,
                                    flipper_one_set_bootsel);
     object_class_property_set_description(oc, "bootsel",

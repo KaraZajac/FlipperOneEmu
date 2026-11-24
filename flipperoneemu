@@ -9,6 +9,7 @@
     ./flipperoneemu status [-n NAME]
     ./flipperoneemu log [-n NAME]        the firmware's log, from its RTT buffer
     ./flipperoneemu shot FILE.png [-n NAME] [--zoom N]
+    ./flipperoneemu where [-n NAME]      each core's PC, and the function there
 
 A device is a folder, devices/NAME (default "one"): the MCU's flash image
 (flash.bin, made from a recovery .uf2 the first time, and written to as the
@@ -88,7 +89,8 @@ def cmd_run(args):
         make_flash(d, args.uf2)
     for sock in ("panel.sock", "monitor.sock"):
         (d / sock).unlink(missing_ok=True)
-    cmd = [str(QEMU), "-M", f"flipper-one,flash={d / 'flash.bin'}",
+    cmd = [str(QEMU), "-M", f"flipper-one,flash={d / 'flash.bin'},log=mculog",
+           "-chardev", f"file,id=mculog,path={d / 'mcu.log'}",
            "-bios", str(BOOTROM), "-display", "none", "-serial", "none",
            "-monitor", f"unix:{d / 'monitor.sock'},server=on,wait=off",
            "-chardev", f"socket,id=panel,path={d / 'panel.sock'},server=on,wait=off",
@@ -120,15 +122,26 @@ def cmd_run(args):
 
 
 def monitor(d, line):
+    """a monitor command's answer: what comes up to the next prompt"""
     s = socket.socket(socket.AF_UNIX)
     s.settimeout(3)
     s.connect(str(d / "monitor.sock"))
-    s.recv(65536)
-    s.sendall(line.encode() + b"\n")
+
+    def until_prompt():
+        out = b""
+        try:
+            while not out.rstrip().endswith(b"(qemu)"):
+                chunk = s.recv(65536)
+                if not chunk:
+                    break
+                out += chunk
+        except socket.timeout:
+            pass
+        return out.decode("latin1")
     try:
-        return s.recv(65536).decode("latin1")
-    except socket.timeout:
-        return ""
+        until_prompt()
+        s.sendall(line.encode() + b"\n")
+        return until_prompt()
     finally:
         s.close()
 
@@ -182,6 +195,48 @@ def cmd_log(args):
         die("the firmware's ELF is not known (firmware.json)")
     return subprocess.call([sys.executable, str(SCRIPTS / "rtt.py"),
                             str(d / "monitor.sock"), info["elf"]])
+
+
+def elf_functions(path):
+    """[(start, end, name)] of an ELF's functions"""
+    data = open(path, "rb").read()
+    shoff, = struct.unpack_from("<I", data, 0x20)
+    shentsize, shnum = struct.unpack_from("<HH", data, 0x2e)
+    sections = [struct.unpack_from("<IIIIIIIIII", data, shoff + i * shentsize)
+                for i in range(shnum)]
+    funcs = []
+    for sh in sections:
+        if sh[1] != 2:                              # SHT_SYMTAB
+            continue
+        strtab = sections[sh[6]]
+        for off in range(sh[4], sh[4] + sh[5], 16):
+            st_name, value, size, info = struct.unpack_from("<IIIB", data, off)
+            if info & 0xf == 2 and size:            # STT_FUNC
+                end = data.index(b"\0", strtab[4] + st_name)
+                name = data[strtab[4] + st_name:end].decode()
+                funcs.append((value & ~1, (value & ~1) + size, name))
+    return sorted(funcs)
+
+
+def cmd_where(args):
+    """where each core is: its PC, and the function there"""
+    d = device_dir(args.name)
+    if not pid_of(d):
+        die(f"{args.name} is not running")
+    text = monitor(d, "info registers -a")
+    info = json.loads((d / "firmware.json").read_text())
+    elfs = [p for p in (info.get("elf"),
+                        str(ROOT / "firmware/bootrom/A4/arm-bootrom.elf")) if p]
+    funcs = [f for p in elfs if os.path.exists(p) for f in elf_functions(p)]
+    import re
+    cpus = re.split(r"CPU#(\d+)", text)[1:]
+    for cpu, regs in zip(cpus[::2], cpus[1::2]):
+        pc = int(re.search(r"R15=([0-9a-f]+)", regs).group(1), 16)
+        lr = int(re.search(r"R14=([0-9a-f]+)", regs).group(1), 16)
+        name = lambda a: next((f"{n}+{a - s:#x}" for s, e, n in funcs
+                               if s <= (a & ~1) < e), "?")
+        print(f"core {cpu}: pc {pc:08x} {name(pc)}  lr {lr:08x} {name(lr)}")
+    return 0
 
 
 def png(path, width, height, rgb):
@@ -253,7 +308,7 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter,
                                  epilog=__doc__.split("\n\n", 1)[1])
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("run", "gui", "stop", "status", "log", "shot"):
+    for name in ("run", "gui", "stop", "status", "log", "shot", "where"):
         p = sub.add_parser(name)
         p.add_argument("-n", "--name", default="one", help="the device (devices/NAME)")
         if name == "run":

@@ -266,6 +266,8 @@ static void rp2350_realize(DeviceState *dev, Error **errp)
 
     /* what has interrupts: after the cores' NVICs */
     rp2350_timer_realize(s);
+    rp2350_gpio_realize(s);
+    rp2350_pio_realize(s);
 }
 
 qemu_irq rp2350_irq(RP2350State *s, int n)
@@ -280,6 +282,8 @@ static void rp2350_reset_hold(Object *obj, ResetType type)
     rp2350_sio_reset(RP2350(obj));
     rp2350_qmi_reset(RP2350(obj));
     rp2350_timer_reset(RP2350(obj));
+    rp2350_pio_reset(RP2350(obj));
+    rp2350_gpio_reset(RP2350(obj));
 }
 
 static const Property rp2350_properties[] = {

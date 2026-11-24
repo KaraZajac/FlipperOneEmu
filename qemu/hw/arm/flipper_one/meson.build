@@ -11,4 +11,6 @@ arm_common_ss.add(when: 'CONFIG_FLIPPER_ONE', if_true: files(
   'rp2350_sio.c',
   'rp2350_qmi.c',
   'rp2350_timer.c',
+  'rp2350_gpio.c',
+  'rp2350_pio.c',
 ))

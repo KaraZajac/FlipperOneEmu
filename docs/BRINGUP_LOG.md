@@ -104,3 +104,28 @@ register headers.
     saved at every switch of thread), then `[CRASH][SerialControlDriver] furi_check
     failed`: `uart_pio_init()` gets no PIO state machine for GPIO41, the log UART,
     since PIO's GPIOBASE reads 0. PIO is next.
+
+## The MCU firmware's start (2026-11-23)
+
+14. **PIO.** The firmware's log UART is a PIO program on GPIO41 (`uart_pio_init()`), and
+    the SDK claims a state machine with the pin range it needs: with GPIOBASE (0 or
+    16 on the RP2350B, which PIO pins 0-31 start at) reading 0, the claim failed and
+    the firmware crashed. `rp2350_pio.c` interprets the PIO's instructions, the
+    RP2350's too, each state machine on the virtual clock in picoseconds from its
+    clock divider: a block runs its machines up to the present when its timer comes,
+    and whenever the CPU touches it or a pin changes; a stalled machine costs nothing
+    until then. Forced instructions (SMn_INSTR) run even with the machine disabled:
+    the SDK sets a program's start and its pins' directions that way.
+
+15. **The pins.** A pin is driven by the function its GPIOn_CTRL selects (SIO, a PIO
+    block), through the overrides and its pad (OD and ISO let go); else by the board,
+    else by its pull. Every change goes to the pin's listeners with the virtual time
+    of the instruction that made it, and to IO_BANK0's interrupts (INTRn's edges and
+    levels, PROCn_INTE/INTF/INTS, IO_IRQ_BANK0 to each core). SIO's GPIO_IN reads the
+    pins. A UART decoder on GPIO41 takes the bits from those times: `-M
+    flipper-one,log=CHARDEV`; the launcher writes `devices/NAME/mcu.log`. The first
+    line through the emulated PIO: "Hardware log output initialized".
+
+16. **Then the ADC.** `./flipperoneemu where` (each core's PC and function, from the
+    firmware's and the boot ROM's ELF) finds core 0 in the SDK's `adc_init()`, which
+    waits for the ADC's READY.

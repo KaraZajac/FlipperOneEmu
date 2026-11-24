@@ -259,6 +259,16 @@ static void rp2350_gpioc(void *opaque, ARMCPU *cpu, ARMMCoprocInsn *in)
     in->value = 0;
 }
 
+static void rp2350_gpioc_pins(void *opaque, ARMCPU *cpu, ARMMCoprocInsn *in)
+{
+    RP2350State *s = ((RP2350Core *)opaque)->soc;
+
+    rp2350_gpioc(opaque, cpu, in);
+    if (in->kind == ARM_MCOPROC_MCR || in->kind == ARM_MCOPROC_MCRR) {
+        rp2350_pins_update(s, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+    }
+}
+
 /* the DCP: logged, until it is modelled */
 static void rp2350_coproc_unimp(void *opaque, ARMCPU *cpu, ARMMCoprocInsn *in)
 {
@@ -272,7 +282,7 @@ void rp2350_coproc_init(RP2350State *s, int core)
 
     s->core[core].soc = s;
     s->core[core].index = core;
-    arm_m_set_coproc(cpu, 0, rp2350_gpioc, &s->core[core], true);
+    arm_m_set_coproc(cpu, 0, rp2350_gpioc_pins, &s->core[core], true);
     arm_m_set_coproc(cpu, 4, rp2350_coproc_unimp, &s->core[core], false);
     arm_m_set_coproc(cpu, 7, rp2350_rcp, &s->core[core], false);
 }

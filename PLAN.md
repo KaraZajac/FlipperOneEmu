@@ -24,7 +24,9 @@ screen and its CLI.
 - ◐ Clocks, resets, PSM, XOSC, PLLs, ROSC, TRNG, SHA-256, POWMAN, watchdog, SIO
       (GPIO, FIFOs, spinlocks, doorbells), BOOTRAM's locks, TIMER0/1 answer; IO_BANK0
       and PADS keep what is written; TICKS, DWT's cycle counter to come
-- ☐ PIO (three blocks, the RP2350's instructions), DMA, HSTX
+- ◐ PIO (three blocks, the RP2350's instructions; the firmware's log UART decoded
+      from GPIO41 to devices/NAME/mcu.log, 2026-11-23); the pins and IO_BANK0's
+      interrupts; DMA and HSTX to come
 - ☐ The JD9853 panel and its tearing signal: the screen to the window and to PNG
 - ☐ DesignWare I2C (master and slave); the PL011 UARTs (the CLI on UART1)
 - ◐ The window, as FlipperZeroEmu's (Kara, 2026-11-23): a Flipper One of this project's
@@ -34,7 +36,8 @@ screen and its CLI.
       buttons come alive with the models behind them (the JD9853, the WS2812s, the
       control bus's expander, the IQS7211E)
 - ◐ A launcher: run, the window, stop, status, the firmware's log (RTT), a picture of
-      the screen; a folder per emulated Flipper One. The CLI and gdb's symbols to come
+      the screen, where the cores are; a folder per emulated Flipper One. The CLI and
+      gdb's symbols to come
 
 ## M2: the MCU's board ☐
 - ☐ The control bus: PCAL6416 (buttons), IQS7211E (touchpad), DRV2605L (haptics),

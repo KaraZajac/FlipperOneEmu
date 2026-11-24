@@ -498,8 +498,7 @@ void rp2350_sys_realize(RP2350State *s)
     rp2_block_init(s, &s->psm, "rp2350.psm", 0x40018000, psm_read, psm_write);
     rp2_block_init(s, &s->bootram_regs, "rp2350.bootram-regs",
                    RP2350_BOOTRAM_BASE, bootram_read, bootram_write);
-    /* the pins' function selects and pads: kept, as yet */
-    rp2_block_init(s, &s->io_bank0, "rp2350.io_bank0", 0x40028000, NULL, NULL);
+    /* the pads: kept (rp2350_gpio.c reads them); the QSPI pins' blocks too */
     rp2_block_init(s, &s->io_qspi, "rp2350.io_qspi", 0x40030000, NULL, NULL);
     rp2_block_init(s, &s->pads_bank0, "rp2350.pads_bank0", 0x40038000,
                    NULL, NULL);
@@ -543,10 +542,6 @@ void rp2350_sys_reset(RP2350State *s)
     memset(s->psm.regs, 0, sizeof(s->psm.regs));
     memset(s->bootram_regs.regs, 0, sizeof(s->bootram_regs.regs));
     s->bootram_regs.regs[BOOTRAM_STAT] = 0xff;
-    memset(s->io_bank0.regs, 0, sizeof(s->io_bank0.regs));
-    for (int pin = 0; pin < 48; pin++) {
-        s->io_bank0.regs[pin * 2 + 1] = 0x1f;       /* GPIOn_CTRL: NULL */
-    }
     memset(s->io_qspi.regs, 0, sizeof(s->io_qspi.regs));
     memset(s->pads_bank0.regs, 0, sizeof(s->pads_bank0.regs));
     for (int pin = 0; pin < 50; pin++) {            /* GPIOs, SWCLK, SWD */

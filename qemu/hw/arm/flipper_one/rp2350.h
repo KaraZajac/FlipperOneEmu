@@ -9,6 +9,7 @@
 
 #include "hw/core/sysbus.h"
 #include "hw/arm/armv7m.h"
+#include "chardev/char-fe.h"
 #include "hw/core/clock.h"
 #include "hw/core/irq.h"
 #include "qemu/timer.h"
@@ -116,6 +117,58 @@ typedef struct RP2Timer {
     qemu_irq irq[4];
 } RP2Timer;
 
+/* the pins (rp2350_gpio.c): a listener is told of a pin's every change */
+#define RP2_PINS 48
+typedef void RP2PinFn(void *opaque, int pin, bool level, int64_t when_ns);
+typedef struct RP2PinListener {
+    RP2PinFn *fn;
+    void *opaque;
+} RP2PinListener;
+
+/* a UART's bytes from a pin's changes (the firmware's log, on GPIO41) */
+typedef struct RP2PinUart {
+    struct RP2350State *soc;
+    int pin;
+    uint32_t baud;
+    CharFrontend *chr;
+    bool level, busy;
+    int64_t last_ns, start_ns;
+    int bit;
+    uint16_t bits;
+    QEMUTimer *done;
+} RP2PinUart;
+
+/* PIO: four state machines on 32 instructions */
+typedef struct RP2PioSM {
+    uint32_t clkdiv, execctrl, shiftctrl, pinctrl;
+    uint8_t pc;
+    uint32_t x, y, isr, osr;
+    uint8_t isr_count, osr_count;       /* bits shifted in; bits shifted out */
+    uint32_t txf[8], rxf[8];
+    int tx_n, tx_head, rx_n, rx_head;
+    uint16_t exec;                      /* an instruction to run next ... */
+    bool has_exec;                      /* ... (INSTR, OUT/MOV EXEC) */
+    bool stalled;
+    int64_t next_ps;                    /* when its next cycle is (ps) */
+    bool irq_waiting;                   /* an IRQ WAIT set its flag */
+} RP2PioSM;
+
+typedef struct RP2Pio {
+    RP2Block regs;                      /* first: its functions get this */
+    int index;
+    uint16_t imem[32];
+    RP2PioSM sm[4];
+    uint32_t ctrl;                      /* SM_ENABLE */
+    uint8_t irq;                        /* its eight IRQ flags */
+    uint32_t pad_out, pad_oe;           /* what it drives, pin 0 at GPIOBASE */
+    uint32_t gpiobase;
+    uint32_t inte[2], intf[2];
+    uint32_t fdebug;
+    QEMUTimer *timer;
+    bool running;
+    qemu_irq irq_line[2];
+} RP2Pio;
+
 /* SHA-256 accelerator */
 typedef struct RP2SHA {
     uint32_t h[8];
@@ -163,9 +216,20 @@ struct RP2350State {
     /* rp2350_qmi.c */
     RP2QMI qmi;
 
-    /* rp2350_timer.c; rp2350_sys.c keeps the pins' blocks as registers */
+    /* rp2350_timer.c; rp2350_sys.c keeps the pads' blocks as registers */
     RP2Timer timer[2];
     RP2Block io_bank0, pads_bank0, io_qspi, pads_qspi;
+
+    /* rp2350_gpio.c: the pins as they are, and who drives them from outside */
+    uint64_t pin_level;
+    uint64_t ext_drive, ext_level;      /* the board: pins it drives, to what */
+    uint64_t ext_pullup;                /* ... and pulls up (I2C's resistors) */
+    uint32_t gpio_edges[6];             /* INTR's latched edges, 8 pins each */
+    RP2PinListener pin_listener[RP2_PINS][2];
+    RP2PinUart log_uart;
+
+    /* rp2350_pio.c */
+    RP2Pio pio[3];
 
     /* rp2350_sio.c */
     RP2SIO sio;
@@ -199,6 +263,24 @@ void rp2350_sio_reset(RP2350State *s);
 /* rp2350_timer.c */
 void rp2350_timer_realize(RP2350State *s);
 void rp2350_timer_reset(RP2350State *s);
+
+/* rp2350_gpio.c */
+void rp2350_gpio_realize(RP2350State *s);
+void rp2350_gpio_reset(RP2350State *s);
+/* work out every pin again after what drives them changed (at @when_ns) */
+void rp2350_pins_update(RP2350State *s, int64_t when_ns);
+/* the board drives @pin: 0 low, 1 high, -1 lets go */
+void rp2350_pin_drive(RP2350State *s, int pin, int level);
+void rp2350_pin_listen(RP2350State *s, int pin, RP2PinFn *fn, void *opaque);
+/* decode @pin's changes as a UART at @baud, to @chr */
+void rp2350_pin_uart(RP2350State *s, int pin, uint32_t baud,
+                     CharFrontend *chr);
+
+/* rp2350_pio.c */
+void rp2350_pio_realize(RP2350State *s);
+void rp2350_pio_reset(RP2350State *s);
+/* a pin's input changed: state machines that wait on pins look again */
+void rp2350_pio_kick(RP2350State *s);
 
 /* the RP2350's interrupt @n, which both cores' NVICs get */
 qemu_irq rp2350_irq(RP2350State *s, int n);
