@@ -179,6 +179,11 @@ def main():
         shutil.rmtree(out, ignore_errors=True)
         for p in (kernel, initrd, dtbs):
             restore(root_img, vols[profile], regex_for(p), out)
+        # the kernel's symbols and configuration, for debugging
+        version = e["version"].strip()
+        restore(root_img, vols["boot"],
+                f"^/(|System\\.map-{re.escape(version)}|"
+                f"config-{re.escape(version)})$", d / "boot")
     finally:
         img.unlink(missing_ok=True)
         root_img.unlink(missing_ok=True)
@@ -188,6 +193,8 @@ def main():
         "initrd": str((out / initrd.lstrip("/")).relative_to(ROOT)),
         "dtbs": str((out / dtbs.lstrip("/")).relative_to(ROOT)),
         "options": e["options"].strip(),
+        "system_map": str((d / "boot" / f"System.map-{version}")
+                          .relative_to(ROOT)),
     }
     for k in ("kernel", "initrd", "dtbs"):
         if not (ROOT / info[k]).exists():
