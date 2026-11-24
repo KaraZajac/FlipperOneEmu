@@ -472,3 +472,16 @@ register headers.
     emulated CPU on its own thread can lag the virtual bus, as FlipperZeroEmu's host
     found too. The host now sends nothing while the controller's interrupt is up (10 ms
     at most). The boot ROM enumerates: `2e8a:000f "Raspberry Pi" "RP2350 Boot"`.
+42. **USB/IP: the MCU's USB on this PC.** `run --usbip PORT` serves the device over
+    Linux's usbip protocol (the server is FlipperZeroEmu's, on this USB's
+    transactions); `sudo scripts/usbip_attach.py --port PORT` hands it to the kernel's
+    vhci-hcd, and `scripts/fo_usbip.py` speaks it from userspace. The computer at the
+    cable's end keeps the bus (the reset, the address); each URB the PC's kernel sends
+    becomes control or bulk transactions, and the built-in CDC bridge stands aside
+    while the PC has the device. The firmware's CLI answers over it; with `--bootsel`
+    it is the boot ROM's drive and PICOBOOT that the PC gets. Seen on the way, in the
+    firmware: its USB CLI (cli_vcp.c) only clears its "transmitting" flag when a
+    transmission completes, so a reset or a SET_CONFIGURATION while output is still on
+    its way (a cable pulled out in the middle of a command's answer, then plugged in
+    again) leaves it mute until the MCU restarts. The smoke test reads each answer to
+    its prompt before going on.

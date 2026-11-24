@@ -110,6 +110,10 @@ def cmd_run(args):
            "-d", "guest_errors", "-D", str(d / "qemu.log")]
     if args.gdb:
         cmd += ["-gdb", f"tcp::{args.gdb}"]
+    if args.usbip:
+        cmd += ["-chardev", f"socket,id=usbip,host=127.0.0.1,port={args.usbip},"
+                "server=on,wait=off",
+                "-global", "flipper-one-usb-host.usbip=usbip"]
     if args.detach:
         with open(d / "qemu.out", "wb") as out:
             p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=out,
@@ -380,6 +384,9 @@ def main():
             p.add_argument("--uf2", help="make the flash anew from this recovery .uf2")
             p.add_argument("--detach", action="store_true", help="run in the background")
             p.add_argument("--gdb", type=int, metavar="PORT", help="QEMU's gdb stub")
+            p.add_argument("--usbip", type=int, metavar="PORT",
+                           help="give the MCU's USB device to this PC over "
+                                "USB/IP on this TCP port (3240 is usbip's)")
             p.add_argument("--bootsel", action="store_true",
                            help="start with BOOTSEL held: the boot ROM's USB "
                                 "boot (its drive and PICOBOOT)")

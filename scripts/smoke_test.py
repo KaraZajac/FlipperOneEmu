@@ -23,7 +23,8 @@ Boots a throwaway device, devices/smoke-PID (removed at the end unless
 - a charger plugged in, then pulled out: the charger's interrupts through
   the main board's expander, `power show` charging;
 - a computer plugged in: it enumerates the MCU's USB device, and the CLI
-  answers on its USB serial port;
+  answers on its USB serial port, and over USB/IP (fo_usbip.py playing the
+  PC's kernel);
 - the same device again with BOOTSEL held: the RP2350's boot ROM's own USB
   boot, which the computer enumerates.
 
@@ -296,14 +297,16 @@ def main():
     if d.exists():
         sys.exit(f"{d} is there already")
     check = Checks()
-    run = [sys.executable, str(LAUNCHER), "run", "-n", name, "--detach"]
+    port = free_port()
+    run = [sys.executable, str(LAUNCHER), "run", "-n", name, "--detach",
+           "--usbip", str(port)]
     if args.uf2:
         run += ["--uf2", args.uf2]
     t0 = time.time()
     if subprocess.run(run).returncode:
         sys.exit("the device did not start")
     try:
-        body(check, name, d, out)
+        body(check, name, d, out, port)
         bootsel(check, name, d)
     finally:
         subprocess.run([sys.executable, str(LAUNCHER), "stop", "-n", name],
@@ -316,7 +319,49 @@ def main():
     return 1 if check.failed else 0
 
 
-def body(check, name, d, out):
+def free_port():
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+def usbip_cli(port, command):
+    """the CLI over USB/IP, as the PC's kernel would drive it: configured,
+    DTR up, the session's banner read, @command, its answer, DTR down"""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import fo_usbip
+    c = fo_usbip.UsbipClient(port=port)
+    try:
+        c.control(0x00, 9, 1, 0)                    # SET_CONFIGURATION
+        c.control(0x21, 0x22, 3, 0)                 # DTR, RTS
+        c.sock.settimeout(1.5)
+
+        def read_in(rounds):
+            out = b""
+            for _ in range(rounds):
+                c.submit_in(2, 64)
+                try:
+                    out += c.receive()[3]
+                except socket.timeout:
+                    break
+            return out
+        read_in(80)                                 # the banner
+        c.sock.settimeout(5)
+        c.submit(2, False, data=command.encode() + b"\r")
+        while c.receive()[3] != b"":                # the OUT's reply
+            pass
+        c.sock.settimeout(1.5)
+        answer = read_in(10)
+        c.sock.settimeout(5)
+        c.control(0x21, 0x22, 0, 0, pending=[])     # DTR down
+        return answer.decode("utf-8", "replace")
+    finally:
+        c.close()
+
+
+def body(check, name, d, out, port):
     # -------------------------------------------------------- the log
     check("the firmware starts", wait_log(d, r"Startup complete", 30))
     text = log_text(d)
@@ -453,9 +498,18 @@ def body(check, name, d, out):
     found = until(lambda: "flipper-one: USB: 37c1:f101" in
                   (d / "qemu.out").read_text(errors="replace"), 10)
     check("a computer plugged in enumerates the MCU's USB (37C1:F101)", found)
-    text = cli(d, "help", r"Available commands:(.|\n)*gpio", 10, usb=True)
+    # (to the prompt after it: a transmission left half-read stays the
+    # firmware's until the next reset, which then leaves its USB CLI mute)
+    text = cli(d, "help", r"Available commands:(.|\n)*gpio(.|\n)*control>:",
+               10, usb=True)
     check("the CLI answers on its USB serial port",
           "Available commands" in text, text[-200:])
+    try:
+        text = usbip_cli(port, "uptime")
+    except (OSError, ValueError) as e:
+        text = f"({e})"
+    check("over USB/IP, the PC's side: the CLI answers", "Uptime:" in text,
+          text[-200:])
     panel.s.sendall(b"usb 0\n")
 
     # ---------------------------------------------- the log, at the end

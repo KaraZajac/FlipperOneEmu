@@ -14,6 +14,16 @@
  * what the program writes to the bulk OUT endpoint, what the bulk IN
  * endpoint gives to the program.
  *
+ * It can also give the device to the PC's own kernel, over USB/IP (Linux's
+ * usbip protocol, on the usbip chardev: the launcher's --usbip PORT): there
+ * `usbip attach` (or FlipperZeroEmu's scripts/usbip_attach.py) makes it a
+ * real USB device, cdc_acm binds /dev/ttyACM*, the boot ROM's drive mounts,
+ * picotool finds it. The computer here keeps what only the bus does (the
+ * reset, the address: vhci-hcd answers SET_ADDRESS on its side); each URB
+ * that comes becomes transactions, a control one through the control
+ * transfer above, a bulk or interrupt one on its endpoint, done when the
+ * firmware gives or takes the data. Meanwhile the CDC bridge stands aside.
+ *
  * It drives the controller (rp2350_usb.c) a transaction at a time, on a
  * timer of the virtual clock. The firmware relies on being fast next to the
  * bus: on the chip its interrupt handler has taken a packet (and, say, a
@@ -30,6 +40,7 @@
  */
 #include "qemu/osdep.h"
 #include "qemu/error-report.h"
+#include "qemu/queue.h"
 #include "qemu/timer.h"
 #include "qapi/error.h"
 #include "hw/core/qdev-properties.h"
@@ -55,10 +66,20 @@ enum { C_IDLE, C_SETUP, C_DATA, C_STATUS };
 enum { E_DEV8, E_ADDRESS, E_DEV, E_CONFIG9, E_CONFIG, E_LANG, E_STR1,
        E_STR2, E_STR3, E_SET_CONFIG, E_LINE_CODING, E_DONE };
 
+typedef struct FoUsbUrb {
+    uint32_t seqnum, flags, len, done;
+    uint32_t start_frame, npackets;
+    int ep, dir;                        /* dir 1: IN */
+    uint8_t setup[8];
+    uint8_t *data;
+    bool started, unlinked, zlp_done;
+    QTAILQ_ENTRY(FoUsbUrb) next;
+} FoUsbUrb;
+
 typedef struct FoUsbHost {
     DeviceState parent_obj;
 
-    CharFrontend cdc_chr;
+    CharFrontend cdc_chr, usbip_chr;
     RP2350State *soc;
     QEMUTimer *timer;
     bool cable;                         /* a computer's data lines are on it */
@@ -89,6 +110,16 @@ typedef struct FoUsbHost {
     int dtr_sent;                       /* -1: not yet */
     GByteArray *to_dev, *to_chr;
     int64_t idle_ns;                    /* how long the IN endpoint naps */
+    uint16_t ep_mps[2][16];             /* [IN][ep]: max packet sizes */
+    uint8_t itf_class[16][3];           /* each interface's class */
+    int n_itf;
+
+    /* USB/IP */
+    bool usbip_open, imported;
+    GByteArray *usbip_rx, *usbip_tx;
+    guint usbip_watch;
+    QTAILQ_HEAD(, FoUsbUrb) urbs;
+    FoUsbUrb *ctl_urb;                  /* the URB the control transfer is */
     int64_t waiting_since;              /* for the CPU's handler, since */
     guint watch;
 } FoUsbHost;
@@ -138,7 +169,7 @@ static bool ctl_step(FoUsbHost *h, int64_t *wait)
     RP2350State *s = h->soc;
     bool in = h->setup[0] & 0x80;
     uint8_t zlp[64];
-    RP2UsbResult r;
+    RP2UsbResult r = RP2_USB_TIMEOUT;
     int n;
 
     *wait = STEP_NS;
@@ -247,13 +278,22 @@ static void cdc_find(FoUsbHost *h)
     int cls = -1, itf = -1;
 
     h->cdc_comm = h->cdc_in = h->cdc_out = -1;
+    h->n_itf = 0;
+    memset(h->ep_mps, 0, sizeof(h->ep_mps));
+    h->ep_mps[0][0] = h->ep_mps[1][0] = h->ep0_size;
     for (int i = 0; i + 2 <= h->config_len && h->config[i] >= 2;
          i += h->config[i]) {
         const uint8_t *d = h->config + i;
 
+        if (d[1] == 5 && d[0] >= 7) {           /* ENDPOINT: its size */
+            h->ep_mps[d[2] >> 7][d[2] & 0x0f] = MAX(d[4] | (d[5] & 7) << 8, 8);
+        }
         if (d[1] == 4 && d[0] >= 9) {           /* INTERFACE */
             itf = d[2];
             cls = d[5];
+            if (d[3] == 0 && h->n_itf < 16) {   /* (not an alternate) */
+                memcpy(h->itf_class[h->n_itf++], d + 5, 3);
+            }
             if (cls == 0x02 && d[6] == 0x02 && h->cdc_comm < 0) {
                 h->cdc_comm = itf;              /* ACM */
             }
@@ -281,6 +321,448 @@ static void cdc_kick(FoUsbHost *h)
     }
 }
 
+/* ------------------------------------------------------------ USB/IP */
+
+#define USBIP_VERSION       0x0111
+#define USBIP_BUSID         "1-1"
+#define USBIP_CMD_SUBMIT    1
+#define USBIP_CMD_UNLINK    2
+#define USBIP_RET_SUBMIT    3
+#define USBIP_RET_UNLINK    4
+#define URB_ZERO_PACKET     0x0040
+#define ERR_EPIPE           (-32)       /* Linux's errno: the client is Linux */
+#define ERR_EOVERFLOW       (-75)
+#define ERR_ECONNRESET      (-104)
+
+static void usbip_flush(FoUsbHost *h);
+
+static gboolean usbip_writable(void *do_not_use, GIOCondition cond,
+                               void *opaque)
+{
+    FoUsbHost *h = opaque;
+
+    h->usbip_watch = 0;
+    usbip_flush(h);
+    return G_SOURCE_REMOVE;
+}
+
+static void usbip_flush(FoUsbHost *h)
+{
+    while (h->usbip_tx->len) {
+        int w = qemu_chr_fe_write(&h->usbip_chr, h->usbip_tx->data,
+                                  h->usbip_tx->len);
+
+        if (w <= 0) {
+            if (!h->usbip_open) {
+                g_byte_array_set_size(h->usbip_tx, 0);
+            } else if (!h->usbip_watch) {
+                h->usbip_watch = qemu_chr_fe_add_watch(&h->usbip_chr,
+                                     G_IO_OUT | G_IO_HUP, usbip_writable, h);
+            }
+            return;
+        }
+        g_byte_array_remove_range(h->usbip_tx, 0, w);
+    }
+}
+
+static void put_be16(GByteArray *b, uint16_t v)
+{
+    uint8_t x[2];
+
+    stw_be_p(x, v);
+    g_byte_array_append(b, x, 2);
+}
+
+static void put_be32(GByteArray *b, uint32_t v)
+{
+    uint8_t x[4];
+
+    stl_be_p(x, v);
+    g_byte_array_append(b, x, 4);
+}
+
+static void put_zero(GByteArray *b, int n)
+{
+    static const uint8_t z[256];
+
+    g_byte_array_append(b, z, n);
+}
+
+/* the 0x138-byte device block of OP_REP_DEVLIST and OP_REP_IMPORT */
+static void usbip_put_device(FoUsbHost *h, GByteArray *b)
+{
+    char path[256] = "/sys/devices/platform/flipperoneemu/usb1/" USBIP_BUSID;
+    char busid[32] = USBIP_BUSID;
+    uint8_t n_itf = h->n_itf;
+
+    g_byte_array_append(b, (uint8_t *)path, sizeof(path));
+    g_byte_array_append(b, (uint8_t *)busid, sizeof(busid));
+    put_be32(b, 1);                                 /* busnum */
+    put_be32(b, 2);                                 /* devnum */
+    put_be32(b, 2);                                 /* USB_SPEED_FULL */
+    put_be16(b, lduw_le_p(&h->dev_desc[8]));        /* idVendor */
+    put_be16(b, lduw_le_p(&h->dev_desc[10]));       /* idProduct */
+    put_be16(b, lduw_le_p(&h->dev_desc[12]));       /* bcdDevice */
+    g_byte_array_append(b, &h->dev_desc[4], 3);     /* class, sub, proto */
+    g_byte_array_append(b, &h->config[5], 1);       /* bConfigurationValue */
+    g_byte_array_append(b, &h->dev_desc[17], 1);    /* bNumConfigurations */
+    g_byte_array_append(b, &n_itf, 1);
+}
+
+static bool usbip_ready(FoUsbHost *h)
+{
+    return h->state == H_RUN && h->config_len >= 9;
+}
+
+static void usbip_free_urb(FoUsbHost *h, FoUsbUrb *u)
+{
+    QTAILQ_REMOVE(&h->urbs, u, next);
+    g_free(u->data);
+    g_free(u);
+}
+
+static void usbip_complete(FoUsbHost *h, FoUsbUrb *u, int32_t status)
+{
+    GByteArray *b = h->usbip_tx;
+    uint32_t actual = u->dir ? u->done : (status ? u->done : u->len);
+
+    if (!u->unlinked && h->imported) {
+        put_be32(b, USBIP_RET_SUBMIT);
+        put_be32(b, u->seqnum);
+        put_be32(b, 0);                         /* devid, direction, ep: 0 */
+        put_be32(b, 0);
+        put_be32(b, 0);
+        put_be32(b, status);
+        put_be32(b, actual);
+        put_be32(b, u->start_frame);            /* what the client sent */
+        put_be32(b, u->npackets);
+        put_be32(b, 0);                         /* error_count */
+        put_zero(b, 8);
+        if (u->dir) {
+            g_byte_array_append(b, u->data, u->done);
+        }
+        usbip_flush(h);
+    }
+    if (h->ctl_urb == u) {
+        h->ctl_urb = NULL;
+    }
+    usbip_free_urb(h, u);
+}
+
+/* the control transfer that was a URB's ended */
+static void usbip_ctl_done(FoUsbHost *h)
+{
+    FoUsbUrb *u = h->ctl_urb;
+
+    if (u->dir) {
+        u->done = MIN(h->ctl_got, u->len);
+        memcpy(u->data, h->ctl_buf, u->done);
+    } else {
+        u->done = h->ctl_ok ? u->len : 0;
+    }
+    usbip_complete(h, u, h->ctl_ok ? 0 : ERR_EPIPE);
+}
+
+static void usbip_drop_urbs(FoUsbHost *h)
+{
+    FoUsbUrb *u, *tmp;
+
+    QTAILQ_FOREACH_SAFE(u, &h->urbs, next, tmp) {
+        if (u == h->ctl_urb) {
+            h->ctl = C_IDLE;
+            h->ctl_urb = NULL;
+        }
+        usbip_free_urb(h, u);
+    }
+}
+
+/* a bulk or interrupt transaction for the URB first on its endpoint:
+ * whether it moved */
+static bool usbip_transact(FoUsbHost *h, FoUsbUrb *u)
+{
+    int mps = h->ep_mps[u->dir][u->ep] ?: 64;
+    uint8_t pkt[64];
+    RP2UsbResult r;
+    int n = 0;
+
+    if (u->dir) {
+        r = rp2350_usb_in(h->soc, h->addr, u->ep, pkt, &n);
+        if (r == RP2_USB_ACK) {
+            int take = MIN(n, (int)(u->len - u->done));
+
+            memcpy(u->data + u->done, pkt, take);
+            u->done += take;
+            if (n > take) {
+                usbip_complete(h, u, ERR_EOVERFLOW);        /* babble */
+            } else if (n < mps || u->done >= u->len) {
+                usbip_complete(h, u, 0);
+            }
+            return true;
+        }
+    } else {
+        bool want_zlp = (u->flags & URB_ZERO_PACKET) && u->len &&
+                        !(u->len % mps);
+
+        n = MIN(mps, (int)(u->len - u->done));
+        r = rp2350_usb_out(h->soc, h->addr, u->ep, u->data + u->done, n);
+        if (r == RP2_USB_ACK) {
+            u->done += n;
+            if (!n) {
+                u->zlp_done = true;
+            }
+            if (u->done >= u->len && (!want_zlp || u->zlp_done || !n) &&
+                (u->len || u->zlp_done)) {
+                usbip_complete(h, u, 0);
+            }
+            return true;
+        }
+    }
+    if (r == RP2_USB_STALL) {
+        usbip_complete(h, u, ERR_EPIPE);
+        return true;
+    }
+    return false;
+}
+
+/* the imported device's next transactions; the time to the next look */
+static int64_t usbip_step(FoUsbHost *h)
+{
+    FoUsbUrb *u, *tmp;
+    uint32_t busy = 0;
+    bool moved = false, waiting = false;
+    int64_t wait;
+
+    if (h->ctl != C_IDLE) {
+        if (ctl_step(h, &wait) && h->ctl_urb) {
+            usbip_ctl_done(h);
+        }
+        return wait;
+    }
+    QTAILQ_FOREACH(u, &h->urbs, next) {     /* control: in order */
+        if (u->ep == 0 && !u->started) {
+            u->started = true;
+            h->ctl_urb = u;
+            ctl_start(h, u->setup[0], u->setup[1], lduw_le_p(&u->setup[2]),
+                      lduw_le_p(&u->setup[4]),
+                      MIN(lduw_le_p(&u->setup[6]), u->len),
+                      u->dir ? NULL : u->data);
+            return STEP_NS;
+        }
+    }
+    QTAILQ_FOREACH_SAFE(u, &h->urbs, next, tmp) {
+        uint32_t key = 1u << ((u->dir << 4) | u->ep);
+
+        if (u->ep == 0 || (busy & key)) {
+            continue;
+        }
+        busy |= key;
+        moved |= usbip_transact(h, u);
+        waiting = true;
+    }
+    return moved ? STEP_NS : waiting ? NAK_NS : -1;
+}
+
+static void usbip_reply_import(FoUsbHost *h, bool ok)
+{
+    GByteArray *b = h->usbip_tx;
+
+    put_be16(b, USBIP_VERSION);
+    put_be16(b, 0x0003);                    /* OP_REP_IMPORT */
+    put_be32(b, ok ? 0 : 1);
+    if (ok) {
+        usbip_put_device(h, b);
+    }
+    usbip_flush(h);
+}
+
+static void usbip_import(FoUsbHost *h, const char *busid)
+{
+    if (strcmp(busid, USBIP_BUSID) || !usbip_ready(h)) {
+        usbip_reply_import(h, false);
+        return;
+    }
+    usbip_drop_urbs(h);
+    h->imported = true;
+    usbip_reply_import(h, true);
+    info_report("flipper-one: USB: %04x:%04x attached to the PC over USB/IP",
+                lduw_le_p(&h->dev_desc[8]), lduw_le_p(&h->dev_desc[10]));
+}
+
+static void usbip_reply_devlist(FoUsbHost *h)
+{
+    GByteArray *b = h->usbip_tx;
+    bool ready = usbip_ready(h);
+
+    put_be16(b, USBIP_VERSION);
+    put_be16(b, 0x0005);                    /* OP_REP_DEVLIST */
+    put_be32(b, 0);
+    put_be32(b, ready ? 1 : 0);
+    if (ready) {
+        usbip_put_device(h, b);
+        for (int i = 0; i < h->n_itf; i++) {
+            g_byte_array_append(b, h->itf_class[i], 3);
+            put_zero(b, 1);
+        }
+    }
+    usbip_flush(h);
+}
+
+static void usbip_unlink(FoUsbHost *h, uint32_t seqnum, uint32_t target)
+{
+    GByteArray *b = h->usbip_tx;
+    int32_t status = 0;
+    FoUsbUrb *u;
+
+    QTAILQ_FOREACH(u, &h->urbs, next) {
+        if (u->seqnum == target && !u->unlinked) {
+            status = ERR_ECONNRESET;
+            if (u == h->ctl_urb) {
+                u->unlinked = true;         /* it ends on the bus, untold */
+            } else {
+                usbip_free_urb(h, u);
+            }
+            break;
+        }
+    }
+    put_be32(b, USBIP_RET_UNLINK);
+    put_be32(b, seqnum);
+    put_zero(b, 12);
+    put_be32(b, status);
+    put_zero(b, 24);
+    usbip_flush(h);
+}
+
+/* what the client sent; false on a protocol error */
+static bool usbip_parse(FoUsbHost *h)
+{
+    GByteArray *in = h->usbip_rx;
+
+    while (in->len >= 8) {
+        const uint8_t *p = in->data;
+        uint32_t cmd, seqnum;
+
+        if (!h->imported) {
+            uint16_t code = lduw_be_p(p + 2);
+
+            if (code == 0x8005) {           /* OP_REQ_DEVLIST */
+                g_byte_array_remove_range(in, 0, 8);
+                usbip_reply_devlist(h);
+            } else if (code == 0x8003) {    /* OP_REQ_IMPORT */
+                char busid[33];
+
+                if (in->len < 40) {
+                    return true;
+                }
+                memcpy(busid, p + 8, 32);
+                busid[32] = 0;
+                g_byte_array_remove_range(in, 0, 40);
+                usbip_import(h, busid);
+            } else {
+                return false;
+            }
+            continue;
+        }
+        if (in->len < 48) {
+            return true;
+        }
+        cmd = ldl_be_p(p);
+        seqnum = ldl_be_p(p + 4);
+        if (cmd == USBIP_CMD_SUBMIT) {
+            uint32_t dir = ldl_be_p(p + 12), len = ldl_be_p(p + 24);
+            FoUsbUrb *u;
+
+            if (len > 1024 * 1024) {
+                return false;
+            }
+            if (!dir && in->len < 48 + len) {
+                return true;                /* the OUT data, still to come */
+            }
+            u = g_new0(FoUsbUrb, 1);
+            u->seqnum = seqnum;
+            u->dir = dir ? 1 : 0;
+            u->ep = ldl_be_p(p + 16) & 0xf;
+            u->flags = ldl_be_p(p + 20);
+            u->len = len;
+            u->start_frame = ldl_be_p(p + 28);
+            u->npackets = ldl_be_p(p + 32);
+            memcpy(u->setup, p + 40, 8);
+            u->data = g_malloc0(MAX(len, 1));
+            if (!dir) {
+                memcpy(u->data, p + 48, len);
+            }
+            g_byte_array_remove_range(in, 0, 48 + (dir ? 0 : len));
+            QTAILQ_INSERT_TAIL(&h->urbs, u, next);
+            cdc_kick(h);
+        } else if (cmd == USBIP_CMD_UNLINK) {
+            uint32_t target = ldl_be_p(p + 20);
+
+            g_byte_array_remove_range(in, 0, 48);
+            usbip_unlink(h, seqnum, target);
+        } else {
+            return false;
+        }
+    }
+    return true;
+}
+
+static int usbip_can_receive(void *opaque)
+{
+    FoUsbHost *h = opaque;
+
+    return h->usbip_rx->len < 2 * 1024 * 1024 ? 64 * 1024 : 0;
+}
+
+static void usbip_receive(void *opaque, const uint8_t *buf, int size)
+{
+    FoUsbHost *h = opaque;
+
+    g_byte_array_append(h->usbip_rx, buf, size);
+    if (!usbip_parse(h)) {
+        warn_report("flipper-one: USB/IP: a protocol error; closing");
+        qemu_chr_fe_disconnect(&h->usbip_chr);
+    }
+}
+
+static void host_look(FoUsbHost *h);
+
+static void usbip_end(FoUsbHost *h)
+{
+    bool was = h->imported;
+
+    h->imported = false;
+    usbip_drop_urbs(h);
+    g_byte_array_set_size(h->usbip_rx, 0);
+    if (was) {
+        info_report("flipper-one: USB: the PC let go of it (USB/IP)");
+        if (h->state != H_OFF) {            /* back to this computer: a reset */
+            h->state = H_OFF;
+            timer_del(h->timer);
+            rp2350_usb_detach(h->soc);
+            host_look(h);
+        }
+    }
+}
+
+static void usbip_event(void *opaque, QEMUChrEvent event)
+{
+    FoUsbHost *h = opaque;
+
+    switch (event) {
+    case CHR_EVENT_OPENED:
+        h->usbip_open = true;
+        g_byte_array_set_size(h->usbip_rx, 0);
+        g_byte_array_set_size(h->usbip_tx, 0);
+        break;
+    case CHR_EVENT_CLOSED:
+        h->usbip_open = false;
+        g_byte_array_set_size(h->usbip_tx, 0);
+        usbip_end(h);
+        break;
+    default:
+        break;
+    }
+}
+
 /* the running device: a control transfer (DTR), else bulk OUT, else IN */
 static int64_t run_step(FoUsbHost *h)
 {
@@ -289,6 +771,9 @@ static int64_t run_step(FoUsbHost *h)
     int64_t wait;
     int n;
 
+    if (h->imported) {
+        return usbip_step(h);           /* the PC's kernel has it */
+    }
     if (h->ctl != C_IDLE) {
         ctl_step(h, &wait);
         return wait;
@@ -543,6 +1028,12 @@ static void host_look(FoUsbHost *h)
         timer_del(h->timer);
         rp2350_usb_detach(h->soc);
         g_byte_array_set_size(h->to_dev, 0);
+        if (h->imported) {                  /* the device left: the PC's
+                                               client has nothing more */
+            h->imported = false;
+            usbip_drop_urbs(h);
+            qemu_chr_fe_disconnect(&h->usbip_chr);
+        }
     }
 }
 
@@ -596,10 +1087,18 @@ static void usb_host_realize(DeviceState *dev, Error **errp)
     h->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, host_step, h);
     h->to_dev = g_byte_array_new();
     h->to_chr = g_byte_array_new();
+    h->usbip_rx = g_byte_array_new();
+    h->usbip_tx = g_byte_array_new();
+    QTAILQ_INIT(&h->urbs);
     h->cdc_comm = h->cdc_in = h->cdc_out = -1;
     if (qemu_chr_fe_backend_connected(&h->cdc_chr)) {
         qemu_chr_fe_set_handlers(&h->cdc_chr, cdc_can_receive, cdc_receive,
                                  cdc_event, NULL, h, NULL, true);
+    }
+    if (qemu_chr_fe_backend_connected(&h->usbip_chr)) {
+        qemu_chr_fe_set_handlers(&h->usbip_chr, usbip_can_receive,
+                                 usbip_receive, usbip_event, NULL, h, NULL,
+                                 true);
     }
 }
 
@@ -614,6 +1113,7 @@ void fo_usb_host_attach(DeviceState *dev, struct RP2350State *soc)
 
 static const Property usb_host_properties[] = {
     DEFINE_PROP_CHR("cdc", FoUsbHost, cdc_chr),
+    DEFINE_PROP_CHR("usbip", FoUsbHost, usbip_chr),
 };
 
 static void usb_host_class_init(ObjectClass *oc, const void *data)

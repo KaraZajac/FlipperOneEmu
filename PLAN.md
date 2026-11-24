@@ -63,7 +63,7 @@ screen and its CLI.
 - ◐ USB: the RP2350's controller as a device, and a computer at the cable's end that
       enumerates it: the firmware's CDC port (`37C1:F101`) on `devices/NAME/usb.sock`
       (2026-11-24); BOOTSEL: the boot ROM's own USB boot enumerates (2026-11-24); USB/IP,
-      as FlipperZeroEmu's USB is (the boot ROM's drive and picotool on the PC), to come
+      as FlipperZeroEmu's USB is: the device on this PC's own kernel (2026-11-24)
 - ◐ Checks: `scripts/smoke_test.py` (2026-11-24): a throwaway device through its
       sockets: the boot and each chip, the host link and a frame shown pixel for
       pixel, the LEDs and the motor, the CLI and the firmware's unit tests, the
