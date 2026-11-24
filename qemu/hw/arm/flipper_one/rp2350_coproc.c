@@ -178,7 +178,88 @@ done:
     }
 }
 
-/* the GPIO coprocessor and the DCP: logged, until they are modelled */
+/*
+ * The GPIO coprocessor: SIO's OUT and OE (and IN) by instruction, as the
+ * SDK's hardware/gpio_coproc.h gives them.  CRm: 0/1 OUT low/high pins,
+ * 4/5 OE, 8/9 IN (MCRR/MRRC: c0, c4, c8 for both words).  Opc1 0-3: put,
+ * xor, set, clr; MCRR 4-7: one pin (Rt) put, or xor/set/clr if Rt2; MCR
+ * 5-7: one pin xor/set/clr; MCRR 8-11: put/xor/set/clr the word Rt2 says
+ * (0 low, 1 high) with Rt.
+ */
+static uint32_t gpioc_op(uint32_t old, int op, uint32_t v)
+{
+    switch (op & 3) {
+    case 0: return v;
+    case 1: return old ^ v;
+    case 2: return old | v;
+    default: return old & ~v;
+    }
+}
+
+static void rp2350_gpioc(void *opaque, ARMCPU *cpu, ARMMCoprocInsn *in)
+{
+    RP2350State *s = ((RP2350Core *)opaque)->soc;
+    RP2SIO *o = &s->sio;
+    uint32_t *reg = (in->crm & 4) ? o->oe : o->out;
+    uint32_t a = in->value, b = in->value >> 32;
+
+    switch (in->kind) {
+    case ARM_MCOPROC_MRC:
+        if (in->opc1 == 0) {
+            in->value = in->crm & 8 ? rp2350_sio_in(s, in->crm & 1)
+                                    : reg[in->crm & 1];
+            return;
+        }
+        break;
+    case ARM_MCOPROC_MRRC:
+        if (in->opc1 == 0) {
+            in->value = in->crm & 8
+                ? deposit64(rp2350_sio_in(s, 0), 32, 32, rp2350_sio_in(s, 1))
+                : deposit64(reg[0], 32, 32, reg[1]);
+            return;
+        }
+        break;
+    case ARM_MCOPROC_MCR:
+        if (in->opc1 <= 3) {                        /* one word */
+            reg[in->crm & 1] = gpioc_op(reg[in->crm & 1], in->opc1, a);
+            return;
+        }
+        if (in->opc1 >= 5 && in->opc1 <= 7 && a < 64) {   /* one pin */
+            reg[a >> 5] = gpioc_op(reg[a >> 5], in->opc1 - 4, 1u << (a & 31));
+            return;
+        }
+        break;
+    case ARM_MCOPROC_MCRR:
+        if (in->opc1 <= 3) {                        /* both words */
+            reg[0] = gpioc_op(reg[0], in->opc1, a);
+            reg[1] = gpioc_op(reg[1], in->opc1, b);
+            return;
+        }
+        if (in->opc1 == 4 && a < 64) {              /* one pin: put */
+            reg[a >> 5] = deposit32(reg[a >> 5], a & 31, 1, b & 1);
+            return;
+        }
+        if (in->opc1 >= 5 && in->opc1 <= 7 && a < 64) {  /* if Rt2 */
+            if (b) {
+                reg[a >> 5] = gpioc_op(reg[a >> 5], in->opc1 - 4,
+                                       1u << (a & 31));
+            }
+            return;
+        }
+        if (in->opc1 >= 8 && in->opc1 <= 11) {      /* by index */
+            reg[b & 1] = gpioc_op(reg[b & 1], in->opc1 - 8, a);
+            return;
+        }
+        break;
+    default:
+        break;
+    }
+    coproc_log(LOG_UNIMP, cpu, in, "a GPIO coprocessor instruction this "
+               "model lacks");
+    in->value = 0;
+}
+
+/* the DCP: logged, until it is modelled */
 static void rp2350_coproc_unimp(void *opaque, ARMCPU *cpu, ARMMCoprocInsn *in)
 {
     coproc_log(LOG_UNIMP, cpu, in, "not modelled yet");
@@ -191,7 +272,7 @@ void rp2350_coproc_init(RP2350State *s, int core)
 
     s->core[core].soc = s;
     s->core[core].index = core;
-    arm_m_set_coproc(cpu, 0, rp2350_coproc_unimp, &s->core[core], true);
+    arm_m_set_coproc(cpu, 0, rp2350_gpioc, &s->core[core], true);
     arm_m_set_coproc(cpu, 4, rp2350_coproc_unimp, &s->core[core], false);
     arm_m_set_coproc(cpu, 7, rp2350_rcp, &s->core[core], false);
 }

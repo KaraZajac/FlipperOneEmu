@@ -13,15 +13,17 @@ screen and its CLI.
 - ◐ The RP2350's memory map: boot ROM (Raspberry Pi's release A4), 520 KiB of SRAM,
       16 MiB of XIP flash, the USB controller's RAM, every peripheral block (what is not
       modelled logs), and the atomic aliases (+0x1000 XOR, +0x2000 set, +0x3000 clear)
-- ◐ Cortex-M33 core 0 (Secure, FPU, DSP, 8 MPU and 8 SAU regions) with the RP2350's
-      IDAU; core 1 as far as the boot ROM's launch handshake through the SIO FIFO
+- ☑ Both Cortex-M33s (Secure, FPU, DSP, 8 MPU and 8 SAU regions) with the RP2350's
+      IDAU; PSM powers core 1, which waits in its ROM (2026-11-23)
 - ◐ The coprocessors: GPIO (CP0), double-precision (CP4), redundancy (CP7, the boot
-      ROM's). QEMU patch 0001 lets a machine have them; the RCP is modelled
-- ☐ Boot: OTP, QMI and the XIP translation of partitions, the boot ROM's flash
-      functions, watchdog and POWMAN scratch, try-before-you-buy images
+      ROM's). QEMU patch 0001 lets a machine have them; RCP and GPIO are modelled, the
+      DCP logs
+- ◐ Boot: the boot ROM verifies the partition table and starts the firmware from
+      partition A (QMI direct mode, the flash, ATRANS, SHA-256); OTP reads as blank,
+      try-before-you-buy images and the watchdog's reboots to come
 - ◐ Clocks, resets, PSM, XOSC, PLLs, ROSC, TRNG, SHA-256, POWMAN, watchdog, SIO
-      (GPIO, FIFOs, spinlocks, doorbells) answer as the boot ROM needs; TICKS,
-      TIMER0/1, IO_BANK0, PADS to come
+      (GPIO, FIFOs, spinlocks, doorbells), BOOTRAM's locks, TIMER0/1 answer; IO_BANK0
+      and PADS keep what is written; TICKS, DWT's cycle counter to come
 - ☐ PIO (three blocks, the RP2350's instructions), DMA, HSTX
 - ☐ The JD9853 panel and its tearing signal: the screen to a window and to PNG
 - ☐ DesignWare I2C (master and slave); the PL011 UARTs (the CLI on UART1)

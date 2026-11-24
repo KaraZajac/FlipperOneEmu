@@ -6,7 +6,9 @@
  *   TRNG      its entropy registers always hold fresh random words (QEMU's
  *             guest random source: -seed makes them repeat)
  *   SHA256    the accelerator: SHA-256 a 64-byte block at a time, as the
- *             words come, with its byte swap
+ *             words come, with its byte swap of what is written (the SUM
+ *             registers are the hash's words as they are: the boot ROM and
+ *             the SDK swap them themselves)
  *   POWMAN    registers that want the password 0x5afe in their top half
  *             (scratch and boot registers aside); a power-on reset
  *   WATCHDOG  its scratch and reason registers (no timer yet)
@@ -45,6 +47,9 @@ static void rp2_block_write(void *opaque, hwaddr addr, uint64_t value,
     hwaddr reg = addr & 0xffc;
     uint32_t v = value;
 
+    if (b->raw && !(addr >> 12) && b->raw(b, addr, value, size)) {
+        return;
+    }
     if (size == 1) {
         v = (v & 0xff) * 0x01010101u;
     } else if (size == 2) {
@@ -217,12 +222,22 @@ static uint32_t sha256_read(RP2Block *b, hwaddr reg)
     switch (reg) {
     case 0x0:                                       /* CSR */
         return (csr & SHA_CSR_KEEP) | SHA_CSR_WDATA_RDY |
-               (h->n == 0 ? SHA_CSR_SUM_VLD : 0);
-    case 0x8 ... 0x24:                              /* SUM0..7 */
-        return csr & SHA_CSR_BSWAP ? bswap32(h->h[(reg - 0x8) / 4])
-                                   : h->h[(reg - 0x8) / 4];
+               (h->n == 0 && h->nbytes == 0 ? SHA_CSR_SUM_VLD : 0);
+    case 0x8 ... 0x24:          /* SUM0..7, as computed: BSWAP is input's */
+        return h->h[(reg - 0x8) / 4];
     default:
         return 0;
+    }
+}
+
+static void sha256_word(RP2Block *b, uint32_t value)
+{
+    RP2SHA *h = &RS(b)->sha;
+
+    h->w[h->n++] = b->regs[0] & SHA_CSR_BSWAP ? bswap32(value) : value;
+    if (h->n == 16) {
+        sha_block(h);
+        h->n = 0;
     }
 }
 
@@ -235,17 +250,39 @@ static void sha256_write(RP2Block *b, hwaddr reg, uint32_t value)
         b->regs[0] = value & SHA_CSR_KEEP;
         if (value & SHA_CSR_START) {
             memcpy(h->h, sha_h0, sizeof(h->h));
-            h->n = 0;
+            h->n = h->nbytes = 0;
+            h->acc = 0;
         }
         break;
-    case 0x4:                                       /* WDATA */
-        h->w[h->n++] = b->regs[0] & SHA_CSR_BSWAP ? bswap32(value) : value;
-        if (h->n == 16) {
-            sha_block(h);
-            h->n = 0;
-        }
+    case 0x4:                                       /* WDATA: a whole word */
+        sha256_word(b, value);
         break;
     }
+}
+
+/*
+ * WDATA takes bytes and half-words too, packed into a word in the order
+ * they come (as from consecutive addresses of a little-endian word), which
+ * is then as a word written whole: the boot ROM pads with bytes and ends
+ * with the length's words.
+ */
+static bool sha256_raw(RP2Block *b, hwaddr addr, uint32_t value,
+                       unsigned size)
+{
+    RP2SHA *h = &RS(b)->sha;
+
+    if ((addr & 0xffc) != 0x4 || (size == 4 && h->nbytes == 0)) {
+        return false;
+    }
+    for (unsigned i = 0; i < size; i++) {
+        h->acc |= ((value >> (i * 8)) & 0xff) << (h->nbytes * 8);
+        if (++h->nbytes == 4) {
+            sha256_word(b, h->acc);
+            h->acc = 0;
+            h->nbytes = 0;
+        }
+    }
+    return true;
 }
 
 /* ---------------------------------------------------------------- POWMAN */
@@ -363,7 +400,8 @@ static uint32_t clocks_read(RP2Block *b, hwaddr reg)
 
 /* ------------------------------------------------------------------- PSM */
 
-#define PSM_ALL 0x01ffffffu
+#define PSM_ALL     0x01ffffffu
+#define PSM_PROC1   0x01000000u
 
 static uint32_t psm_read(RP2Block *b, hwaddr reg)
 {
@@ -372,6 +410,66 @@ static uint32_t psm_read(RP2Block *b, hwaddr reg)
         return ~b->regs[1] & PSM_ALL;
     default:
         return reg < 0xc ? b->regs[reg / 4] : 0;
+    }
+}
+
+/* FRCE_OFF.PROC1 holds core 1 off; letting go restarts it in its ROM */
+static void psm_write(RP2Block *b, hwaddr reg, uint32_t value)
+{
+    uint32_t old = b->regs[1];
+
+    switch (reg) {
+    case 0x0: case 0x8:                             /* FRCE_ON, WDSEL */
+        b->regs[reg / 4] = value & PSM_ALL;
+        break;
+    case 0x4:                                       /* FRCE_OFF */
+        b->regs[1] = value & PSM_ALL;
+        if ((old ^ b->regs[1]) & PSM_PROC1) {
+            rp2350_core1_power(b->soc, !(b->regs[1] & PSM_PROC1));
+        }
+        break;
+    }
+}
+
+/* ---------------------------------------------------------------- BOOTRAM */
+
+/*
+ * Its 1 KiB of RAM is a RAM region over this block; the registers: two
+ * write-once words (bits are only set), and eight locks that work as SIO's
+ * spinlocks do (a read claims, a write lets go; BOOTLOCK_STAT has 1 for
+ * unclaimed).
+ */
+#define BOOTRAM_STAT    (0x808 / 4)
+
+static uint32_t bootram_read(RP2Block *b, hwaddr reg)
+{
+    uint32_t bit;
+
+    switch (reg) {
+    case 0x80c ... 0x828:                           /* BOOTLOCKn: claim */
+        bit = 1u << ((reg - 0x80c) / 4);
+        if (!(b->regs[BOOTRAM_STAT] & bit)) {
+            return 0;
+        }
+        b->regs[BOOTRAM_STAT] &= ~bit;
+        return bit;
+    default:
+        return reg >= 0x800 && reg < 0x80c ? b->regs[reg / 4] : 0;
+    }
+}
+
+static void bootram_write(RP2Block *b, hwaddr reg, uint32_t value)
+{
+    switch (reg) {
+    case 0x800: case 0x804:                         /* WRITE_ONCE0/1 */
+        b->regs[reg / 4] |= value;
+        break;
+    case 0x808:                                     /* BOOTLOCK_STAT */
+        b->regs[BOOTRAM_STAT] = value & 0xff;
+        break;
+    case 0x80c ... 0x828:                           /* BOOTLOCKn: let go */
+        b->regs[BOOTRAM_STAT] |= 1u << ((reg - 0x80c) / 4);
+        break;
     }
 }
 
@@ -385,6 +483,7 @@ void rp2350_sys_realize(RP2350State *s)
     rp2_block_init(s, &s->trng, "rp2350.trng", 0x400f0000, trng_read, NULL);
     rp2_block_init(s, &s->sha256, "rp2350.sha256", 0x400f8000,
                    sha256_read, sha256_write);
+    s->sha256.raw = sha256_raw;
     rp2_block_init(s, &s->powman, "rp2350.powman", 0x40100000,
                    powman_read, powman_write);
     rp2_block_init(s, &s->watchdog, "rp2350.watchdog", 0x400d8000,
@@ -396,7 +495,16 @@ void rp2350_sys_realize(RP2350State *s)
                    pll_read, NULL);
     rp2_block_init(s, &s->clocks, "rp2350.clocks", 0x40010000,
                    clocks_read, NULL);
-    rp2_block_init(s, &s->psm, "rp2350.psm", 0x40018000, psm_read, NULL);
+    rp2_block_init(s, &s->psm, "rp2350.psm", 0x40018000, psm_read, psm_write);
+    rp2_block_init(s, &s->bootram_regs, "rp2350.bootram-regs",
+                   RP2350_BOOTRAM_BASE, bootram_read, bootram_write);
+    /* the pins' function selects and pads: kept, as yet */
+    rp2_block_init(s, &s->io_bank0, "rp2350.io_bank0", 0x40028000, NULL, NULL);
+    rp2_block_init(s, &s->io_qspi, "rp2350.io_qspi", 0x40030000, NULL, NULL);
+    rp2_block_init(s, &s->pads_bank0, "rp2350.pads_bank0", 0x40038000,
+                   NULL, NULL);
+    rp2_block_init(s, &s->pads_qspi, "rp2350.pads_qspi", 0x40040000,
+                   NULL, NULL);
 }
 
 void rp2350_sys_reset(RP2350State *s)
@@ -410,7 +518,8 @@ void rp2350_sys_reset(RP2350State *s)
     s->sha256.regs[0] = SHA_CSR_KEEP;               /* BSWAP, DMA_SIZE 2 */
     s->sha256.regs[0] &= ~0x0100u;
     memcpy(s->sha.h, sha_h0, sizeof(s->sha.h));
-    s->sha.n = 0;
+    s->sha.n = s->sha.nbytes = 0;
+    s->sha.acc = 0;
     memset(s->powman.regs, 0, sizeof(s->powman.regs));
     s->powman.regs[POWMAN_CHIP_RESET] = POWMAN_HAD_POR;
     s->powman.regs[0x38 / 4] = 0xf;                 /* STATE */
@@ -432,4 +541,16 @@ void rp2350_sys_reset(RP2350State *s)
     s->clocks.regs[0xbc / 4] = 0xffffffff;          /* ENABLED0/1 */
     s->clocks.regs[0xc0 / 4] = 0xffffffff;
     memset(s->psm.regs, 0, sizeof(s->psm.regs));
+    memset(s->bootram_regs.regs, 0, sizeof(s->bootram_regs.regs));
+    s->bootram_regs.regs[BOOTRAM_STAT] = 0xff;
+    memset(s->io_bank0.regs, 0, sizeof(s->io_bank0.regs));
+    for (int pin = 0; pin < 48; pin++) {
+        s->io_bank0.regs[pin * 2 + 1] = 0x1f;       /* GPIOn_CTRL: NULL */
+    }
+    memset(s->io_qspi.regs, 0, sizeof(s->io_qspi.regs));
+    memset(s->pads_bank0.regs, 0, sizeof(s->pads_bank0.regs));
+    for (int pin = 0; pin < 50; pin++) {            /* GPIOs, SWCLK, SWD */
+        s->pads_bank0.regs[1 + pin] = 0x116;        /* ISO, PDE, SCHMITT */
+    }
+    memset(s->pads_qspi.regs, 0, sizeof(s->pads_qspi.regs));
 }

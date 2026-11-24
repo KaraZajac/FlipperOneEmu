@@ -89,9 +89,10 @@ static void flipper_one_class_init(ObjectClass *oc, const void *data)
     mc->desc = "Flipper One (so far its MCU, a Raspberry Pi RP2350B)";
     mc->init = flipper_one_init;
     mc->default_ram_size = 0;
-    mc->default_cpus = 1;
-    mc->min_cpus = 1;
-    mc->max_cpus = 1;
+    /* the RP2350's two cores (TCG gives a thread to as many as this says) */
+    mc->default_cpus = 2;
+    mc->min_cpus = 2;
+    mc->max_cpus = 2;
     object_class_property_add_str(oc, "flash", flipper_one_get_flash,
                                   flipper_one_set_flash);
     object_class_property_set_description(oc, "flash",

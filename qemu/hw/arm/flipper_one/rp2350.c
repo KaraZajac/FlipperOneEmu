@@ -24,6 +24,8 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/misc/unimp.h"
 #include "target/arm/cpu-qom.h"
+#include "target/arm/cpu.h"
+#include "target/arm/arm-powerctl.h"
 #include "target/arm/tcg/idau.h"
 #include "rp2350.h"
 
@@ -154,14 +156,35 @@ static void rp2350_init(Object *obj)
     RP2350State *s = RP2350(obj);
 
     object_initialize_child(obj, "cpu0", &s->cpu[0], TYPE_ARMV7M);
+    object_initialize_child(obj, "cpu1", &s->cpu[1], TYPE_ARMV7M);
     s->sysclk = qdev_init_clock_in(DEVICE(obj), "sysclk", NULL, NULL, 0);
+}
+
+/* a peripheral's interrupt line goes to both cores' NVICs */
+static void rp2350_irq_set(void *opaque, int n, int level)
+{
+    RP2350State *s = opaque;
+
+    for (int c = 0; c < ARRAY_SIZE(s->cpu); c++) {
+        qemu_set_irq(qdev_get_gpio_in(DEVICE(&s->cpu[c]), n), level);
+    }
+}
+
+void rp2350_core1_power(RP2350State *s, bool on)
+{
+    ARMCPU *cpu = s->cpu[1].cpu;
+
+    if (on) {
+        arm_set_cpu_on_and_reset(cpu->mp_affinity);
+    } else {
+        arm_set_cpu_off(cpu->mp_affinity);
+    }
 }
 
 static void rp2350_realize(DeviceState *dev, Error **errp)
 {
     RP2350State *s = RP2350(dev);
     Object *obj = OBJECT(dev);
-    DeviceState *armv7m = DEVICE(&s->cpu[0]);
 
     if (!s->bootrom) {
         error_setg(errp, "rp2350: no boot ROM (bootrom=FILE, 32 KiB)");
@@ -180,25 +203,10 @@ static void rp2350_realize(DeviceState *dev, Error **errp)
     }
     memory_region_add_subregion(&s->bus, RP2350_ROM_BASE, &s->rom);
 
-    /* the flash: erased, then the image (its first bytes) */
-    if (!memory_region_init_rom(&s->xip, obj, "rp2350.flash",
-                                RP2350_FLASH_SIZE, errp)) {
+    /* the flash: erased, then the image; XIP through QMI's windows */
+    if (!rp2350_qmi_realize(s, errp)) {
         return;
     }
-    memset(memory_region_get_ram_ptr(&s->xip), 0xff, RP2350_FLASH_SIZE);
-    if (s->flash &&
-        !rp2350_load(&s->xip, s->flash, RP2350_FLASH_SIZE, "flash", errp)) {
-        return;
-    }
-    memory_region_add_subregion(&s->bus, RP2350_XIP_BASE, &s->xip);
-    memory_region_init_alias(&s->xip_nocache, obj, "rp2350.xip-nocache",
-                             &s->xip, 0, RP2350_FLASH_SIZE);
-    memory_region_add_subregion(&s->bus, RP2350_XIP_NOCACHE_BASE,
-                                &s->xip_nocache);
-    memory_region_init_alias(&s->xip_notrans, obj, "rp2350.xip-notranslate",
-                             &s->xip, 0, RP2350_FLASH_SIZE);
-    memory_region_add_subregion(&s->bus, RP2350_XIP_NOTRANS_BASE,
-                                &s->xip_notrans);
 
     /* the boot ROM works in the USB controller's RAM too */
     if (!memory_region_init_ram(&s->xip_sram, obj, "rp2350.xip-sram",
@@ -213,7 +221,9 @@ static void rp2350_realize(DeviceState *dev, Error **errp)
     }
     memory_region_add_subregion(&s->bus, RP2350_XIP_SRAM_BASE, &s->xip_sram);
     memory_region_add_subregion(&s->bus, RP2350_SRAM_BASE, &s->sram);
-    memory_region_add_subregion(&s->bus, RP2350_BOOTRAM_BASE, &s->bootram);
+    /* over its registers' block (rp2350_sys.c), which starts there too */
+    memory_region_add_subregion_overlap(&s->bus, RP2350_BOOTRAM_BASE,
+                                        &s->bootram, 1);
     memory_region_add_subregion(&s->bus, 0x50100000, &s->usb_dpram);
 
     for (int i = 0; i < ARRAY_SIZE(rp2350_unimp); i++) {
@@ -224,23 +234,43 @@ static void rp2350_realize(DeviceState *dev, Error **errp)
     rp2350_sio_realize(s);
 
     /*
-     * core 0: Cortex-M33 with FPU, DSP and TrustZone; 4 priority bits, 8 MPU
-     * regions in each security state, 8 SAU regions
+     * The two cores: Cortex-M33 with FPU, DSP and TrustZone; 4 priority
+     * bits, 8 MPU regions in each security state, 8 SAU regions.  Both start
+     * in the boot ROM; core 1's waits for core 0 (its salt, then a launch
+     * through the SIO FIFO), and SIO tells them apart by the CPU at hand.
      */
-    qdev_prop_set_uint32(armv7m, "num-irq", RP2350_NUM_IRQ);
-    qdev_prop_set_uint32(armv7m, "num-prio-bits", 4);
-    qdev_prop_set_uint32(armv7m, "mpu-s-regions", 8);
-    qdev_prop_set_uint32(armv7m, "mpu-ns-regions", 8);
-    qdev_prop_set_string(armv7m, "cpu-type", ARM_CPU_TYPE_NAME("cortex-m33"));
-    qdev_prop_set_uint32(armv7m, "init-svtor", RP2350_ROM_BASE);
-    qdev_connect_clock_in(armv7m, "cpuclk", s->sysclk);
-    object_property_set_link(OBJECT(armv7m), "memory", OBJECT(&s->bus),
-                             &error_abort);
-    object_property_set_link(OBJECT(armv7m), "idau", OBJECT(s), &error_abort);
-    if (!sysbus_realize(SYS_BUS_DEVICE(armv7m), errp)) {
-        return;
+    memory_region_init_alias(&s->bus_alias, obj, "rp2350.bus-core1", &s->bus,
+                             0, 4 * GiB);
+    for (int c = 0; c < ARRAY_SIZE(s->cpu); c++) {
+        DeviceState *armv7m = DEVICE(&s->cpu[c]);
+        MemoryRegion *bus = c ? &s->bus_alias : &s->bus;
+
+        qdev_prop_set_uint32(armv7m, "num-irq", RP2350_NUM_IRQ);
+        qdev_prop_set_uint32(armv7m, "num-prio-bits", 4);
+        qdev_prop_set_uint32(armv7m, "mpu-s-regions", 8);
+        qdev_prop_set_uint32(armv7m, "mpu-ns-regions", 8);
+        qdev_prop_set_string(armv7m, "cpu-type",
+                             ARM_CPU_TYPE_NAME("cortex-m33"));
+        qdev_prop_set_uint32(armv7m, "init-svtor", RP2350_ROM_BASE);
+        qdev_connect_clock_in(armv7m, "cpuclk", s->sysclk);
+        object_property_set_link(OBJECT(armv7m), "memory", OBJECT(bus),
+                                 &error_abort);
+        object_property_set_link(OBJECT(armv7m), "idau", OBJECT(s),
+                                 &error_abort);
+        if (!sysbus_realize(SYS_BUS_DEVICE(armv7m), errp)) {
+            return;
+        }
+        rp2350_coproc_init(s, c);
     }
-    rp2350_coproc_init(s, 0);
+    s->irqs = qemu_allocate_irqs(rp2350_irq_set, s, RP2350_NUM_IRQ);
+
+    /* what has interrupts: after the cores' NVICs */
+    rp2350_timer_realize(s);
+}
+
+qemu_irq rp2350_irq(RP2350State *s, int n)
+{
+    return s->irqs[n];
 }
 
 static void rp2350_reset_hold(Object *obj, ResetType type)
@@ -248,6 +278,8 @@ static void rp2350_reset_hold(Object *obj, ResetType type)
     rp2350_coproc_reset(RP2350(obj));
     rp2350_sys_reset(RP2350(obj));
     rp2350_sio_reset(RP2350(obj));
+    rp2350_qmi_reset(RP2350(obj));
+    rp2350_timer_reset(RP2350(obj));
 }
 
 static const Property rp2350_properties[] = {

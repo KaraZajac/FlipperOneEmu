@@ -61,3 +61,46 @@ register headers.
    flash's pull-ups; `-M flipper-one,bootsel=on` holds CS low. With XOSC, the PLLs,
    CLOCKS and PSM answering, the ROM takes the flash path: it sets up the QSPI pads and
    QMI, and talks to the flash in QMI's direct mode (next).
+
+9. **QMI's direct mode queues before it is enabled.** The ROM writes a command into
+   DIRECT_TX and only then sets EN and ASSERT_CS0N ("Anything queued in TX FIFO will
+   start now"); a model that dropped TX while disabled lost the write enable. TX is a
+   FIFO that goes out once EN is set, with CS asserted or not; AUTO_CS0N holds CS for
+   as long as the host keeps writing (until it next reads the CSR or RX). The flash
+   behind it answers byte by byte as a W25Q128JV, its dummy phases counted in clocks
+   (8 / lanes a byte), and writes programs and erases back to the image file. XIP is
+   CS0's four 4 MiB windows through ATRANS0-3 (BASE, SIZE in 4 KiB sectors): the ROM
+   maps the partition it boots at 0x10000000 that way.
+
+10. **SHA-256's SUM registers are not swapped.** The ROM checks the partition table's
+    hash (HASH_DEF: its block's first 25 words) and, with a wrong digest, took the
+    table for unverified and went to its USB boot. Found with gdb on the ROM's ELF,
+    breakpoints on its boot path (`s_varm_crit_ram_trash_perform_flash_scan_and_maybe_run_image`
+    and what it calls). The model's SHA-256 was right (against `sha256sum`), but it
+    applied CSR.BSWAP to the SUM registers too; the ROM reverses them itself (`rev`
+    after reading), as the SDK's `sha256_get_result()` does. BSWAP is for what is
+    written. The ROM also writes WDATA a byte at a time (`strb`, the padding) and ends
+    with words: bytes are packed into a word in the order they come.
+
+11. **The MCU firmware runs.** The SDK's runtime takes boot lock 7: BOOTRAM's
+    BOOTLOCKn are claimed by a read (non-zero if it was free) and let go by a write,
+    as SIO's spinlocks; BOOTLOCK_STAT has 1 for unclaimed. TIMER0/1 count the virtual
+    clock's microseconds, with alarms and their interrupts; the GPIO coprocessor
+    reaches SIO's OUT and OE (the SDK's `hardware/gpio_coproc.h` gives every
+    encoding).
+
+12. **Core 1.** `main()` calls `multicore_reset_core1()`: PSM FRCE_OFF.PROC1 set and
+    cleared, then a wait for core 1's ROM to push 0 through the SIO FIFO. The SoC has
+    two Cortex-M33s now, both started in the ROM; core 1 waits for its salt and a
+    launch. QEMU needs core 1's bus as an alias (a region has one container) and the
+    machine's CPU count at 2 (TCG makes as many thread contexts); PSM powers core 1
+    with `arm_set_cpu_off()` and `arm_set_cpu_on_and_reset()`. A peripheral's
+    interrupt goes to both NVICs.
+
+13. **Its log, before its UART works.** The firmware logs to SEGGER RTT too, a ring in
+    its RAM: `scripts/rtt.py MONITOR.sock FIRMWARE.elf` finds `_SEGGER_RTT` and reads
+    it with the monitor's `xp`. FreeRTOS starts ("Logs initialized", "NVM partition:
+    0x00f02000 1004k", the key-value store, "FuriHalOs Init OK"; the DCP's state is
+    saved at every switch of thread), then `[CRASH][SerialControlDriver] furi_check
+    failed`: `uart_pio_init()` gets no PIO state machine for GPIO41, the log UART,
+    since PIO's GPIOBASE reads 0. PIO is next.

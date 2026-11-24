@@ -40,7 +40,7 @@ int rp2350_current_core(RP2350State *s)
     return 0;
 }
 
-static uint32_t sio_in(RP2350State *s, int hi)
+uint32_t rp2350_sio_in(RP2350State *s, int hi)
 {
     RP2SIO *o = &s->sio;
     uint32_t ext = o->ext[hi];
@@ -63,9 +63,9 @@ static uint64_t sio_read(void *opaque, hwaddr addr, unsigned size)
     case 0x00:                                      /* CPUID */
         return core;
     case 0x04:                                      /* GPIO_IN */
-        return sio_in(s, 0);
+        return rp2350_sio_in(s, 0);
     case 0x08:                                      /* GPIO_HI_IN */
-        return sio_in(s, 1);
+        return rp2350_sio_in(s, 1);
     case 0x10:
         return o->out[0];
     case 0x14:

@@ -10,6 +10,8 @@
 #include "hw/core/sysbus.h"
 #include "hw/arm/armv7m.h"
 #include "hw/core/clock.h"
+#include "hw/core/irq.h"
+#include "qemu/timer.h"
 #include "qom/object.h"
 
 #define TYPE_RP2350 "rp2350"
@@ -39,18 +41,22 @@ OBJECT_DECLARE_SIMPLE_TYPE(RP2350State, RP2350)
  * narrow write is the byte or half-word copied across the word, as the
  * APB bridge does.
  */
-#define RP2_REGS 256                    /* 0x400 bytes of registers */
+#define RP2_REGS 1024                   /* 4 KiB of registers */
 typedef struct RP2Block RP2Block;
 /* a register's value (offset @reg): NULL reads regs[] */
 typedef uint32_t RP2ReadFn(RP2Block *b, hwaddr reg);
 /* a write, after the alias: NULL stores it in regs[] */
 typedef void RP2WriteFn(RP2Block *b, hwaddr reg, uint32_t value);
+/* a plain write as it came, size and all: true if it was taken */
+typedef bool RP2RawFn(RP2Block *b, hwaddr addr, uint32_t value,
+                      unsigned size);
 struct RP2Block {
     MemoryRegion mr;
     struct RP2350State *soc;
     uint32_t regs[RP2_REGS];
     RP2ReadFn *read;
     RP2WriteFn *write;
+    RP2RawFn *raw;
 };
 
 /* SIO: as each core sees it (CPUID, its FIFO) */
@@ -67,11 +73,56 @@ typedef struct RP2SIO {
     uint32_t peri_nonsec;
 } RP2SIO;
 
+/* the QSPI NOR flash on QMI's CS0 (a 16 MiB part, as a W25Q128JV answers) */
+typedef struct RP2Flash {
+    uint8_t *mem;
+    int fd;                             /* the image, written back; or -1 */
+    uint32_t dirty_lo, dirty_hi;        /* programmed, to write back */
+    uint8_t cmd, mode;
+    uint8_t cont_cmd;                   /* the read of continuous mode */
+    int phase;
+    uint32_t addr;
+    int got;                            /* address bytes so far */
+    int dummy;                          /* dummy clocks still to come */
+    int count;                          /* data bytes so far */
+    uint8_t sr[3];                      /* status registers 1-3 */
+    bool continuous;                    /* EBh/BBh read without a command */
+    bool selected;
+} RP2Flash;
+
+/* QMI: direct mode, and the XIP windows of CS0 through ATRANS0-3 */
+#define RP2_QMI_RX 16
+typedef struct RP2QMI {
+    RP2Block regs;
+    uint32_t tx[RP2_QMI_RX];            /* waits for direct mode's EN */
+    int tx_n, tx_head;
+    uint16_t rx[RP2_QMI_RX];
+    int rx_n, rx_head;
+    bool auto_open;                     /* a transfer with AUTO_CS0N, open */
+    RP2Flash flash;
+    MemoryRegion mem;                   /* the flash's array */
+    MemoryRegion win[2][4];             /* cached, uncached; 4 MiB each */
+    MemoryRegion untranslated;
+} RP2QMI;
+
+/* TIMER0 and TIMER1: microseconds of the virtual clock, four alarms each */
+typedef struct RP2Timer {
+    RP2Block regs;                      /* first: its functions get this */
+    int index;
+    QEMUTimer *alarm[4];
+    int64_t offset;                     /* TIME = virtual clock's us + this */
+    uint32_t write_hi, latched_hi;
+    uint64_t paused_at;
+    qemu_irq irq[4];
+} RP2Timer;
+
 /* SHA-256 accelerator */
 typedef struct RP2SHA {
     uint32_t h[8];
     uint32_t w[16];
     int n;                              /* words of this block so far */
+    uint32_t acc;                       /* bytes of a word so far, LSB first */
+    int nbytes;
 } RP2SHA;
 
 /* the redundancy coprocessor (CP7): one block, a salt for each core */
@@ -90,15 +141,15 @@ typedef struct RP2350Core {
 struct RP2350State {
     SysBusDevice parent_obj;
 
-    ARMv7MState cpu[1];         /* core 0; core 1 comes with SIO's FIFOs */
-    RP2350Core core[1];
+    ARMv7MState cpu[2];         /* the two Cortex-M33s */
+    RP2350Core core[2];
+    qemu_irq *irqs;             /* a peripheral's interrupt: to both NVICs */
     Clock *sysclk;
 
     MemoryRegion bus;           /* what the cores see, the PPB aside */
+    MemoryRegion bus_alias;     /* core 1's way to it: a region has one home */
     MemoryRegion rom;
     MemoryRegion sram;
-    MemoryRegion xip;           /* the flash, as XIP reads it */
-    MemoryRegion xip_nocache, xip_notrans;
     MemoryRegion xip_sram;
     MemoryRegion bootram;
 
@@ -106,8 +157,15 @@ struct RP2350State {
 
     /* rp2350_sys.c */
     RP2Block resets, rosc, trng, sha256, powman, watchdog;
-    RP2Block xosc, pll_sys, pll_usb, clocks, psm;
+    RP2Block xosc, pll_sys, pll_usb, clocks, psm, bootram_regs;
     RP2SHA sha;
+
+    /* rp2350_qmi.c */
+    RP2QMI qmi;
+
+    /* rp2350_timer.c; rp2350_sys.c keeps the pins' blocks as registers */
+    RP2Timer timer[2];
+    RP2Block io_bank0, pads_bank0, io_qspi, pads_qspi;
 
     /* rp2350_sio.c */
     RP2SIO sio;
@@ -128,9 +186,23 @@ void rp2_block_init(RP2350State *s, RP2Block *b, const char *name,
 void rp2350_sys_realize(RP2350State *s);
 void rp2350_sys_reset(RP2350State *s);
 
+/* rp2350_qmi.c */
+bool rp2350_qmi_realize(RP2350State *s, Error **errp);
+void rp2350_qmi_reset(RP2350State *s);
+
 /* rp2350_sio.c */
 int rp2350_current_core(RP2350State *s);
+uint32_t rp2350_sio_in(RP2350State *s, int hi);
 void rp2350_sio_realize(RP2350State *s);
 void rp2350_sio_reset(RP2350State *s);
+
+/* rp2350_timer.c */
+void rp2350_timer_realize(RP2350State *s);
+void rp2350_timer_reset(RP2350State *s);
+
+/* the RP2350's interrupt @n, which both cores' NVICs get */
+qemu_irq rp2350_irq(RP2350State *s, int n);
+/* core 1 held off (PSM FRCE_OFF.PROC1) or let go: it starts in its ROM */
+void rp2350_core1_power(RP2350State *s, bool on);
 
 #endif
