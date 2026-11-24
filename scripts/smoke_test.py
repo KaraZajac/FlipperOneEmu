@@ -30,6 +30,9 @@ Boots a throwaway device, devices/smoke-PID (removed at the end unless
   (fo_picoboot.py): the flash read, a spare sector erased, written and read
   back, the device's own firmware loaded, a reboot: the firmware starts
   again;
+- the charger's power switch: `power reboot` (its system power reset: the
+  board off a moment, and the firmware starting again), `power ship` (off
+  until a charger is plugged in);
 - the same device again with BOOTSEL held: the RP2350's boot ROM's own USB
   boot, which the computer enumerates.
 
@@ -125,6 +128,7 @@ class Panel:
         self.pixels = bytearray(LCD_W * H)
         self.leds = []
         self.buzzed = False
+        self.power = []                 # the board's supply, as told
         threading.Thread(target=self._read, daemon=True).start()
 
     def _read(self):
@@ -150,6 +154,8 @@ class Panel:
                         self.leds = rest.split()
                     elif word == "haptic" and rest.strip() == "1":
                         self.buzzed = True
+                    elif word == "power":
+                        self.power.append(rest.strip() == "on")
 
     def screen(self):
         with self.lock:
@@ -314,6 +320,7 @@ def main():
     try:
         panel = body(check, name, d, out, port)
         update(check, d, port, panel)
+        power(check, d, panel)
         log_checks(check, d)
         bootsel(check, name, d)
     finally:
@@ -589,6 +596,33 @@ def update(check, d, port, panel):
         pb.close()
     check("a reboot into it: the firmware starts again", until(
         lambda: log_text(d).count("Startup complete") > starts, 20, 0.2))
+    panel.s.sendall(b"usb 0\n")
+
+
+def power(check, d, panel):
+    """the charger's ship FET, as the firmware's CLI works it"""
+    def starts():
+        return log_text(d).count("Startup complete")
+
+    def went_off_and_on(n):
+        return False in panel.power[n:] and panel.power[-1]
+
+    n, told = starts(), len(panel.power)
+    cli(d, "power reboot", None, 0.5)
+    check("power reboot: the board's supply goes and comes (the charger's "
+          "system power reset)", until(lambda: went_off_and_on(told), 5))
+    check("... and the firmware starts again",
+          until(lambda: starts() > n, 15, 0.2))
+
+    n, told = starts(), len(panel.power)
+    cli(d, "power ship", None, 0.5)
+    check("power ship: the board is off (ship mode)", until(
+        lambda: panel.power[told:] and not panel.power[-1], 5))
+    time.sleep(1)
+    check("... and stays off", starts() == n and not panel.power[-1])
+    panel.s.sendall(b"usb 1\n")
+    check("a charger plugged in wakes it: the firmware starts again",
+          until(lambda: starts() > n, 15, 0.2))
     panel.s.sendall(b"usb 0\n")
 
 

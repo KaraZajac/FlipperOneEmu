@@ -35,6 +35,14 @@
  * 10 kΩ NTC at the battery's temperature through the board's divider (as
  * the firmware works it out: 5.23 kΩ and 31.6 kΩ), the die at 30 °C.
  *
+ * The ship FET's control (SDRV_CTRL, REG 0x11 bits 2:1), at once or 10 s
+ * after (SDRV_DLY): a system power reset opens it for 350 ms (the
+ * converter stopped too, if there is an input), and everything on VSYS
+ * starts again; shutdown and ship mode open it until a source is plugged
+ * in (ship mode: or QON pulled low). Either is refused while there is an
+ * input: the bits go back to 0. What it does to the board is the board's
+ * (bq2579x_on_supply()).
+ *
  * Copyright (c) 2026, Kara Zajac
  * SPDX-License-Identifier: BSD-3-Clause
  */
@@ -51,7 +59,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(Bq2579xState, BQ2579X)
 enum {
     R_VSYSMIN = 0x00, R_VREG = 0x01, R_ICHG = 0x03, R_IINDPM = 0x06,
     R_PRECHG = 0x08, R_TERMINATION = 0x09, R_RECHG = 0x0a,
-    R_CTRL0 = 0x0f, R_CTRL1 = 0x10, R_ICO_LIMIT = 0x19,
+    R_CTRL0 = 0x0f, R_CTRL1 = 0x10, R_CTRL2 = 0x11, R_ICO_LIMIT = 0x19,
     R_STATUS0 = 0x1b, R_FLAG0 = 0x22, R_FLAG_END = 0x28, R_MASK0 = 0x28,
     R_IBUS = 0x31, R_IBAT = 0x33, R_VBUS = 0x35, R_VAC1 = 0x37, R_VAC2 = 0x39,
     R_VBAT = 0x3b, R_VSYS = 0x3d, R_TS = 0x3f, R_TDIE = 0x41,
@@ -62,6 +70,9 @@ enum {
 #define CTRL0_EN_CHG    0x20
 #define CTRL0_EN_HIZ    0x04
 #define CTRL1_WD_RST    0x08
+#define CTRL2_SDRV      0x06            /* SDRV_CTRL: FO_SUPPLY_..., << 1 */
+#define CTRL2_SDRV_DLY  0x01            /* ... at once, not 10 s after */
+#define SDRV_DELAY_NS   10000000000LL
 
 /* STATUS0 ... 4 (0x1b ... 0x1f) */
 #define S0_VBUS_PRESENT 0x01
@@ -116,6 +127,9 @@ struct Bq2579xState {
     uint8_t seen[5];                /* the status as last flagged */
     QEMUTimer *input_timer, *int_timer;
     qemu_irq int_out;               /* 0: asserted */
+    QEMUTimer *sdrv_timer;          /* SDRV_CTRL, after its delay */
+    void (*supply)(void *opaque, int what);
+    void *supply_opaque;
 };
 
 static int bq_reg16(Bq2579xState *s, uint8_t a)
@@ -340,12 +354,51 @@ static void bq_write(Bq2579xState *s, uint8_t a, uint8_t v)
     }
     if (a == R_TERMINATION && (v & TERM_REG_RST)) {
         memcpy(s->r, bq_reset_values, sizeof(s->r));
+        timer_del(s->sdrv_timer);               /* SDRV_CTRL: 0 again */
         return;
     }
     if (a == R_CTRL1) {
         v &= ~CTRL1_WD_RST;
     }
+    if (a == R_CTRL2) {
+        int sdrv = (v & CTRL2_SDRV) >> 1;
+
+        if (sdrv != FO_SUPPLY_RESET && s->input != IN_NONE) {
+            v &= ~CTRL2_SDRV;                   /* not with an input */
+        }
+        if (v & CTRL2_SDRV) {
+            timer_mod(s->sdrv_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                      (v & CTRL2_SDRV_DLY ? 0 : SDRV_DELAY_NS));
+        } else {
+            timer_del(s->sdrv_timer);
+        }
+    }
     s->r[a] = v;
+}
+
+/* SDRV_CTRL's time: the ship FET acts, and its bits are 0 again (a reset
+ * is over by then; the other two have the board's supply gone) */
+static void bq_sdrv(void *opaque)
+{
+    Bq2579xState *s = opaque;
+    int sdrv = (s->r[R_CTRL2] & CTRL2_SDRV) >> 1;
+
+    s->r[R_CTRL2] &= ~CTRL2_SDRV;
+    if (sdrv != FO_SUPPLY_RESET && s->input != IN_NONE) {
+        return;                                 /* an input came since */
+    }
+    if (s->supply) {
+        s->supply(s->supply_opaque, sdrv);
+    }
+}
+
+void bq2579x_on_supply(I2CSlave *dev, void (*fn)(void *opaque, int what),
+                       void *opaque)
+{
+    Bq2579xState *s = BQ2579X(dev);
+
+    s->supply = fn;
+    s->supply_opaque = opaque;
 }
 
 static uint8_t bq_recv(I2CSlave *i2c)
@@ -415,6 +468,7 @@ static void bq_reset(DeviceState *dev)
     s->ibus_ma = 0;
     bq_status(s, s->seen);
     timer_del(s->int_timer);
+    timer_del(s->sdrv_timer);
     qemu_set_irq(s->int_out, 1);
 }
 
@@ -425,6 +479,7 @@ static void bq_init(Object *obj)
     qdev_init_gpio_out(DEVICE(obj), &s->int_out, 1);
     s->input_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, bq_input_step, s);
     s->int_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, bq_int_end, s);
+    s->sdrv_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, bq_sdrv, s);
 }
 
 static void bq_class_init(ObjectClass *klass, const void *data)

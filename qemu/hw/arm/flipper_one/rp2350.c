@@ -301,11 +301,21 @@ void rp2350_core1_power(RP2350State *s, bool on)
  * (the watchdog's, as after a PICOBOOT reboot; SYSRESETREQ) would reset
  * everything but the cores, which would run on where they were. Both
  * start again in the boot ROM, as armv7m_load_kernel() has a board's core
- * reset.
+ * reset; without a supply (the board's, cut), they stay off.
  */
-static void rp2350_core_reset(void *opaque)
+static void rp2350_cores_reset(void *opaque)
 {
-    cpu_reset(CPU(opaque));
+    RP2350State *s = opaque;
+
+    for (int c = 0; c < ARRAY_SIZE(s->cpu); c++) {
+        CPUState *cs = CPU(s->cpu[c].cpu);
+
+        cpu_reset(cs);
+        if (s->unpowered) {
+            arm_set_cpu_power_state(s->cpu[c].cpu, PSCI_OFF);
+            cs->halted = 1;
+        }
+    }
 }
 
 static void rp2350_realize(DeviceState *dev, Error **errp)
@@ -387,10 +397,10 @@ static void rp2350_realize(DeviceState *dev, Error **errp)
         if (!sysbus_realize(SYS_BUS_DEVICE(armv7m), errp)) {
             return;
         }
-        qemu_register_reset(rp2350_core_reset, s->cpu[c].cpu);
         rp2350_coproc_init(s, c);
         rp2350_ppb_realize(s, c);
     }
+    qemu_register_reset(rp2350_cores_reset, s);
     s->irqs = qemu_allocate_irqs(rp2350_irq_set, s, RP2350_NUM_IRQ);
 
     /* what has interrupts: after the cores' NVICs */

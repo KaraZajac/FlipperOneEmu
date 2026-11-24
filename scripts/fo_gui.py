@@ -62,9 +62,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.link.usb.connect(self._usb)
         self.link.headset.connect(self._headset)
         self.link.stopped.connect(self._stopped)
+        self.link.power.connect(self._power)
         self.view.key.connect(self._key)
         self.view.touch.connect(self._touch)
         self.lcd_on = False
+        self.powered = True
         self.usb = 0
         self.headset = "0"
 
@@ -169,8 +171,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self._hint()
 
     def _running(self):
+        if not self.powered:
+            return ("off (the charger's ship mode, or its shutdown): plug "
+                    "in a charger, Ctrl+U, to turn it on")
         return "running" + ("", " · a charger in its USB-C port",
                             " · a computer on its USB-C port")[self.usb]
+
+    def _power(self, on):
+        self.powered = on
+        if self.state == "running":
+            self._say(self._running())
+        self._hint()
 
     def _plug(self, what):
         self.link.set_usb(what)
@@ -216,6 +227,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def _hint(self):
         if self.state != "running":
             self.view.set_hint("not running")
+        elif not self.powered:
+            self.view.set_hint("off", "(plug in a charger:", "Ctrl+U)")
         elif not self.lcd_on:
             self.view.set_hint("the screen is off", "(the firmware has not",
                                "switched it on)")

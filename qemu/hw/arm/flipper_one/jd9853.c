@@ -210,6 +210,13 @@ static void jd_te(void *opaque)
     }
 }
 
+void fo_jd9853_unpowered(FoJd9853 *d)
+{
+    d->in_reset = true;
+    jd_reset(d);
+    jd_lcd(d);
+}
+
 void fo_jd9853_init(FoJd9853 *d, RP2350State *soc, FlipperOnePanelState *panel)
 {
     d->soc = soc;

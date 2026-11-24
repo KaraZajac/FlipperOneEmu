@@ -23,8 +23,9 @@ gauge (the status bar shows its charge), its charger, the system rail's current 
 and the USB-C port's chips: the self-check finds every chip. A charger can be plugged
 into its USB-C port, and the battery charges; a computer plugged in gets its USB serial
 port, also as a real USB device on this PC (USB/IP), and the firmware can be updated as
-picotool updates it, through the RP2350's boot ROM. The Linux side (the RK3576) is
-next. [RESEARCH.md](RESEARCH.md) is the survey this
+picotool updates it, through the RP2350's boot ROM. Its `power reboot` power-cycles the
+board through the charger, and its power off (ship mode) turns it off until a charger
+is plugged in. The Linux side (the RK3576) is next. [RESEARCH.md](RESEARCH.md) is the survey this
 starts from:
 the device, what Flipper Devices publishes, and what emulating it takes.
 [PLAN.md](PLAN.md) is the order of work; the MCU comes first.

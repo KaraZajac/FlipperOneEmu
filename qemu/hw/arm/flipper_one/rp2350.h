@@ -72,6 +72,9 @@ typedef struct RP2Usb {
     bool nak_int_ep0;
     bool pulled_up;                     /* as the host was last told */
     uint8_t next_buf[32];               /* each endpoint's buffer selector */
+    /* each endpoint's buffers done that the CPU has not yet cleared from
+     * BUFF_STATUS, oldest first: how many (0 ... 2), and their halves */
+    uint8_t done_n[32], done_half[32];
     void (*pullup_fn)(void *opaque, bool on);
     void *pullup_opaque;
 } RP2Usb;
@@ -354,6 +357,8 @@ struct RP2350State {
                                    through the first start only (then let
                                    go, as a hand does) */
     bool started;               /* ... it has been */
+    bool unpowered;             /* no supply: the cores stay off through
+                                   its resets */
     bool watchdog_fired;        /* the reset to come is the watchdog's */
     uint32_t watchdog_reason;   /* ... TIMER (1) or FORCE (2) */
     QEMUTimer *watchdog_timer;  /* its count running down */

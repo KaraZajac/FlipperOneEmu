@@ -22,11 +22,20 @@
  * selector on if the endpoint is double-buffered, and sets the endpoint's
  * BUFF_STATUS bit (EP0's if SIE_CTRL asks for it), and in
  * BUFF_CPU_SHOULD_HANDLE which of its two buffers that was (the boot ROM's
- * USB stack keeps its double buffers in step by it). A buffer not available
+ * USB stack keeps its double buffers in step by it). A second buffer done
+ * before the CPU has cleared the bit waits behind the first, as on the
+ * chip: clearing the bit sets it again at once, BUFF_CPU_SHOULD_HANDLE then
+ * saying the second's half. (One bit for both lost the first: the CPU took
+ * the second for the only one, and the transfer waited for a packet that
+ * had come.) A buffer not available
  * NAKs (EP_STATUS_STALL_NAK, if asked for); STALL set (on EP0, armed in
  * EP_STALL_ARM too) stalls. A SETUP is always taken: into the DPRAM,
  * SETUP_REC, EP0's stall disarmed. A bus reset sets BUS_RESET and clears
- * the address. EP_ABORT is done at once (EP_ABORT_DONE). USBCTRL_IRQ (14)
+ * the address. An endpoint in EP_ABORT NAKs every transaction, its buffer
+ * control left alone, until the bit is cleared: the boot ROM takes back an
+ * armed buffer that way at each transfer's start, and a packet taken into
+ * it meanwhile would be lost (ACKed, then wiped). It is done at once
+ * (EP_ABORT_DONE): no transaction is ever half through. USBCTRL_IRQ (14)
  * is INTR & INTE | INTF; INTR comes from SIE_STATUS, BUFF_STATUS,
  * EP_ABORT_DONE, EP_STATUS_STALL_NAK, and the changes of CONNECTED and
  * SUSPENDED, latched until those bits of SIE_STATUS are written.
@@ -316,6 +325,14 @@ static bool usb_buf(RP2350State *s, int ep, bool out, UsbBuf *b)
     return true;
 }
 
+/* BUFF_STATUS and BUFF_CPU_SHOULD_HANDLE: the endpoint's oldest buffer
+ * done, if any */
+static void usb_done_show(RP2Usb *u, int sel)
+{
+    u->buff_status = deposit32(u->buff_status, sel, 1, u->done_n[sel] != 0);
+    u->buff_cpu = deposit32(u->buff_cpu, sel, 1, u->done_half[sel] & 1);
+}
+
 /* a buffer went: its BUFF_STATUS bit, the selector on */
 static void usb_buf_done(RP2350State *s, int ep, bool out, UsbBuf *b)
 {
@@ -328,9 +345,13 @@ static void usb_buf_done(RP2350State *s, int ep, bool out, UsbBuf *b)
         u->next_buf[sel] ^= 1;
     }
     if (tell) {
-        u->buff_status |= 1u << sel;
-        /* which of the two it was: BUFF_CPU_SHOULD_HANDLE */
-        u->buff_cpu = deposit32(u->buff_cpu, sel, 1, b->half);
+        int n = u->done_n[sel];
+
+        if (n < 2) {                            /* (a third: no buffer) */
+            u->done_half[sel] = deposit32(u->done_half[sel], n, 1, b->half);
+            u->done_n[sel] = n + 1;
+        }
+        usb_done_show(u, sel);
     }
     usb_irq(s);
 }
@@ -391,6 +412,9 @@ RP2UsbResult rp2350_usb_out(RP2350State *s, uint8_t addr, int ep,
     if (!usb_device_mode(s, addr) || ep < 0 || ep > 15) {
         return RP2_USB_TIMEOUT;
     }
+    if (s->usb.ep_abort >> (ep * 2 + 1) & 1) {
+        return RP2_USB_NAK;                     /* taken back: wait */
+    }
     if (!usb_buf(s, ep, true, &b)) {
         return RP2_USB_TIMEOUT;
     }
@@ -417,6 +441,9 @@ RP2UsbResult rp2350_usb_in(RP2350State *s, uint8_t addr, int ep,
 
     if (!usb_device_mode(s, addr) || ep < 0 || ep > 15) {
         return RP2_USB_TIMEOUT;
+    }
+    if (s->usb.ep_abort >> (ep * 2) & 1) {
+        return RP2_USB_NAK;                     /* taken back: wait */
     }
     if (!usb_buf(s, ep, false, &b)) {
         return RP2_USB_TIMEOUT;
@@ -488,8 +515,14 @@ static void usb_write(RP2Usb *u, RP2350State *s, hwaddr reg, uint32_t v,
             u->vbus_changed = false;
         }
         break;
-    case R_BUFF_STATUS:
-        u->buff_status &= ~mask;
+    case R_BUFF_STATUS:                         /* the oldest taken */
+        for (int sel = 0; sel < 32; sel++) {
+            if ((mask >> sel & 1) && u->done_n[sel]) {
+                u->done_n[sel]--;
+                u->done_half[sel] >>= 1;
+                usb_done_show(u, sel);
+            }
+        }
         break;
     case R_EP_ABORT:
         u->ep_abort = v;
@@ -592,6 +625,8 @@ void rp2350_usb_reset(RP2350State *s)
     u->nak_int_ep0 = false;
     u->vbus = vbus;
     memset(u->next_buf, 0, sizeof(u->next_buf));
+    memset(u->done_n, 0, sizeof(u->done_n));
+    memset(u->done_half, 0, sizeof(u->done_half));
     usb_pullup_check(s);
     qemu_set_irq(u->irq, 0);
 }

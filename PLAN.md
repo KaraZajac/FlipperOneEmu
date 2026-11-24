@@ -68,14 +68,16 @@ screen and its CLI.
       update as picotool makes one: `power boot` or the button into the boot ROM's USB
       boot, PICOBOOT (`scripts/fo_picoboot.py`: read, erase, write, a UF2 loaded, a
       reboot through the watchdog) (2026-11-24)
-- ☐ The charger's power switch: `power reboot` (its system power reset), ship mode and
-      `power off` (the board off until a charger or a computer is plugged in)
+- ☑ The charger's power switch (SDRV_CTRL): `power reboot` (its system power reset),
+      ship mode and shutdown (`power ship`, `power off`, the desktop's Power Off: the
+      board off until a charger or a computer is plugged in) (2026-11-24); QON (ship
+      mode's own wake) waits for where the board has it
 - ☑ Checks: `scripts/smoke_test.py` (2026-11-24): a throwaway device through its
       sockets: the boot and each chip, the host link and a frame shown pixel for
       pixel, the LEDs and the motor, the CLI and the firmware's unit tests, the
       buttons and the touchpad, the headset, the Flipper OS menu and its Stop, a
       charger, a computer (the CLI over USB and USB/IP), an update through PICOBOOT
-      and a reboot into it, BOOTSEL
+      and a reboot into it, `power reboot` and ship mode, BOOTSEL
 
 ## M3: the RK3576 to a shell ☐
 - ☐ The cluster: 4× Cortex-A53 and 4× Cortex-A72, GIC-400, the generic timer at 24 MHz,

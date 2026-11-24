@@ -87,6 +87,7 @@ struct FlipperOnePanelState {
                                            charger, 2 a computer; it stays
                                            when the program goes */
     int headset;                        /* in the jack: FO_HEADSET_... */
+    bool powered;                       /* the board has its supply */
 
     /* the board's input parts are told of a change */
     void (*input)(void *opaque);
@@ -104,6 +105,8 @@ void fo_panel_backlight(FlipperOnePanelState *s, uint8_t level);
 void fo_panel_led(FlipperOnePanelState *s, int index, uint32_t rgb);
 void fo_panel_lcd_on(FlipperOnePanelState *s, bool on);
 void fo_panel_haptic(FlipperOnePanelState *s, bool on);
+/* the board's supply came or went: told at once */
+void fo_panel_power(FlipperOnePanelState *s, bool on);
 
 /* ------------------------------------------- the display controller */
 
@@ -124,6 +127,8 @@ typedef struct FoJd9853 {
 
 void fo_jd9853_init(FoJd9853 *d, struct RP2350State *soc,
                     FlipperOnePanelState *panel);
+/* its supply went: reset, nothing shown, until its RESET pin lets go */
+void fo_jd9853_unpowered(FoJd9853 *d);
 
 /* ------------------------------------------------- the host link */
 
@@ -260,6 +265,11 @@ void ina219_attach(struct I2CSlave *dev, FoBattery *bat);
 /* bq2579x.c: a source on VBUS (@mv, giving up to @ma; @dcp: a dedicated
  * charger, else a computer's port), or none (0) */
 void bq2579x_input(struct I2CSlave *dev, int mv, int ma, bool dcp);
+/* bq2579x.c: the ship FET's control (SDRV_CTRL) acting on the board's
+ * supply: @fn gets what it does, FO_SUPPLY_... */
+enum { FO_SUPPLY_SHUTDOWN = 1, FO_SUPPLY_SHIP = 2, FO_SUPPLY_RESET = 3 };
+void bq2579x_on_supply(struct I2CSlave *dev,
+                       void (*fn)(void *opaque, int what), void *opaque);
 /* usb_c.c: a source on the USB-C port, offering @rp_ma (its Rp), or none */
 void fusb302_attach(struct I2CSlave *dev, int rp_ma);
 void hd3ss3220_attach(struct I2CSlave *dev, int rp_ma);

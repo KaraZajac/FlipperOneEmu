@@ -30,6 +30,8 @@ class PanelLink(QtCore.QObject):
                                         # 1 a charger, 2 a computer
     headset = QtCore.Signal(str)        # in the jack: "0", "1", or the
                                         # button held ("play", "volup", ...)
+    power = QtCore.Signal(bool)         # the board has its supply (the
+                                        # charger's ship FET closed)
     stopped = QtCore.Signal(str)        # time stands still ("paused", "debug"
                                         # ...: why), or goes on ("")
 
@@ -158,6 +160,8 @@ class PanelLink(QtCore.QObject):
             self.usb.emit(int(rest))
         elif word == "headset":
             self.headset.emit(rest.strip())
+        elif word == "power":
+            self.power.emit(rest.strip() == "on")
         elif word == "running":
             on, _, why = rest.partition(" ")
             self.stopped.emit("" if int(on) else why.strip() or "paused")

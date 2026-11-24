@@ -550,3 +550,36 @@ register headers.
     pages in about 5 s) and read back, a reboot, and the firmware starting again. Not
     yet: the firmware's `power reboot`, which is the charger's (its system power reset),
     and its ship mode and power off.
+45. **Two more of the USB controller's rules.** The smoke test's update failed now and
+    then: a WRITE without an answer. Caught with the client waiting for ever and gdb
+    on the boot ROM's endpoints (nsboot.elf has their symbols and types): both of the
+    PICOBOOT OUT endpoint's buffers FULL, BUFF_STATUS clear, and the boot ROM sure it
+    had given the controller a buffer. Its USB stack takes a second packet that comes
+    while the first is still being written to the flash as queued, and asks
+    BUFF_CPU_SHOULD_HANDLE which buffer each was. The chip keeps a second completion
+    behind the first ("clearing the buffer status bit may instantly re set it", the
+    datasheet says); the model had one bit for both, so the first was lost whenever
+    two came before the CPU had cleared it. That happens when the host stops waiting
+    for the controller's interrupt (10 ms), which the emulated CPU, on a busy host,
+    sometimes takes. The model queues them now. And an endpoint in EP_ABORT NAKs every
+    transaction until it is let go, as on the chip: the boot ROM takes back an armed
+    buffer that way at each transfer's start. Eight loads of the firmware in one
+    session (17,500 writes) went through, where one had failed before. (Having the
+    host wait for the CPU to sleep before each transaction, tried first, only hid
+    it.)
+
+## The charger's power switch (2026-11-24)
+
+46. **`power reboot`, ship mode, power off.** The firmware does not reset the MCU for
+    `power reboot`: it asks the BQ25792 for a system power reset (SDRV_CTRL = 3 in
+    REG 0x11, SDRV_DLY set: at once), which opens the ship FET for 350 ms, so that
+    everything on VSYS starts again. Its `power ship`, `power off` and the desktop's
+    Power Off are the same register's ship mode and shutdown (after waiting for USB to
+    be unplugged: the charger refuses either while there is an input, as the
+    datasheet says). The board now has a supply that the charger cuts: the chips as
+    reset, the RP2350's cores held off through the reset, the screen, its backlight
+    and the LEDs dark, no load on the battery, and `power off` on the panel link (the
+    window says so). It comes back after the 350 ms, or when a charger or a computer
+    is plugged in (shutdown's only way out). Ship mode also wakes on QON pulled low:
+    where the Flipper One has QON is not known yet. A machine reset in QEMU resets
+    the CPUs only if the board asks, so the cores could be held off right there.

@@ -24,6 +24,7 @@
 #include "hw/i2c/i2c.h"
 #include "hw/arm/machines-qom.h"
 #include "chardev/char.h"
+#include "system/runstate.h"
 #include "flipper_one.h"
 #include "rp2350.h"
 
@@ -50,6 +51,9 @@ struct FlipperOneState {
                                    computer */
     bool usb20_sel;             /* the USB mux: the RK3576's, not the MCU's */
     int headset;                /* in the jack: FO_HEADSET_... */
+    bool off;                   /* the board's supply cut (the charger's
+                                   ship FET) */
+    QEMUTimer *power_timer;     /* ... back, after a system power reset */
     DeviceState *usb_host;      /* the computer, for the MCU's USB */
     FoBattery battery;
     FoLeds leds;                /* the WS2812s, GPIO29-31 */
@@ -126,9 +130,12 @@ static void flipper_one_usb_data(FlipperOneState *s)
  * Rp, a standard port), and its data lines. The firmware negotiates no more
  * (its PD is not written yet), so 5 V is what there is.
  */
+static void flipper_one_power(FlipperOneState *s, bool on);
+
 static void flipper_one_usb(FlipperOneState *s, int what)
 {
     int rp_ma = what == 1 ? 3000 : what == 2 ? 900 : 0;
+    bool plugged = what && !s->usb;
 
     s->usb = what;
     bq2579x_input(s->charger, what ? 5000 : 0, what == 1 ? 3000 : 500,
@@ -137,6 +144,57 @@ static void flipper_one_usb(FlipperOneState *s, int what)
     hd3ss3220_attach(s->usb_mux, rp_ma);
     rp2350_usb_vbus(&s->mcu, what != 0);
     flipper_one_usb_data(s);
+    if (plugged && s->off) {
+        flipper_one_power(s, true);     /* a source wakes the charger */
+    }
+}
+
+/*
+ * The board's supply, VSYS, through the charger's ship FET (SDRV_CTRL):
+ * cut, the chips on it are as reset, the RP2350's cores held off, the
+ * screen, its backlight and the LEDs dark, and the board draws nothing
+ * from the battery; back, everything starts as at power-on. A system
+ * power reset cuts it for 350 ms; shutdown and ship mode until a source
+ * is plugged in (ship mode also wakes on QON pulled low: where the board
+ * has QON is not known yet).
+ */
+static void flipper_one_power(FlipperOneState *s, bool on)
+{
+    if (on != s->off) {
+        return;                         /* as it is */
+    }
+    s->off = !on;
+    s->mcu.unpowered = !on;
+    timer_del(s->power_timer);
+    fo_battery_update(&s->battery);
+    s->battery.load_ma = on ? 40 : 0;
+    fo_battery_update(&s->battery);
+    if (!on) {
+        fo_jd9853_unpowered(&s->display);
+        fo_panel_backlight(s->panel, 0);
+        fo_panel_haptic(s->panel, false);
+        for (int c = 0; c < FO_LED_CHAINS; c++) {
+            fo_leds_power(&s->leds, c, false);
+        }
+    }
+    fo_panel_power(s->panel, on);
+    qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+}
+
+static void flipper_one_supply(void *opaque, int what)
+{
+    FlipperOneState *s = opaque;
+
+    flipper_one_power(s, false);
+    if (what == FO_SUPPLY_RESET) {
+        timer_mod(s->power_timer,
+                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 350 * SCALE_MS);
+    }
+}
+
+static void flipper_one_power_back(void *opaque)
+{
+    flipper_one_power(opaque, true);
 }
 
 static void flipper_one_usb20_sel(void *opaque, int n, int level)
@@ -200,7 +258,7 @@ static void flipper_one_host_power(void *opaque, int n, int level)
     FlipperOneState *s = opaque;
 
     fo_battery_update(&s->battery);             /* up to now, as it was */
-    s->battery.load_ma = level ? 400 : 40;
+    s->battery.load_ma = s->off ? 0 : level ? 400 : 40;
     fo_battery_update(&s->battery);
 }
 
@@ -355,6 +413,9 @@ static void flipper_one_init(MachineState *ms)
                                             0x55), &s->battery);
     s->charger = i2c_slave_create_simple(s->main_bus.bus, "bq2579x", 0x6b);
     bq2579x_attach(s->charger, &s->battery);
+    bq2579x_on_supply(s->charger, flipper_one_supply, s);
+    s->power_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, flipper_one_power_back,
+                                  s);
     qdev_connect_gpio_out(DEVICE(s->charger), 0,
                           qemu_allocate_irq(flipper_one_main_input, s, 2));
     ina219_attach(i2c_slave_create_simple(s->main_bus.bus, "ina219", 0x45),

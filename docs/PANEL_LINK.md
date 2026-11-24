@@ -89,6 +89,17 @@ headset 1
 
 What is in the headphone jack, as below: on connecting, and at each change.
 
+```
+power off
+power on
+```
+
+Whether the board has its supply: the charger's ship FET, which the firmware works
+(`power reboot`: off for 350 ms, then everything starts again; `power ship`, `power
+off` and the desktop's Power Off: off until a charger or a computer is plugged in,
+`usb 1` or `usb 2` below). While it is off the MCU does not run, and the screen, its
+backlight and the LEDs are dark.
+
 ### To the emulator
 
 ```

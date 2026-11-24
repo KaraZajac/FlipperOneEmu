@@ -122,6 +122,7 @@ static void panel_everything(FlipperOnePanelState *s)
     panel_rows(s, true);
     flipper_link_send(&s->lk, "usb %d\n", s->usb);
     flipper_link_send(&s->lk, "headset %s\n", headset_names[s->headset]);
+    flipper_link_send(&s->lk, "power %s\n", s->powered ? "on" : "off");
 }
 
 static void panel_tick(void *opaque)
@@ -237,6 +238,14 @@ void fo_panel_lcd_on(FlipperOnePanelState *s, bool on)
     s->lcd_on = on;
 }
 
+void fo_panel_power(FlipperOnePanelState *s, bool on)
+{
+    if (on != s->powered) {
+        s->powered = on;
+        flipper_link_send(&s->lk, "power %s\n", on ? "on" : "off");
+    }
+}
+
 void fo_panel_haptic(FlipperOnePanelState *s, bool on)
 {
     s->haptic = on;
@@ -248,6 +257,7 @@ static void panel_realize(DeviceState *dev, Error **errp)
     FlipperOnePanelState *s = FLIPPER_ONE_PANEL(dev);
 
     s->sent_running = -1;
+    s->powered = true;
     s->tick = timer_new_ms(QEMU_CLOCK_REALTIME, panel_tick, s);
     qemu_add_vm_change_state_handler(panel_vm_change, s);
     flipper_link_init(&s->lk, &s->link_chr, "panel", panel_line,
