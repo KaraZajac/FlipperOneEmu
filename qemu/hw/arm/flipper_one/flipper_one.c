@@ -37,26 +37,41 @@ struct FlipperOneState {
     FlipperOnePanelState *panel;
     FoJd9853 display;
     I2CSlave *buttons;          /* the control bus's PCAL6416 */
+    I2CSlave *touchpad;         /* ... and IQS7211E */
     CharFrontend log;
     char *flash;
     char *log_id;
     bool bootsel;
 };
 
-/* the buttons: the panel's keys on the expander's pins, pressed low */
-static void flipper_one_keys(void *opaque)
+/*
+ * The front panel's buttons, on the expander's pins (pressed: low), and its
+ * finger, on the touchpad
+ */
+static void flipper_one_input(void *opaque)
 {
     FlipperOneState *s = opaque;
+    FlipperOnePanelState *p = s->panel;
 
-    pcal6416_set_pins(s->buttons, ~s->panel->keys & 0xffff);
+    pcal6416_set_pins(s->buttons, ~p->keys & 0xffff);
+    iqs7211e_touch(s->touchpad, p->touching, p->touch_x, p->touch_y,
+                   p->touch_p);
 }
 
-/* the expander's INT, open drain with a pull-up: on GPIO46 */
+/* the expander's INT and the touchpad's RDY: open drain, the board's
+ * pull-ups on GPIO46 and GPIO9 */
 static void flipper_one_buttons_int(void *opaque, int n, int level)
 {
     FlipperOneState *s = opaque;
 
-    rp2350_pin_drive(&s->mcu, 46, level ? 1 : 0);
+    rp2350_pin_drive(&s->mcu, 46, level ? -1 : 0);
+}
+
+static void flipper_one_touch_rdy(void *opaque, int n, int level)
+{
+    FlipperOneState *s = opaque;
+
+    rp2350_pin_drive(&s->mcu, 9, level ? -1 : 0);
 }
 
 /* the screen's backlight: GPIO6's PWM (or its level, as a plain pin) */
@@ -116,14 +131,19 @@ static void flipper_one_init(MachineState *ms)
     fo_jd9853_init(&s->display, &s->mcu, s->panel);
     s->mcu.pwm_fn = flipper_one_backlight;
 
-    /* the control bus (I2C0, GPIO20/21): the buttons' expander at 0x20 */
+    /* the control bus (I2C0, GPIO20/21): the buttons' expander at 0x20,
+     * the touchpad's controller at 0x56 */
+    s->mcu.ext_pullup |= (1ull << 46) | (1ull << 9);
     s->buttons = i2c_slave_create_simple(rp2350_i2c_bus(&s->mcu, 0),
                                          "pcal6416", 0x20);
     qdev_connect_gpio_out(DEVICE(s->buttons), 0,
                           qemu_allocate_irq(flipper_one_buttons_int, s, 0));
-    s->panel->input = flipper_one_keys;
+    s->touchpad = i2c_slave_create_simple(rp2350_i2c_bus(&s->mcu, 0),
+                                          "iqs7211e", 0x56);
+    qdev_connect_gpio_out(DEVICE(s->touchpad), 0,
+                          qemu_allocate_irq(flipper_one_touch_rdy, s, 0));
+    s->panel->input = flipper_one_input;
     s->panel->input_opaque = s;
-    rp2350_pin_drive(&s->mcu, 46, 1);
     s->mcu.pwm_opaque = s;
 }
 

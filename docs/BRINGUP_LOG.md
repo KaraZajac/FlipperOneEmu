@@ -200,3 +200,22 @@ register headers.
     now says "Expander control: ok", and the window's buttons reach the firmware: OK
     leaves the self-check for the desktop, the Settings soft key opens its menu, the
     pad moves through it, Back returns, and a key wakes the backlight.
+
+## The touchpad (2026-11-24)
+
+25. **The touchpad.** An Azoteq IQS7211E at 0x56 on the control bus (`iqs7211e.c`),
+    its RDY on GPIO9. Its registers are 16-bit words, little-endian, the address going
+    up a word every two bytes. The chip senses a cycle at a time and then opens a
+    communication window, RDY low until a STOP (or its I2C timeout); in stream mode
+    every cycle, in event mode only when the finger came, went or moved. The firmware's
+    driver takes one step of its start per window (the product number 0x0458, Show
+    Reset, its settings, Ack Reset, a re-ATI, the data, event mode) and from then reads
+    the data block, GESTURES to FINGER_2_AREA, in each: a finger seen, it publishes a
+    touch's Start, Move and End. The window's touchpad (0 … 1000 across and down) is
+    scaled to the chip's X and Y resolution (1000 × 800 as the firmware sets it),
+    flipped as its settings ask (the f2 board's are), and a missing finger reads
+    0xFFFF. The self-check says "Touchpad: ok"; `input dump` on the CLI shows the
+    window's drags; the Touchpad Test app (`desktop start_app touchpad_test`) draws
+    them; a touch wakes the backlight. RDY and the expander's INT are open drain with
+    the board's pull-ups, which the RP2350's reset does not undo (it forgets what the
+    board drives, and the chips' resets come before it).

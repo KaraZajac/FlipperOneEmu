@@ -116,4 +116,8 @@ void fo_jd9853_init(FoJd9853 *d, struct RP2350State *soc,
 struct I2CSlave;
 void pcal6416_set_pins(struct I2CSlave *dev, uint16_t levels);
 
+/* iqs7211e.c: the finger on the touchpad (0 ... 1000 across and down) and
+ * its pressure (0 ... 255), or none */
+void iqs7211e_touch(struct I2CSlave *dev, bool touching, int x, int y, int p);
+
 #endif

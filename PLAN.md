@@ -37,21 +37,20 @@ screen and its CLI.
       the keyboard, its 17 LEDs where the device has them; a front-panel link for it and
       any program (docs/PANEL_LINK.md). Drawn and connected, and the screen and its
       backlight are live (2026-11-23); drawn again part by part from measurements of the
-      device's renders (scripts/fo_body.py, 2026-11-24); its buttons work (2026-11-24);
-      its LEDs and the touchpad come alive with the models behind them (the WS2812s,
-      the IQS7211E)
+      device's renders (scripts/fo_body.py, 2026-11-24); its buttons and touchpad work
+      (2026-11-24); its LEDs come alive with the WS2812s' model
 - ◐ A launcher: run, the window, stop, status, the firmware's log (RTT), its CLI, a
       picture of the screen, where the cores are; a folder per emulated Flipper One.
       gdb's symbols to come
 
 ## M2: the MCU's board ☐
-- ◐ The control bus: PCAL6416 (the buttons, 2026-11-24); IQS7211E (touchpad),
-      DRV2605L (haptics), TPS62868x (the display's supply) to come
+- ◐ The control bus: PCAL6416 (the buttons, 2026-11-24), IQS7211E (the touchpad,
+      2026-11-24); DRV2605L (haptics), TPS62868x (the display's supply) to come
 - ☐ The main bus (PIO I2C): PCAL6416 (rails, `MASKROM_EN`), BQ2579x, BQ28Z620, INA219,
       INA4230 ×5, FUSB302, HD3SS3220
 - ◐ The backlight's PWM (2026-11-23); the WS2812 LEDs (17 on three chains), the
       headset key (ADC)
-- ◐ The desktop and menus, the buttons from the window (2026-11-24); touch to come
+- ☑ The desktop and menus, the buttons and the touchpad from the window (2026-11-24)
 - ☐ RPC: the screen stream and input, through the CLI's `rpc`
 - ☐ USB: the CLI's CDC port (`37C1:F101`), and BOOTSEL: a UF2 copied onto the boot ROM's
       drive, over USB/IP as FlipperZeroEmu's USB is

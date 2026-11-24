@@ -14,9 +14,9 @@ does the same for the Flipper Zero.
 partition table and starts the MCU firmware on the emulated chip. The firmware starts
 FreeRTOS, logs through its PIO UART, draws its self-check screen in the window (over
 HSTX and DMA to the emulated JD9853 panel), lights the backlight, answers on its CLI,
-and takes the window's buttons (through the control bus's I2C expander): its desktop
-and menus work. The touchpad, the LEDs and the chips on the main bus (power, charging)
-are next. [RESEARCH.md](RESEARCH.md) is the survey this starts from:
+and takes the window's buttons (through the control bus's I2C expander) and touchpad
+(through its IQS7211E): its desktop, menus and touchpad test work. The LEDs and the
+chips on the main bus (power, charging) are next. [RESEARCH.md](RESEARCH.md) is the survey this starts from:
 the device, what Flipper Devices publishes, and what emulating it takes.
 [PLAN.md](PLAN.md) is the order of work; the MCU comes first.
 [docs/BRINGUP_LOG.md](docs/BRINGUP_LOG.md) is what was found on the way.

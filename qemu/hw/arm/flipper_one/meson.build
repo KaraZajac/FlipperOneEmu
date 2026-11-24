@@ -20,4 +20,5 @@ arm_common_ss.add(when: 'CONFIG_FLIPPER_ONE', if_true: files(
   'jd9853.c',
   'rp2350_i2c.c',
   'pcal6416.c',
+  'iqs7211e.c',
 ))
