@@ -265,6 +265,12 @@ void bq28z620_attach(struct I2CSlave *dev, FoBattery *bat);
 void bq2579x_attach(struct I2CSlave *dev, FoBattery *bat);
 void ina219_attach(struct I2CSlave *dev, FoBattery *bat);
 
+/* ina4230.c: a power monitor's four channels: the board's rails @rail[n]
+ * (@fn gives a rail's voltage and current), with their shunts */
+typedef void FoRailFn(void *opaque, int rail, int32_t *mv, int32_t *ua);
+void ina4230_attach(struct I2CSlave *dev, FoRailFn *fn, void *opaque,
+                    const int rail[4], const uint32_t shunt_uohm[4]);
+
 /* bq2579x.c: a source on VBUS (@mv, giving up to @ma; @dcp: a dedicated
  * charger, else a computer's port), or none (0) */
 void bq2579x_input(struct I2CSlave *dev, int mv, int ma, bool dcp);

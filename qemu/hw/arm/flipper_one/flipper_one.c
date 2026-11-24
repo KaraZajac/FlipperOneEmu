@@ -352,6 +352,70 @@ static void flipper_one_backlight(void *opaque)
     fo_panel_backlight(s->panel, (duty * 255 + 32767) / 65535);
 }
 
+/*
+ * The rails the five INA4230s on the main bus measure, four each, in their
+ * order (0x40, 0x41, 0x43, 0x44, 0x46; as the device tree and the MCU
+ * firmware name them), with their shunts. A rail is at its voltage while
+ * the RK3576 runs, the control board's 3.3 V while the board has its
+ * supply. The currents are nominal, not measured: Flipper OS at rest, and
+ * on the two CPU rails so much more for each core of the cluster that is
+ * running (not waiting for an interrupt) as a channel is read.
+ */
+static const struct {
+    const char *name;
+    uint32_t shunt_uohm;
+    uint16_t mv, ma;
+    int8_t cluster;                     /* a CPU rail's: 0 the A53s, 1 the
+                                           A72s; -1 */
+    uint16_t ma_per_core;
+} fo_rails[20] = {
+    { "VDD_0V75_S3",         50000,  750,  40, -1,   0 },
+    { "VCC3V3_CONTROL",      10000, 3300,  60, -1,   0 },
+    { "VDD0V85_DDR_S0",      20000,  850, 120, -1,   0 },
+    { "VCC_3V3_S3",          10000, 3300,  90, -1,   0 },
+    { "VDDQ0V51_DDR_S0",     20000,  510,  90, -1,   0 },
+    { "VDD0V75_NPU_S0",      10000,  750,   5, -1,   0 },
+    { "VDD0V75_GPU_S0",      20000,  750,  40, -1,   0 },
+    { "VDD0V75_LOGIC_S0",    20000,  750, 280, -1,   0 },
+    { "VDD0V75_CPU_BIG_S0",  10000,  750,  60,  1, 350 },
+    { "VDDA_1V2_S0",         50000, 1200,   8, -1,   0 },
+    { "VCCA_1V8_S0",         20000, 1800,  25, -1,   0 },
+    { "VDD0V75_CPU_LIT_S0",  10000,  750,  40,  0, 120 },
+    { "VDDA_0V75_S0",        50000,  750,  15, -1,   0 },
+    { "VDDA_0V85_S0",        20000,  850,  25, -1,   0 },
+    { "VDDA0V75_HDMI_S0",    20000,  750,   4, -1,   0 },
+    { "VDDA0V85_DDR_PLL_S0", 50000,  850,   3, -1,   0 },
+    { "VCCA_3V3_S0",         20000, 3300,  15, -1,   0 },
+    { "VCCIO_3V3_SD_S0",     50000, 3300,  20, -1,   0 },
+    { "VDD2_1V05_DDR_S3",    20000, 1050, 180, -1,   0 },
+    { "VCC_1V8_S3",          20000, 1800,  70, -1,   0 },
+};
+#define FO_RAIL_CONTROL 1                       /* VCC3V3_CONTROL */
+
+static void flipper_one_rail(void *opaque, int rail, int32_t *mv,
+                             int32_t *ua)
+{
+    FlipperOneState *s = opaque;
+    int ma = fo_rails[rail].ma;
+
+    *mv = *ua = 0;
+    if (s->off || (rail != FO_RAIL_CONTROL && !s->rk_on)) {
+        return;
+    }
+    if (fo_rails[rail].cluster >= 0) {
+        for (int i = 0; i < 4; i++) {
+            CPUState *cs = CPU(&s->rk3576.cpu[fo_rails[rail].cluster * 4 +
+                                              i]);
+
+            if (!qatomic_read(&cs->halted)) {
+                ma += fo_rails[rail].ma_per_core;
+            }
+        }
+    }
+    *mv = fo_rails[rail].mv;
+    *ua = ma * 1000;
+}
+
 /* the main board's bus: the MCU's PIO I2C, and the RK3576's I2C2 */
 static bool flipper_one_main_bus_claim(void *opaque, bool claim)
 {
@@ -806,6 +870,19 @@ static void flipper_one_init(MachineState *ms)
                           qemu_allocate_irq(flipper_one_main_input, s, 2));
     ina219_attach(i2c_slave_create_simple(s->main_bus.bus, "ina219", 0x45),
                   &s->battery);
+    for (int i = 0; i < 5; i++) {
+        static const uint8_t addr[5] = { 0x40, 0x41, 0x43, 0x44, 0x46 };
+        int rail[4];
+        uint32_t shunt[4];
+
+        for (int c = 0; c < 4; c++) {
+            rail[c] = 4 * i + c;
+            shunt[c] = fo_rails[4 * i + c].shunt_uohm;
+        }
+        ina4230_attach(i2c_slave_create_simple(s->main_bus.bus, "ina4230",
+                                               addr[i]),
+                       flipper_one_rail, s, rail, shunt);
+    }
     s->usb_pd = i2c_slave_create_simple(s->main_bus.bus, "fusb302", 0x22);
     qdev_connect_gpio_out(DEVICE(s->usb_pd), 0,
                           qemu_allocate_irq(flipper_one_main_input, s, 3));

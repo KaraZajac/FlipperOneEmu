@@ -446,6 +446,22 @@ def body(check, name, d, out, port):
     temp = value("BatTemp")
     check("power show: the battery is at 25 °C", temp is not None and
           abs(temp - 25) < 0.5, str(temp))
+    # the five INA4230s: with no Linux, only the control board's 3.3 V is up
+    text = cli(d, "power consumption", None, 3, ctrl_c=True)
+
+    def rail(name):
+        m = re.findall(rf"{name}\s*\):\s*Bus Voltage: ([\d.]+) V,\s*Shunt "
+                       rf"Voltage: [-\d.]+ mV,\s*Current: ([-\d.]+) A", text)
+        return (float(m[-1][0]), float(m[-1][1])) if m else None
+    control, big = rail("VCC3V3_CONTROL"), rail("VDD0V75_CPU_BIG_S0")
+    check("power consumption: five INA4230s answer",
+          len(set(re.findall(r"INA4230 (\d)", text))) == 5 and
+          "Failed to initialize" not in text, text[-300:])
+    check("... the control board's 3.3 V at 60 mA",
+          control is not None and abs(control[0] - 3.3) < 0.01 and
+          abs(control[1] - 0.06) < 0.002, str(control))
+    check("... the RK3576's rails off without it", big == (0.0, 0.0),
+          str(big))
 
     s = socket.socket(socket.AF_UNIX)
     s.connect(str(d / "cli.sock"))

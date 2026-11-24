@@ -20,8 +20,9 @@ touchpad (through its IQS7211E): its desktop, menus and touchpad test work. Its 
 driver buzzes (the window shakes), its 17 LEDs light in the window as it drives them,
 and its settings are kept in the flash across restarts. Its main bus (I2C from a PIO
 program) reaches the main board's expander, which powers the Linux side, the battery's
-gauge (the status bar shows its charge), its charger, the system rail's current meter
-and the USB-C port's chips: the self-check finds every chip. A charger can be plugged
+gauge (the status bar shows its charge), its charger, the system rail's current meter,
+the five power monitors on the Linux side's rails (`power consumption`; the CPU rails
+follow how many cores run) and the USB-C port's chips: the self-check finds every chip. A charger can be plugged
 into its USB-C port, and the battery charges; a computer plugged in gets its USB serial
 port, also as a real USB device on this PC (USB/IP), and the firmware can be updated as
 picotool updates it, through the RP2350's boot ROM. Its `power reboot` power-cycles the

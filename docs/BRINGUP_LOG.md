@@ -798,3 +798,29 @@ register headers.
     have been this recovery after a NACK at start-up; it has not come back. The MCU uses
     the five INA4230s, which are not modelled yet, only in `power consumption`. Its
     probes of them are NACKs, and so they can set off FW-01 too.
+
+54. **The five power monitors.** The main bus has five TI INA4230s (0x40, 0x41, 0x43, 0x44,
+    0x46), four channels each, on nineteen of the RK3576's rails and on the control
+    board's 3.3 V. The MCU firmware reads them in `power consumption`, and Linux's
+    `ina4230` driver binds to them (Flipper's own, from its INA3221 driver). Both drive
+    the same registers, as the datasheet gives them:
+    - the shunt voltage in 2.5 µV steps, or 625 nV in the 20.48 mV range;
+    - the bus voltage in 1.6 mV steps;
+    - the current, SHUNT × CALIBRATION / 2048;
+    - the power, CURRENT × BUS / 20000;
+    - the 32-bit energy, read as four bytes;
+    - a conversion-ready flag at the end of each cycle, which Linux waits for after a
+      reset;
+    - RST and ACC_RST in CONFIG2.
+    Each driver calibrates its own way and reads the same currents. The shunts are the
+    board's (the device tree and the firmware agree). The voltages are the rails'
+    nominal ones, while the RK3576 runs; the control board's 3.3 V is on whenever the
+    board is. The currents are nominal, not measured: Flipper OS at rest, and on the
+    two CPU rails so much more for each core of the cluster that is running when a
+    channel is read.
+    - Without Linux: the control board's 3.3 V at 60 mA, every other rail at 0.
+    - With Flipper OS at rest: the A72s' rail at 60 mA and the A53s' at 40 mA, plus
+      one A53 core's 120 mA when the reading comes from a shell on it.
+    - With eight busy loops: 1.459 A (1.09 W) and 0.520 A.
+    The MCU's probes of these addresses now get an ACK, so `power consumption` no longer
+    risks FW-01. The smoke test checks the five chips and the control board's rail.

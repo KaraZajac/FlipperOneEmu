@@ -35,6 +35,7 @@ arm_common_ss.add(when: 'CONFIG_FLIPPER_ONE', if_true: files(
   'bq28z620.c',
   'bq2579x.c',
   'ina219.c',
+  'ina4230.c',
   'usb_c.c',
   'ws2812.c',
   'host_link.c',

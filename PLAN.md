@@ -55,7 +55,8 @@ screen and its CLI.
       charger, no USB input yet), INA219 (VSYS), FUSB302 and HD3SS3220 (USB-C, nothing
       plugged in) (2026-11-24): the self-check finds every chip; a charger to plug in
       (the window's Ctrl+U): the charger's flow, the battery charging over time, the
-      USB-C chips' partner (2026-11-24); INA4230 ×5 to come
+      USB-C chips' partner (2026-11-24); INA4230 ×5, the RK3576's rails and the control
+      board's 3.3 V (`power consumption`, 2026-11-24)
 - ☑ The backlight's PWM (2026-11-23); the WS2812 LEDs (17 on three chains, their
       supplies on the control expander, 2026-11-24); the headphone jack: its switch,
       and a headset's mic and buttons on the ADC (2026-11-24)
@@ -91,8 +92,8 @@ screen and its CLI.
       (2026-11-24)
 - ☑ The rk3x I2C (2026-11-24): the MCU's link (i2c0), the RK806 PMIC (i2c1, whose
       regulators most of the SoC waits for), the main board's chips (i2c2, the MCU's
-      main bus: HD3SS3220, INA219, the expander, the charger and gauge; INA4230 ×5 to
-      come), the HYM8563 RTC (i2c8); the GPIO banks (v2, interrupts); the main bus's
+      main bus: HD3SS3220, INA219, INA4230 ×5, the expander, the charger and gauge),
+      the HYM8563 RTC (i2c8); the GPIO banks (v2, interrupts); the main bus's
       two masters take turns, as on a busy bus (2026-11-24)
 - ☐ SCMI (TF-A's clocks): its shared memory reserved as U-Boot does, and an answer
 - ◐ Storage: microSD (dw-mshc, QEMU's SD card) with the published image: Flipper OS
