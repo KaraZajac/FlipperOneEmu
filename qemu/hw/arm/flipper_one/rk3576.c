@@ -32,6 +32,13 @@
  *             two halves with write masks): outputs, inputs from the board
  *             (pulled up unless it says otherwise), interrupts by level or
  *             edge (either, with BOTHEDGE), masked, cleared by EOI
+ *   DMAC0-2   0x2ab90000, 0x2abb0000, 0x2abd0000: ARM PL330s (QEMU's), their
+ *             event and abort interrupts on the first of their two SPIs
+ *             (32, 34, 36); peripherals never hold them back. AMBA reads a
+ *             PrimeCell's IDs at the end of its region, 16 KiB here: QEMU's
+ *             4 KiB of registers are there, and their IDs again at 0x3fe0
+ *   SPI0      rk_spi.c, 0x2acf0000, SPI 116: the display link (the board
+ *             takes what it sends)
  *   I2C0-8    rk3x_i2c.c: I2C0 at 0x27300000, I2C1-8 from 0x2ac40000 a
  *             0x10000 apart; SPIs 88-96
  *   UART0, UART4  DesignWare APB UARTs, 16550s with 32-bit registers
@@ -53,6 +60,7 @@
 #include "hw/core/irq.h"
 #include "qemu/timer.h"
 #include "qemu/guest-random.h"
+#include "hw/core/or-irq.h"
 #include "hw/char/serial-mm.h"
 #include "hw/misc/unimp.h"
 #include "system/address-spaces.h"
@@ -374,6 +382,7 @@ static const int gpio_spi[RK3576_NGPIO] = { 153, 157, 161, 165, 169 };
 static void gpio_update(RkGpio *g)
 {
     uint32_t level = (g->dr & g->ddr) | (g->in & ~g->ddr);
+    uint32_t changed = level ^ g->level;
     uint32_t rose = level & ~g->level, fell = ~level & g->level;
     uint32_t edges = (rose & (g->pol | g->both)) | (fell & (~g->pol | g->both));
     uint32_t levels = ~(level ^ g->pol);        /* at its active level */
@@ -382,6 +391,13 @@ static void gpio_update(RkGpio *g)
     g->raw = (g->raw & g->type) | (edges & g->type) | (levels & ~g->type);
     g->raw &= g->en;
     qemu_set_irq(g->irq, (g->raw & ~g->mask) != 0);
+    for (int pin = 0; changed && g->soc && g->soc->gpio_out; pin++) {
+        if (changed & BIT(pin)) {
+            changed &= ~BIT(pin);
+            g->soc->gpio_out(g->soc->gpio_out_opaque, g->bank, pin,
+                             level & BIT(pin));
+        }
+    }
 }
 
 static uint32_t *gpio_reg(RkGpio *g, hwaddr off)
@@ -491,6 +507,7 @@ static void rk3576_init(Object *obj)
                                   : ARM_CPU_TYPE_NAME("cortex-a53"));
     }
     object_initialize_child(obj, "gic", &s->gic, TYPE_ARM_GIC);
+    object_initialize_child(obj, "spi0", &s->spi0, TYPE_RK_SPI);
     for (int n = 0; n < RK3576_NI2C; n++) {
         g_autofree char *name = g_strdup_printf("i2c%d", n);
 
@@ -594,6 +611,8 @@ static void rk3576_realize(DeviceState *dev, Error **errp)
         RkGpio *g = &s->gpio[b];
         g_autofree char *name = g_strdup_printf("rk3576.gpio%d", b);
 
+        g->soc = s;
+        g->bank = b;
         g->irq = rk3576_spi(s, gpio_spi[b]);
         g->in = g->level = 0xffffffff;          /* pulled up */
         memory_region_init_io(&g->mr, OBJECT(s), &gpio_ops, g, name, 0x200);
@@ -614,6 +633,41 @@ static void rk3576_realize(DeviceState *dev, Error **errp)
                                               : 0x27300000,
                                     sysbus_mmio_get_region(i2c, 0));
         sysbus_connect_irq(i2c, 0, rk3576_spi(s, 88 + n));
+    }
+
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->spi0), errp)) {
+        return;
+    }
+    memory_region_add_subregion(sysmem, 0x2acf0000,
+                                sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->spi0),
+                                                       0));
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->spi0), 0, rk3576_spi(s, 116));
+
+    for (int d = 0; d < 3; d++) {
+        DeviceState *dma = qdev_new("pl330");
+        DeviceState *any = qdev_new(TYPE_OR_IRQ);
+
+        object_property_set_link(OBJECT(dma), "memory", OBJECT(sysmem),
+                                 &error_abort);
+        qdev_prop_set_uint32(dma, "num_chnls", 8);
+        qdev_prop_set_uint8(dma, "num_periph_req", 32);
+        qdev_prop_set_uint8(dma, "num_events", 16);
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(dma), &error_fatal);
+        memory_region_add_subregion(sysmem, 0x2ab90000 + d * 0x20000,
+                                    sysbus_mmio_get_region(
+                                        SYS_BUS_DEVICE(dma), 0));
+        memory_region_init_alias(&s->dmac_id[d], OBJECT(s), "rk3576.dmac-id",
+                                 sysbus_mmio_get_region(SYS_BUS_DEVICE(dma),
+                                                        0), 0xfe0, 0x20);
+        memory_region_add_subregion(sysmem, 0x2ab90000 + d * 0x20000 + 0x3fe0,
+                                    &s->dmac_id[d]);
+        qdev_prop_set_uint16(any, "num-lines", 17);
+        qdev_realize_and_unref(any, NULL, &error_fatal);
+        for (int i = 0; i < 17; i++) {          /* abort, then events */
+            sysbus_connect_irq(SYS_BUS_DEVICE(dma), i,
+                               qdev_get_gpio_in(any, i));
+        }
+        qdev_connect_gpio_out(any, 0, rk3576_spi(s, 32 + 2 * d));
     }
 
     create_unimplemented_device("rk3576", PERIPH_BASE, PERIPH_SIZE);

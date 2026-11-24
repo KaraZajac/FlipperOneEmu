@@ -92,6 +92,8 @@ void rk3576_i2c_target(RK3576State *s, int n, const RkI2cTarget *t);
 /* a GPIO bank (Rockchip's v2: 32 pins, each register split in halves) */
 typedef struct RkGpio {
     MemoryRegion mr;
+    struct RK3576State *soc;
+    int bank;
     qemu_irq irq;
     uint32_t dr, ddr;                   /* output levels, outputs */
     uint32_t en, mask, type, pol, both; /* interrupts: on, masked, edge,
@@ -102,6 +104,29 @@ typedef struct RkGpio {
     uint32_t level;                     /* the pins' levels, as last seen */
     uint32_t debounce, dbclk_en, dbclk_con;
 } RkGpio;
+
+/* rk_spi.c: a Rockchip SPI controller, as a host */
+#define TYPE_RK_SPI "rockchip-spi"
+OBJECT_DECLARE_SIMPLE_TYPE(RkSpiState, RK_SPI)
+#define RKSPI_FIFO          64
+
+struct RkSpiState {
+    SysBusDevice parent_obj;
+    MemoryRegion mr;
+    qemu_irq irq;
+    uint32_t ctrlr0, ctrlr1, ssienr, ser, baudr, txftlr, rxftlr, imr;
+    uint32_t dmacr, dmatdlr, dmardlr;
+    uint16_t rx[RKSPI_FIFO];            /* what came in (nothing drives
+                                           MISO: 0s) */
+    int rx_n, rx_head;
+    /* the board gets what goes out, with SER's chip selects */
+    void (*out)(void *opaque, int cs, const uint8_t *data, int len);
+    void *out_opaque;
+};
+
+void rk_spi_set_out(RkSpiState *s,
+                    void (*out)(void *opaque, int cs, const uint8_t *data,
+                                int len), void *opaque);
 
 #define RK3576_NCPUS        8
 #define RK3576_NI2C         9           /* I2C0 ... I2C8 */
@@ -121,6 +146,12 @@ struct RK3576State {
     RkTimer timer0;                     /* the broadcast clockevent */
     RkI2cState i2c[RK3576_NI2C];
     RkGpio gpio[RK3576_NGPIO];
+    RkSpiState spi0;                    /* the display link */
+    MemoryRegion dmac_id[3];            /* the PL330s' IDs, where AMBA
+                                           looks: their regions' ends */
+    /* the board is told of a GPIO pin's new level */
+    void (*gpio_out)(void *opaque, int bank, int pin, bool level);
+    void *gpio_out_opaque;
     I2CBus *i2c2_bus;                   /* I2C2's bus, if it is shared */
     bool start_on;                      /* CPU 0 runs from the start (a
                                            kernel given), else all are off */

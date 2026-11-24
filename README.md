@@ -30,8 +30,9 @@ is plugged in. The RK3576 (four Cortex-A53s and four A72s) starts Flipper OS's o
 kernel and device tree from a published build, which boots to its initramfs's shell on
 the debug port's UART, and whose own driver for the MCU talks to the MCU firmware over
 their I2C link: the kernel gets the Flipper's buttons, touchpad and headset as input
-devices, the MCU learns the CPU's state. The display link, storage and more of the
-RK3576's devices come next. [RESEARCH.md](RESEARCH.md) is the survey this
+devices, the MCU learns the CPU's state, and the frames of Linux's display driver reach
+the MCU's screen over their SPI link. Storage (for the whole of Flipper OS) and more of
+the RK3576's devices come next. [RESEARCH.md](RESEARCH.md) is the survey this
 starts from:
 the device, what Flipper Devices publishes, and what emulating it takes.
 [PLAN.md](PLAN.md) is the order of work; the MCU comes first.

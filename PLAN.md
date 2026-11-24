@@ -106,7 +106,9 @@ screen and its CLI.
       (2026-11-24)
 - ☑ i2c0 (rk3x) with the MCU's register slave at 0x69 and its interrupt line (GPIO2_A6):
       Flipper OS's `flipper-one-mcu` driver and the MCU firmware talk (2026-11-24)
-- ☐ spi0 with the MCU's frame sampler: FlipCTL on the emulated screen
+- ◐ spi0 with the MCU's frame sampler: Flipper OS's display driver sends its frames
+      (DMA from QEMU's PL330s) to the MCU firmware, which shows them (2026-11-24);
+      FlipCTL on the emulated screen waits for the root filesystem
 - ☐ The console UART between the two; the CPU's state, power off, reboot; the MCU
       update over I2C
 

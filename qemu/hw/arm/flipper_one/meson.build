@@ -8,6 +8,7 @@ arm_common_ss.add(when: 'CONFIG_FLIPPER_ONE', if_true: files(
   'rp2350.c',
   'rk3576.c',
   'rk3x_i2c.c',
+  'rk_spi.c',
   'rk806.c',
   'hym8563.c',
   'rp2350_coproc.c',

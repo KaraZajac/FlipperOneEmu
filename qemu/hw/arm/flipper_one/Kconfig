@@ -9,5 +9,7 @@ config FLIPPER_ONE
     select PL011
     select ARM_GIC
     select SERIAL_MM
+    select PL330
+    select OR_IRQ
     select I2C
     select BITBANG_I2C

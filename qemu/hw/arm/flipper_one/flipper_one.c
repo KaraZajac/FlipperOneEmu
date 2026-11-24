@@ -42,6 +42,10 @@ struct FlipperOneState {
     RP2350State mcu;
     RK3576State rk3576;         /* the CPU: Linux's */
     RkI2cTarget link;           /* its I2C0's target: the MCU's I2C1 */
+    FoHostSpi linux_frames;     /* its frames, as they go to the MCU */
+    GByteArray *frame;          /* ... one coming in over its SPI0 */
+    bool frame_active;          /* ... between "active" falling and rising */
+    uint64_t frames_sent, frames_dropped;
     struct arm_boot_info binfo; /* ... a kernel started on it directly */
     Clock *mcu_clk;
     FlipperOnePanelState *panel;
@@ -358,6 +362,56 @@ static void flipper_one_link_stop(void *opaque)
     rp2350_i2c_target_stop(&s->mcu, 1);
 }
 
+/*
+ * The display link: Flipper OS sends a frame over SPI0 (CS0) between
+ * "active" going low and back high, the RK3576's GPIO0_D1 (pin 25); the
+ * frame then goes to the MCU as the RK3576 sends it, edge by edge on its
+ * GPIO25 (active), 26 (SCK) and 28 (MOSI) (host_spi.c), after the frame
+ * before it. Frames that come while two wait to go are dropped.
+ */
+#define FRAME_MAX       65536
+
+static void flipper_one_spi0_out(void *opaque, int cs, const uint8_t *data,
+                                 int len)
+{
+    FlipperOneState *s = opaque;
+
+    if (s->frame_active && (cs & 1) && s->frame->len + len <= FRAME_MAX) {
+        g_byte_array_append(s->frame, data, len);
+    }
+}
+
+static void flipper_one_rk_gpio(void *opaque, int bank, int pin, bool level)
+{
+    FlipperOneState *s = opaque;
+
+    if (bank != 0 || pin != 25) {
+        return;
+    }
+    if (!level) {                               /* active: a frame */
+        s->frame_active = true;
+        g_byte_array_set_size(s->frame, 0);
+    } else if (s->frame_active) {
+        s->frame_active = false;
+        if (!s->frame->len) {
+            return;
+        }
+        if (fo_host_spi_waiting(&s->linux_frames) >= 2) {
+            s->frames_dropped++;
+            return;
+        }
+        fo_host_spi_send(&s->linux_frames, s->frame);   /* (its now) */
+        s->frame = g_byte_array_sized_new(FO_LCD_H * (FO_LCD_W + 2));
+    }
+}
+
+static void flipper_one_frame_sent(void *opaque)
+{
+    FlipperOneState *s = opaque;
+
+    s->frames_sent++;
+}
+
 /* the RK3576's cores, with no kernel to start: reset, and off */
 static void flipper_one_rk3576_reset(void *opaque)
 {
@@ -392,6 +446,12 @@ static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
         .stop = flipper_one_link_stop, .opaque = s,
     };
     rk3576_i2c_target(&s->rk3576, 0, &s->link);
+    /* the display link: SPI0's frames to the MCU */
+    s->frame = g_byte_array_sized_new(FO_LCD_H * (FO_LCD_W + 2));
+    fo_host_spi_init(&s->linux_frames, &s->mcu, flipper_one_frame_sent, s);
+    rk_spi_set_out(&s->rk3576.spi0, flipper_one_spi0_out, s);
+    s->rk3576.gpio_out = flipper_one_rk_gpio;
+    s->rk3576.gpio_out_opaque = s;
     i2c_slave_create_simple(rk3576_i2c_bus(&s->rk3576, 1), "rk806", 0x23);
     i2c_slave_create_simple(rk3576_i2c_bus(&s->rk3576, 8), "hym8563", 0x51);
     if (!ms->kernel_filename) {

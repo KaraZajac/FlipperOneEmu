@@ -653,3 +653,20 @@ register headers.
     and the kernel's UCSI part finds no device tree node; in one of six starts with the
     kernel running, the MCU's PIO I2C hung in its first read of the main bus — not
     seen since, to be looked into if it comes back.
+49. **The display link: Linux's frames on the MCU's screen.** Flipper OS's
+    `flipper_one_display` driver (DRM, on SPI0) sends a frame for each commit: "active"
+    low (the RK3576's GPIO0_D1), the frame over SPI, "active" high. SPI0 waited for its
+    DMA channels: the three PL330s are QEMU's model now. The kernel's AMBA bus reads a
+    PrimeCell's IDs from the last 0x20 bytes of its region, 16 KiB here, where only
+    unimplemented space lay behind QEMU's 4 KiB of registers: the IDs are there too
+    now. The Rockchip SPI controller is modelled as the driver uses it: words written
+    to TXDR go out at once (QEMU's PL330 writes a burst to a fixed address as one
+    write, so with TX DMA on each byte of an access is data), an idle controller, the
+    newer kind's 64-word FIFO, a word back for each word sent when it is not transmit
+    only. The board takes SPI0's bytes between "active" falling and rising (the GPIO
+    banks tell it of their pins' levels) and the frame goes to the MCU as host_spi.c
+    sends the host link's frames, edge by edge on its GPIO25, 26 and 28. From the
+    initramfs's shell: `echo 0 > /sys/class/graphics/fb0/blank` (the commit that
+    switches the display on) shows what was in the framebuffer on the MCU's screen,
+    and each blank and unblank again; plain writes to /dev/fb0 commit nothing in this
+    kernel. FlipCTL, which draws with DRM, needs the root filesystem.
