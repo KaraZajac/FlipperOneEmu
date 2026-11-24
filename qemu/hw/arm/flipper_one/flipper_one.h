@@ -83,6 +83,8 @@ struct FlipperOnePanelState {
     bool touching;
     uint16_t touch_x, touch_y;          /* 0 ... 1000 across the pad */
     uint8_t touch_p;
+    bool usb;                           /* a charger in the USB-C port; it
+                                           stays when the program goes */
 
     /* the board's input parts are told of a change */
     void (*input)(void *opaque);
@@ -206,18 +208,33 @@ void iqs7211e_touch(struct I2CSlave *dev, bool touching, int x, int y, int p);
 /*
  * The battery as the power chips see it (battery.c): a two-cell lithium-ion
  * pack (the firmware's charge limit is 8.65 V). Its numbers are assumed: 3000
- * mAh, 25 °C, its charge the machine's "battery" property (80 % unless told).
- * It does not run down: its charge stays where it is set, while its current
- * is what the board draws.
+ * mAh, 25 °C, its charge at the start the machine's "battery" property (80 %
+ * unless told). Its charge follows its current over the virtual clock's
+ * time: out of it, what the board draws; into it, what the charger gives it
+ * (bq2579x.c works that out, its "flow").
  */
 typedef struct FoBattery {
-    int percent;                        /* 0 ... 100 */
+    double mah;                         /* the charge in it */
     int design_mah;
     int temp_dk;                        /* 0.1 K */
-    int load_ma;                        /* what the board draws from it */
+    int load_ma;                        /* what the board draws (VSYS) */
+    int ibat_ma;                        /* its current: + into it */
+    int64_t at_ns;                      /* the charge's time */
+    QEMUTimer *tick;
+    /* its current, from the charger, as things are now */
+    int (*flow)(void *opaque, struct FoBattery *b);
+    void *flow_opaque;
 } FoBattery;
 
-/* its voltage at that load, mV */
+/* the clock starts for it */
+void fo_battery_start(FoBattery *b);
+/* its charge up to now, then its current again: before anything that
+ * depends on them is read, and after anything they depend on changed */
+void fo_battery_update(FoBattery *b);
+int fo_battery_percent(const FoBattery *b);
+void fo_battery_set_percent(FoBattery *b, int percent);
+/* its voltage at rest; at its terminals, at its current (mV) */
+int fo_battery_ocv_mv(const FoBattery *b);
 int fo_battery_mv(const FoBattery *b);
 
 /* bq28z620.c, bq2579x.c, ina219.c: the gauge, the charger and the system
@@ -225,6 +242,12 @@ int fo_battery_mv(const FoBattery *b);
 void bq28z620_attach(struct I2CSlave *dev, FoBattery *bat);
 void bq2579x_attach(struct I2CSlave *dev, FoBattery *bat);
 void ina219_attach(struct I2CSlave *dev, FoBattery *bat);
+
+/* bq2579x.c: a source on VBUS (@mv, giving up to @ma), or none (0) */
+void bq2579x_input(struct I2CSlave *dev, int mv, int ma);
+/* usb_c.c: a source on the USB-C port, offering @rp_ma (its Rp), or none */
+void fusb302_attach(struct I2CSlave *dev, int rp_ma);
+void hd3ss3220_attach(struct I2CSlave *dev, int rp_ma);
 
 /* ---------------------------------------------- the main bus, on pins */
 

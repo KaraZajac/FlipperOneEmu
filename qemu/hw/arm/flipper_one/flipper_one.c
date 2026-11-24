@@ -42,6 +42,11 @@ struct FlipperOneState {
     I2CSlave *haptic;           /* ... DRV2605L */
     FoI2cPins main_bus;         /* the main bus: a PIO program's, GPIO22/23 */
     I2CSlave *main_expander;    /* ... its PCAL6416 */
+    uint16_t main_inputs;       /* ... the levels at its inputs */
+    I2CSlave *charger;          /* ... the BQ25792 */
+    I2CSlave *usb_pd;           /* ... the USB-C port's FUSB302 */
+    I2CSlave *usb_mux;          /* ... and its HD3SS3220 */
+    bool usb;                   /* a charger is plugged in */
     FoBattery battery;
     FoLeds leds;                /* the WS2812s, GPIO29-31 */
     FoHost *host;               /* a program in the RK3576's place */
@@ -55,6 +60,8 @@ struct FlipperOneState {
  * The front panel's buttons, on the expander's pins (pressed: low), and its
  * finger, on the touchpad
  */
+static void flipper_one_usb(FlipperOneState *s, bool plugged);
+
 static void flipper_one_input(void *opaque)
 {
     FlipperOneState *s = opaque;
@@ -63,6 +70,35 @@ static void flipper_one_input(void *opaque)
     pcal6416_set_pins(s->buttons, ~p->keys & 0xffff);
     iqs7211e_touch(s->touchpad, p->touching, p->touch_x, p->touch_y,
                    p->touch_p);
+    if (p->usb != s->usb) {
+        flipper_one_usb(s, p->usb);
+    }
+}
+
+/*
+ * The USB-C port: a charger plugged in, or pulled out. It is a USB-C
+ * charger of 5 V that offers 3 A (its Rp) and shorts D+ to D- (a dedicated
+ * charging port); the firmware negotiates no more (its PD is not written
+ * yet), so 5 V is what there is.
+ */
+static void flipper_one_usb(FlipperOneState *s, bool plugged)
+{
+    int rp_ma = plugged ? 3000 : 0;
+
+    s->usb = plugged;
+    bq2579x_input(s->charger, plugged ? 5000 : 0, rp_ma);
+    fusb302_attach(s->usb_pd, rp_ma);
+    hd3ss3220_attach(s->usb_mux, rp_ma);
+}
+
+/* an input of the main board's expander: the charger's INT (pin 2) and the
+ * FUSB302's (pin 3), open drain, low when asserted */
+static void flipper_one_main_input(void *opaque, int n, int level)
+{
+    FlipperOneState *s = opaque;
+
+    s->main_inputs = deposit32(s->main_inputs, n, 1, level);
+    pcal6416_set_pins(s->main_expander, s->main_inputs);
 }
 
 /* the expanders' INT and the touchpad's RDY: open drain, the board's
@@ -107,7 +143,9 @@ static void flipper_one_host_power(void *opaque, int n, int level)
 {
     FlipperOneState *s = opaque;
 
+    fo_battery_update(&s->battery);             /* up to now, as it was */
     s->battery.load_ma = level ? 400 : 40;
+    fo_battery_update(&s->battery);
 }
 
 /* the expanders' RESET: GPIO43 (the control bus's), GPIO38 (the main
@@ -254,15 +292,21 @@ static void flipper_one_init(MachineState *ms)
     qdev_connect_gpio_out_named(DEVICE(s->main_expander), "pins", 12,
                                 qemu_allocate_irq(flipper_one_host_power, s,
                                                   0));
+    s->main_inputs = 0xffff;                    /* pulled up */
     s->battery.load_ma = 40;
     bq28z620_attach(i2c_slave_create_simple(s->main_bus.bus, "bq28z620",
                                             0x55), &s->battery);
-    bq2579x_attach(i2c_slave_create_simple(s->main_bus.bus, "bq2579x", 0x6b),
-                   &s->battery);
+    s->charger = i2c_slave_create_simple(s->main_bus.bus, "bq2579x", 0x6b);
+    bq2579x_attach(s->charger, &s->battery);
+    qdev_connect_gpio_out(DEVICE(s->charger), 0,
+                          qemu_allocate_irq(flipper_one_main_input, s, 2));
     ina219_attach(i2c_slave_create_simple(s->main_bus.bus, "ina219", 0x45),
                   &s->battery);
-    i2c_slave_create_simple(s->main_bus.bus, "fusb302", 0x22);
-    i2c_slave_create_simple(s->main_bus.bus, "hd3ss3220", 0x47);
+    s->usb_pd = i2c_slave_create_simple(s->main_bus.bus, "fusb302", 0x22);
+    qdev_connect_gpio_out(DEVICE(s->usb_pd), 0,
+                          qemu_allocate_irq(flipper_one_main_input, s, 3));
+    s->usb_mux = i2c_slave_create_simple(s->main_bus.bus, "hd3ss3220", 0x47);
+    fo_battery_start(&s->battery);
     rp2350_pin_listen(&s->mcu, 43, flipper_one_expander_reset, s);
     rp2350_pin_listen(&s->mcu, 38, flipper_one_expander_reset, s);
 }
@@ -296,7 +340,7 @@ static void flipper_one_set_log(Object *obj, const char *value, Error **errp)
 static void flipper_one_get_battery(Object *obj, Visitor *v, const char *name,
                                     void *opaque, Error **errp)
 {
-    int32_t value = FLIPPER_ONE(obj)->battery.percent;
+    int32_t value = fo_battery_percent(&FLIPPER_ONE(obj)->battery);
 
     visit_type_int32(v, name, &value, errp);
 }
@@ -313,16 +357,16 @@ static void flipper_one_set_battery(Object *obj, Visitor *v, const char *name,
         error_setg(errp, "battery: a charge from 0 to 100 (%%)");
         return;
     }
-    FLIPPER_ONE(obj)->battery.percent = value;
+    fo_battery_set_percent(&FLIPPER_ONE(obj)->battery, value);
 }
 
 static void flipper_one_instance_init(Object *obj)
 {
     FlipperOneState *s = FLIPPER_ONE(obj);
 
-    s->battery.percent = 80;
     s->battery.design_mah = 3000;
     s->battery.temp_dk = 2982;                  /* 25 °C */
+    fo_battery_set_percent(&s->battery, 80);
 }
 
 static bool flipper_one_get_bootsel(Object *obj, Error **errp)
@@ -363,7 +407,7 @@ static void flipper_one_class_init(ObjectClass *oc, const void *data)
     object_class_property_add(oc, "battery", "int", flipper_one_get_battery,
                               flipper_one_set_battery, NULL, NULL);
     object_class_property_set_description(oc, "battery",
-        "The battery's charge, 0 to 100 (%); 80 unless told");
+        "The battery's charge at the start, 0 to 100 (%); 80 unless told");
 }
 
 static const TypeInfo flipper_one_types[] = {

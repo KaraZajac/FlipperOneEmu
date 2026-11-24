@@ -20,8 +20,8 @@ driver buzzes (the window shakes), its 17 LEDs light in the window as it drives 
 and its settings are kept in the flash across restarts. Its main bus (I2C from a PIO
 program) reaches the main board's expander, which powers the Linux side, the battery's
 gauge (the status bar shows its charge), its charger, the system rail's current meter
-and the USB-C port's chips: the self-check finds every chip. A USB cable to plug in, and
-the Linux side (the RK3576), are next. [RESEARCH.md](RESEARCH.md) is the survey this
+and the USB-C port's chips: the self-check finds every chip. A charger can be plugged
+into its USB-C port, and the battery charges. The Linux side (the RK3576) is next. [RESEARCH.md](RESEARCH.md) is the survey this
 starts from:
 the device, what Flipper Devices publishes, and what emulating it takes.
 [PLAN.md](PLAN.md) is the order of work; the MCU comes first.
@@ -38,11 +38,12 @@ scripts/fetch_firmware.py    # the MCU firmware's newest build, and the RP2350 b
 The window draws a Flipper One around the emulated screen, part by part where the device
 has them: this project's own vector drawing, measured from the device's published renders
 (it is not Flipper Devices' artwork, and the device's name stands where their wordmark
-is), with its LEDs where the device has them. Click its
-buttons, or use the keyboard: the arrows and Enter are the pad, Backspace or Esc is
-Back, F1 to F5 are the soft keys (Esc, View, Power, Edit, Run), Tab is App Switcher,
-Space is PTT; drag on the touchpad. It talks to the emulator over a front-panel link,
-[docs/PANEL_LINK.md](docs/PANEL_LINK.md), which any program can use. Another,
+is), with its LEDs where the device has them. Click its buttons, or use the keyboard:
+the arrows and Enter are the pad, Backspace or Esc is Back, F1 to F5 are the soft keys
+(Esc, View, Power, Edit, Run), Tab is App Switcher, Space is PTT; drag on the touchpad;
+Ctrl+U plugs a USB charger in, or pulls it out. It talks to the emulator over a
+front-panel link, [docs/PANEL_LINK.md](docs/PANEL_LINK.md), which any program can use.
+Another,
 [docs/HOST_LINK.md](docs/HOST_LINK.md) (`devices/NAME/host.sock`), lets a program take
 the RK3576's place on its link to the MCU: the I2C registers (CPU state, LEDs, haptics,
 input), the interrupt line, and the screen: frames it sends go over the display's SPI

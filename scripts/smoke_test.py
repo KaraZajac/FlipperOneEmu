@@ -19,7 +19,9 @@ Boots a throwaway device, devices/smoke-PID (removed at the end unless
   gauge, the charger and the current meter as the battery model has them;
 - the buttons and the touchpad: `input dump` sees a key and a touch sent on
   the front-panel link;
-- Power's Flipper OS menu over the frame, and Stop there: the MCU's desktop.
+- Power's Flipper OS menu over the frame, and Stop there: the MCU's desktop;
+- a charger plugged in, then pulled out: the charger's interrupts through
+  the main board's expander, `power show` charging.
 
 Exit status 0 = pass. Screenshots go to --out.
 """
@@ -242,6 +244,12 @@ def cli(d, command, done, timeout, ctrl_c=False):
     return plain(out)
 
 
+def last_value(text, label):
+    """the number after "LABEL:" the last time it was printed"""
+    m = re.findall(rf"{label}:\s+(-?[\d.]+)", text)
+    return float(m[-1]) if m else None
+
+
 def test_frame():
     """a frame to know again: a ramp, a chequered band, a border round
     what shows, a black block"""
@@ -361,8 +369,7 @@ def body(check, name, d, out):
     text = cli(d, "power show", None, 2.5, ctrl_c=True)
 
     def value(label):
-        m = re.findall(rf"{label}:\s+(-?[\d.]+)", text)
-        return float(m[-1]) if m else None
+        return last_value(text, label)
     check("power show: the gauge's charge is 80 %", value("SoC") == 80,
           str(value("SoC")))
     vsys = value("VSYS")    # the battery's 8.02 V less the load's drop
@@ -416,6 +423,22 @@ def body(check, name, d, out):
           until(lambda: panel.screen() not in (menu, before), 3))
     time.sleep(1.0)
     panel.save(out / "desktop.png")
+
+    # ---------------------------------- a charger, with the MCU in charge
+    # (with the Linux side off, the main board's expander is the MCU's)
+    panel.s.sendall(b"usb 1\n")
+    check("a charger plugged in: its interrupts reach the firmware",
+          wait_log(d, r"IRQ1:.*BC1\.2_DONE VBUS CHG", 5))
+    text = cli(d, "power show", None, 2.5, ctrl_c=True)
+    check("power show: VBUS is 5 V", last_value(text, "VBUS") == 5.0,
+          str(last_value(text, "VBUS")))
+    check("power show: fast charge (CC)", "Fast charge (CC mode)" in text)
+    ibat = last_value(text, "IBAT")
+    check("power show: the battery charges", ibat is not None and ibat > 1000,
+          str(ibat))
+    panel.s.sendall(b"usb 0\n")
+    check("pulled out: the firmware hears that too",
+          wait_log(d, r"IRQ0:\s+0x0B\s+VBUS_PRESENT", 3))
 
     # ---------------------------------------------- the log, at the end
     text = log_text(d)

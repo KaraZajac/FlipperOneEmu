@@ -8,9 +8,10 @@
 It shows a Flipper One of this project's own drawing around the emulated
 screen, and takes its buttons and touchpad from the mouse and the keyboard:
 arrows and Enter the pad, Backspace or Esc Back, F1-F5 the soft keys (Esc,
-View, Power, Edit, Run), Tab App Switcher, Space PTT; drag on the touchpad.
-It talks to the device over its front-panel link (docs/PANEL_LINK.md), and
-starts the device with the launcher when it is not running.
+View, Power, Edit, Run), Tab App Switcher, Space PTT; drag on the touchpad;
+Ctrl+U plugs a USB charger in, or pulls it out. It talks to the device over
+its front-panel link (docs/PANEL_LINK.md), and starts the device with the
+launcher when it is not running.
 
 FlipperOneEmu is not made by Flipper Devices, and this drawing is not theirs.
 """
@@ -57,10 +58,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.link.backlight.connect(self.view.set_backlight)
         self.link.leds.connect(self.view.set_leds)
         self.link.haptic.connect(self.view.set_haptic)
+        self.link.usb.connect(self._usb)
         self.link.stopped.connect(self._stopped)
         self.view.key.connect(self._key)
         self.view.touch.connect(self._touch)
         self.lcd_on = False
+        self.usb = False
 
         self._menus()
         self._lost()
@@ -73,6 +76,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._action(device, "&Start", self.start)
         self._action(device, "S&top", self.stop)
         self._action(device, "&Restart", self.restart)
+        device.addSeparator()
+        self.usb_action = self._action(device, "&USB charger plugged in",
+                                       self._plug, "Ctrl+U")
+        self.usb_action.setCheckable(True)
         device.addSeparator()
         self._action(device, "Save the &screen as a picture…", self.save_screen,
                      "Ctrl+S")
@@ -126,8 +133,21 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _hello(self):
         self.state = "running"
-        self._say("running")
+        self._say(self._running())
         self._hint()
+
+    def _running(self):
+        return "running" + (" · a USB charger plugged in" if self.usb else "")
+
+    def _plug(self, plugged):
+        self.link.set_usb(plugged)
+        self.usb_action.setChecked(self.usb)    # until the device says so
+
+    def _usb(self, plugged):
+        self.usb = plugged
+        self.usb_action.setChecked(plugged)
+        if self.state == "running":
+            self._say(self._running())
 
     def _lost(self):
         self.state = "off"
@@ -146,7 +166,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if why:
             self._say(f"stands still ({why})")
         elif self.state == "running":
-            self._say("running")
+            self._say(self._running())
 
     def _hint(self):
         if self.state != "running":
@@ -182,7 +202,8 @@ class MainWindow(QtWidgets.QMainWindow):
             "Arrows: the pad · Enter: OK · Backspace or Esc: Back\n"
             "F1 Esc · F2 View · F3 Power · F4 Edit · F5 Run (the soft keys)\n"
             "Tab: App Switcher · Space: PTT\n"
-            "Click the buttons; drag on the touchpad."))
+            "Click the buttons; drag on the touchpad.\n"
+            "Ctrl+U: a USB charger plugged in, or pulled out."))
 
     def _about(self):
         QtWidgets.QMessageBox.about(self, "About FlipperOneEmu", (

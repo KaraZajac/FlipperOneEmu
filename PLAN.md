@@ -53,8 +53,9 @@ screen and its CLI.
       `MASKROM_EN`; the firmware powers the Linux side and shows "CPU not responding",
       2026-11-24), BQ28Z620 (the gauge: a battery at 80 %, `battery=N`), BQ25792 (the
       charger, no USB input yet), INA219 (VSYS), FUSB302 and HD3SS3220 (USB-C, nothing
-      plugged in) (2026-11-24): the self-check finds every chip; INA4230 ×5 and a
-      cable to plug in to come
+      plugged in) (2026-11-24): the self-check finds every chip; a charger to plug in
+      (the window's Ctrl+U): the charger's flow, the battery charging over time, the
+      USB-C chips' partner (2026-11-24); INA4230 ×5 to come
 - ◐ The backlight's PWM (2026-11-23); the WS2812 LEDs (17 on three chains, their
       supplies on the control expander, 2026-11-24); the headset key (ADC) to come
 - ☑ The desktop and menus, the buttons and the touchpad from the window (2026-11-24)

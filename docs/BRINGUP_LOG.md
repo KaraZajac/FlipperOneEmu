@@ -412,3 +412,24 @@ register headers.
     now does that, the second look at the transfer's end, so that INT's fall is an edge
     for the MCU's GPIO interrupt. A quick press and release between two reads of the
     buttons' expander is now seen whole too.
+39. **A charger in the USB-C port.** The panel link's `usb 1` (the window's Ctrl+U)
+    plugs in a USB-C charger: 5 V, 3 A offered by its Rp, D+ and D- shorted (a DCP); the
+    firmware's PD is not written yet, so it asks for no more. The BQ25792 sees VBUS
+    (and VAC1, tied to it) at once, good 30 ms later, a DCP 300 ms after that; its
+    status registers follow, each change sets its flag as the datasheet has them (on
+    any change, or on the rising edge), and a flag its mask lets through pulses INT,
+    through the main board's expander (pin 2) to the MCU. The power flow is the
+    charger's: with input, the system runs from it (90 % efficient, assumed) and the
+    battery takes what is left, up to the charge cycle's current (precharge, fast
+    charge at ICHG, taper as VREG holds it back, done; again on falling VRECHG below);
+    with too little input, the input current is the limit (IINDPM). From 5 V at 3 A,
+    that is about 1.6 A into the battery with the Linux side off, 1.3 A with it on. The
+    battery's charge now follows its current over the virtual clock's time, out or in
+    (`battery=` is where it starts), and the gauge reports it: the charge rising, the
+    current positive, DSG off. The FUSB302 sees VBUS and the Rp's level on CC1, its
+    toggling ends as a sink, its INT_N to the expander's pin 3; the HD3SS3220 attaches
+    as a sink. With the Linux side on, the firmware hands the main board's expander to
+    the CPU and leaves its interrupts alone; with it off (Stop), it logs each of the
+    charger's interrupts as they come: VBUS_PRESENT and AC1_PRESENT, PG, then IINDPM,
+    BC1.2_DONE, VBUS and CHG, DPDM_DONE; and `power show` has "USB DCP (3.25A)" and
+    "Fast charge (CC mode)".

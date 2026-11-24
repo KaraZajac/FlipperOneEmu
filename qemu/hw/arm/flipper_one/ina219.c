@@ -116,6 +116,9 @@ static int ina_event(I2CSlave *i2c, enum i2c_event event)
 
     s->got = 0;
     s->low = false;
+    if (event == I2C_START_RECV && s->bat) {
+        fo_battery_update(s->bat);              /* as it is now */
+    }
     return 0;
 }
 

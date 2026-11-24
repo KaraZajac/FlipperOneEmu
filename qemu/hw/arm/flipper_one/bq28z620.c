@@ -15,6 +15,7 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 #include "qemu/osdep.h"
+#include <math.h>
 #include "hw/i2c/i2c.h"
 #include "flipper_one.h"
 
@@ -46,11 +47,12 @@ static uint16_t bq_minutes(int mah, int ma)
 
 static uint16_t bq_word(Bq28z620State *s, uint8_t cmd)
 {
-    static const FoBattery none = { .percent = 0, .design_mah = 1 };
+    static const FoBattery none = { .design_mah = 1 };
     const FoBattery *b = s->bat ? s->bat : &none;
     int fcc = b->design_mah;
-    int rem = fcc * b->percent / 100;
-    int current = -b->load_ma;                  /* + into the battery */
+    int rem = lround(b->mah);
+    int percent = fo_battery_percent(b);
+    int current = b->ibat_ma;                   /* + into the battery */
     int mv = fo_battery_mv(b);
 
     switch (cmd) {
@@ -61,7 +63,7 @@ static uint16_t bq_word(Bq28z620State *s, uint8_t cmd)
     case 0x08: return mv;
     case 0x0a:
         return BS_INIT | (current > 0 ? 0 : BS_DSG) |
-               (b->percent >= 100 ? BS_FC : 0) | (b->percent <= 0 ? BS_FD : 0);
+               (percent >= 100 ? BS_FC : 0) | (percent <= 0 ? BS_FD : 0);
     case 0x0c: case 0x14: return current;       /* now, and on average */
     case 0x10: return rem;
     case 0x12: return fcc;
@@ -75,10 +77,10 @@ static uint16_t bq_word(Bq28z620State *s, uint8_t cmd)
         return (int)((int64_t)mv * current / 10000);
     case 0x28: return b->temp_dk + 20;          /* the chip, a little warmer */
     case 0x2a: return 0;                        /* cycles */
-    case 0x2c: return b->percent;
+    case 0x2c: return percent;
     case 0x2e: return 100;                      /* state of health */
     case 0x30: return 8650;                     /* the charge voltage, mV */
-    case 0x32: return b->percent >= 100 ? 0 : 3000;     /* ... current, mA */
+    case 0x32: return percent >= 100 ? 0 : 3000;        /* ... current, mA */
     case 0x3c: return b->design_mah;
     default: return 0;
     }
@@ -118,6 +120,8 @@ static int bq_event(I2CSlave *i2c, enum i2c_event event)
 
     if (event == I2C_START_SEND) {
         s->have_cmd = false;
+    } else if (event == I2C_START_RECV && s->bat) {
+        fo_battery_update(s->bat);              /* as it is now */
     }
     return 0;
 }

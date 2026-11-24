@@ -76,6 +76,13 @@ Whether the vibration motor runs (the DRV2605L drives it). A buzz shorter than t
 panel's 16 ms still comes, as `haptic 1` for one look and `haptic 0` at the next. The
 window shakes its drawing while it runs.
 
+```
+usb 1
+```
+
+Whether a charger is in the USB-C port: on connecting, and when a program plugs one in
+or pulls it out.
+
 ### To the emulator
 
 ```
@@ -96,6 +103,17 @@ touch end
 
 A finger on the touchpad, at x and y from 0 to 1000 across it (0, 0 the top left), with
 a pressure from 0 to 255; and the finger lifted.
+
+```
+usb 1
+usb 0
+```
+
+A charger plugged into the USB-C port, and pulled out: a USB-C charger of 5 V that
+offers 3 A (its Rp) and shorts D+ to D- (a dedicated charging port; the firmware's PD
+does not ask for more). The charger chip sees it (and takes 300 ms to know what it is),
+the battery charges, the USB-C chips see their partner. It stays when the program goes.
+The window's Device menu has it (Ctrl+U).
 
 ```
 refresh

@@ -1,8 +1,8 @@
 /*
  * The Flipper One's front panel, for a program that shows it
  * (docs/PANEL_LINK.md): out go the screen, its backlight, the LEDs, the
- * vibration motor and whether the machine runs; in come the buttons and the
- * touchpad.
+ * vibration motor and whether the machine runs; in come the buttons, the
+ * touchpad, and a charger plugged into the USB-C port or pulled out.
  *
  * The screen is the panel's 256x144 picture, 0 black to 255 white, which the
  * display controller's model draws into; what changed since the program was
@@ -115,6 +115,7 @@ static void panel_everything(FlipperOnePanelState *s)
     panel_running(s, true);
     panel_lights(s, true);
     panel_rows(s, true);
+    flipper_link_send(&s->lk, "usb %d\n", s->usb);
 }
 
 static void panel_tick(void *opaque)
@@ -178,6 +179,11 @@ static void panel_line(void *opaque, char *line)
             s->touch_y = MIN(MAX(y, 0), 1000);
             s->touch_p = MIN(MAX(p, 0), 255);
         }
+        panel_input(s);
+    } else if (!strcmp(line, "usb") && arg && (!strcmp(arg, "0") ||
+                                               !strcmp(arg, "1"))) {
+        s->usb = arg[0] == '1';
+        flipper_link_send(&s->lk, "usb %d\n", s->usb);
         panel_input(s);
     }
 }
