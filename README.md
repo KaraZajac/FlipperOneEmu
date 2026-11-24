@@ -44,6 +44,8 @@ the device, what Flipper Devices publishes, and what emulating it takes.
 scripts/setup_qemu.sh        # QEMU 11.1.3, its patches and this machine (about 6 minutes)
 scripts/fetch_firmware.py    # the MCU firmware's newest build, and the RP2350 boot ROM
 ./flipperoneemu gui          # the window: it starts a device, devices/one
+scripts/fetch_os.py          # a Flipper OS build (2 GB), for ...
+./flipperoneemu gui --linux  # ... the whole device: Flipper OS on its RK3576 too
 ```
 
 The window draws a Flipper One around the emulated screen, part by part where the device

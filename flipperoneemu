@@ -7,7 +7,7 @@
     ./flipperoneemu run [-n NAME] [--uf2 FILE] [--detach] [--gdb PORT]
     ./flipperoneemu run --linux [BUILD] ...  Flipper OS's kernel on the RK3576
                                          (scripts/fetch_os.py fetches a build)
-    ./flipperoneemu gui [-n NAME]        the window; it starts the device too
+    ./flipperoneemu gui [-n NAME] [--linux]  the window; it starts the device too
     ./flipperoneemu stop [-n NAME]
     ./flipperoneemu status [-n NAME]
     ./flipperoneemu log [-n NAME]        the firmware's log, from its RTT buffer
@@ -213,7 +213,8 @@ def cmd_status(args):
 def cmd_gui(args):
     return subprocess.call([sys.executable, str(SCRIPTS / "fo_gui.py"), "-n",
                             args.name] + (["--zoom", str(args.zoom)]
-                                          if args.zoom else []))
+                                          if args.zoom else []) +
+                           (["--linux"] if args.linux else []))
 
 
 def cmd_log(args):
@@ -470,6 +471,9 @@ def main():
                                 "newest unless told)")
         if name in ("gui", "shot"):
             p.add_argument("--zoom", type=int)
+        if name == "gui":
+            p.add_argument("--linux", action="store_true",
+                           help="start Flipper OS on the RK3576 too")
         if name == "shot":
             p.add_argument("file")
         if name in ("cli", "console"):

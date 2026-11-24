@@ -34,9 +34,10 @@ LAUNCHER = ROOT / "flipperoneemu"
 
 
 class MainWindow(QtWidgets.QMainWindow):
-    def __init__(self, name, zoom=2, start=True):
+    def __init__(self, name, zoom=2, start=True, linux=False):
         super().__init__()
         self.name = name
+        self.linux = linux              # Flipper OS on the RK3576 too
         self.dir = ROOT / "devices" / name
         self.state = "connecting"
         self.setWindowTitle(f"{name}: Flipper One (FlipperOneEmu)")
@@ -146,7 +147,7 @@ class MainWindow(QtWidgets.QMainWindow):
                               stdin=subprocess.DEVNULL)
 
     def start(self):
-        r = self._launch("run", "--detach")
+        r = self._launch("run", "--detach", *(["--linux"] if self.linux else []))
         if r.returncode:
             self._say((r.stderr or r.stdout).strip().splitlines()[-1]
                       if (r.stderr or r.stdout).strip() else "could not start")
@@ -282,6 +283,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("-n", "--name", default="one", help="the device's name")
     ap.add_argument("--zoom", type=int, default=2)
+    ap.add_argument("--linux", action="store_true",
+                    help="start Flipper OS on the RK3576 too (the device's "
+                         "microSD card; scripts/fetch_os.py first)")
     ap.add_argument("--no-start", action="store_true",
                     help="do not start the device; wait for it")
     ap.add_argument("--shot", metavar="FILE.png",
@@ -291,7 +295,8 @@ def main():
     args = ap.parse_args()
     app = QtWidgets.QApplication(sys.argv[:1])
     app.setApplicationName("FlipperOneEmu")
-    w = MainWindow(args.name, args.zoom, start=not args.no_start)
+    w = MainWindow(args.name, args.zoom, start=not args.no_start,
+                   linux=args.linux)
     w.show()
     if args.shot:
         def shoot():
