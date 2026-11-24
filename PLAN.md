@@ -89,8 +89,10 @@ screen and its CLI.
 - ☑ The published kernel and the Flipper One device tree, started directly: Flipper
       OS's initramfs, to its shell (`scripts/fetch_os.py`, `run --linux`, `console`)
       (2026-11-24)
-- ☐ The rk3x I2C: the MCU's link (i2c0), the RK806 PMIC (i2c1, whose regulators most
-      of the SoC waits for), the main board's chips (i2c2), the RTC (i2c8)
+- ☑ The rk3x I2C (2026-11-24): the MCU's link (i2c0), the RK806 PMIC (i2c1, whose
+      regulators most of the SoC waits for), the main board's chips (i2c2, the MCU's
+      main bus: HD3SS3220, INA219, the expander, the charger and gauge; INA4230 ×5 to
+      come), the HYM8563 RTC (i2c8); the GPIO banks (v2, interrupts)
 - ☐ SCMI (TF-A's clocks): its shared memory reserved as U-Boot does, and an answer
 - ☐ Storage: microSD (dw-mshc) or UFS with the published image; then U-Boot from the
       image (SPL, TF-A BL31, U-Boot proper, a BLS entry)
@@ -102,7 +104,8 @@ screen and its CLI.
       `devices/NAME/host.sock`): the MCU's registers at 0x69 and CPU_INT (2026-11-24);
       the screen's frames over the display SPI, edge by edge to the MCU's PIO
       (2026-11-24)
-- ☐ i2c0 (rk3x) with the MCU's register slave at 0x69 and its interrupt line (GPIO2_A6)
+- ☑ i2c0 (rk3x) with the MCU's register slave at 0x69 and its interrupt line (GPIO2_A6):
+      Flipper OS's `flipper-one-mcu` driver and the MCU firmware talk (2026-11-24)
 - ☐ spi0 with the MCU's frame sampler: FlipCTL on the emulated screen
 - ☐ The console UART between the two; the CPU's state, power off, reboot; the MCU
       update over I2C

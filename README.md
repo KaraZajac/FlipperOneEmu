@@ -28,8 +28,10 @@ picotool updates it, through the RP2350's boot ROM. Its `power reboot` power-cyc
 board through the charger, and its power off (ship mode) turns it off until a charger
 is plugged in. The RK3576 (four Cortex-A53s and four A72s) starts Flipper OS's own
 kernel and device tree from a published build, which boots to its initramfs's shell on
-the debug port's UART; storage, the RK3576's I2C (and so its link to the MCU) and more of
-its devices come next. [RESEARCH.md](RESEARCH.md) is the survey this
+the debug port's UART, and whose own driver for the MCU talks to the MCU firmware over
+their I2C link: the kernel gets the Flipper's buttons, touchpad and headset as input
+devices, the MCU learns the CPU's state. The display link, storage and more of the
+RK3576's devices come next. [RESEARCH.md](RESEARCH.md) is the survey this
 starts from:
 the device, what Flipper Devices publishes, and what emulating it takes.
 [PLAN.md](PLAN.md) is the order of work; the MCU comes first.

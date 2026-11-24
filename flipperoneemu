@@ -107,7 +107,8 @@ def cmd_run(args):
            "-serial", "chardev:cli",
            "-serial", "null",                   # (the RP2350's UART0)
            # the RK3576's UART0 (the debug port) and UART4 (to the MCU)
-           "-chardev", f"socket,id=linux,path={d / 'linux.sock'},server=on,wait=off",
+           "-chardev", f"socket,id=linux,path={d / 'linux.sock'},server=on,wait=off,"
+                       f"logfile={d / 'linux.log'},logappend=off",
            "-serial", "chardev:linux",
            "-chardev", f"socket,id=linux4,path={d / 'linux4.sock'},server=on,wait=off",
            "-serial", "chardev:linux4",

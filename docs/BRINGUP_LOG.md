@@ -623,3 +623,33 @@ register headers.
     i2c1, which most regulators wait for, the main board's chips on i2c2, the RTC);
     SCMI (its shared memory at 0x4010f000 is RAM to the kernel without the reserved
     region U-Boot adds, and nothing answers it); storage; DWC3, PCIe, GMAC, the display.
+48. **The RK3576's I2C, its PMIC and clock, and the link to the MCU.** Nine rk3x I2C
+    controllers, as Linux's i2c-rk3x drives them: TX mode sends a count from the TX
+    buffer, its first byte after a START the address byte; REGISTER_TX sends the
+    target and register bytes, restarts and reads; RX reads on. A count is a few steps
+    (a START with its address, bytes out, bytes in), each done when the target takes or
+    gives it, so that a target that holds SCL is waited for. The driver first looks
+    at ST (0x220) for SDA and SCL: it read 0, a bus held low, and tried to recover it
+    with GPIOs that read 0 too; ST says idle now, and the GPIO banks are modelled
+    (Rockchip's v2: VER_ID, each register in halves with write masks, interrupts by
+    level or edge), pulled up unless the board drives a pin. On the buses:
+    - I2C1: the RK806 PMIC (a register file: its ID, the regulator enables with their
+      nibble of write mask, read back with both bits). Everything that waited for its
+      regulators probes: the SD host (no card), the ADC, the HDMI PHY, the UFS host
+      (which fails at its own registers: not modelled yet).
+    - I2C8: the HYM8563 clock, QEMU's time: "setting system clock to 2026-11-24...".
+    - I2C2 is the main board's bus, which the MCU's PIO I2C drives too: two masters on
+      one QEMU bus. The kernel finds the HD3SS3220, the INA219, the expander, the
+      charger and gauge (whose drivers then fail to register their power supplies);
+      the five INA4230s are not modelled.
+    - I2C0 reaches the MCU's I2C1, in slave mode at 0x69, through the RP2350 model's
+      target functions, which hold SCL until the MCU firmware's interrupt handler has
+      taken or given a byte; the MCU's CPU_INT (GPIO35) is the RK3576's GPIO2_A6.
+    Flipper OS's `flipper-one-mcu` driver reads the MCU's system interrupt ("MCU
+    restarted, restoring its settings") and registers its input devices: Flipper One
+    Haptic, Buttons, Touchpad, Headset, Software Buttons. The MCU firmware gets CPU
+    state 2 and its screen says "Waiting for CPU screen…". Open: the MCU logs "invalid
+    access" (the kernel reads and writes registers this firmware build does not have)
+    and the kernel's UCSI part finds no device tree node; in one of six starts with the
+    kernel running, the MCU's PIO I2C hung in its first read of the main bus — not
+    seen since, to be looked into if it comes back.

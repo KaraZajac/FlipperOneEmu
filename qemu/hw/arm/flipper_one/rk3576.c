@@ -27,6 +27,13 @@
  *   RNG       0x2a410000: the TRNG: a request (CTRL bit 4) has 32 bytes
  *             ready at once (STATE bit 4, write 1 to clear), from QEMU's
  *             guest random source (-seed makes them the same each run)
+ *   GPIO0-4   0x27320000, 0x2ae10000-0x2ae40000; SPIs 153, 157, 161, 165,
+ *             169: Rockchip's v2 banks (VER_ID 0x010219c8; each register in
+ *             two halves with write masks): outputs, inputs from the board
+ *             (pulled up unless it says otherwise), interrupts by level or
+ *             edge (either, with BOTHEDGE), masked, cleared by EOI
+ *   I2C0-8    rk3x_i2c.c: I2C0 at 0x27300000, I2C1-8 from 0x2ac40000 a
+ *             0x10000 apart; SPIs 88-96
  *   UART0, UART4  DesignWare APB UARTs, 16550s with 32-bit registers
  *             (reg-shift 2) on a 24 MHz clock: UART0 is the debug port's
  *             console (serial0, the kernel's stdout), UART4 the line to the
@@ -355,7 +362,105 @@ static const MemoryRegionOps tmr_ops = {
     .valid = { .min_access_size = 4, .max_access_size = 4 },
 };
 
+/* ------------------------------------------------------------ GPIO */
+
+static const hwaddr gpio_base[RK3576_NGPIO] = {
+    0x27320000, 0x2ae10000, 0x2ae20000, 0x2ae30000, 0x2ae40000,
+};
+static const int gpio_spi[RK3576_NGPIO] = { 153, 157, 161, 165, 169 };
+
+/* the pins' levels now: the latched edges, the levels as they are, the
+ * interrupt */
+static void gpio_update(RkGpio *g)
+{
+    uint32_t level = (g->dr & g->ddr) | (g->in & ~g->ddr);
+    uint32_t rose = level & ~g->level, fell = ~level & g->level;
+    uint32_t edges = (rose & (g->pol | g->both)) | (fell & (~g->pol | g->both));
+    uint32_t levels = ~(level ^ g->pol);        /* at its active level */
+
+    g->level = level;
+    g->raw = (g->raw & g->type) | (edges & g->type) | (levels & ~g->type);
+    g->raw &= g->en;
+    qemu_set_irq(g->irq, (g->raw & ~g->mask) != 0);
+}
+
+static uint32_t *gpio_reg(RkGpio *g, hwaddr off)
+{
+    switch (off & ~7) {
+    case 0x00: return &g->dr;
+    case 0x08: return &g->ddr;
+    case 0x10: return &g->en;
+    case 0x18: return &g->mask;
+    case 0x20: return &g->type;
+    case 0x28: return &g->pol;
+    case 0x30: return &g->both;
+    case 0x38: return &g->debounce;
+    case 0x40: return &g->dbclk_en;
+    }
+    return NULL;
+}
+
+static uint64_t gpio_read(void *opaque, hwaddr off, unsigned size)
+{
+    RkGpio *g = opaque;
+    uint32_t *r = gpio_reg(g, off);
+
+    if (r) {                                    /* a half */
+        return off & 4 ? *r >> 16 : *r & 0xffff;
+    }
+    switch (off) {
+    case 0x48: return g->dbclk_con;
+    case 0x50: return g->raw & ~g->mask;        /* INT_STATUS */
+    case 0x58: return g->raw;                   /* INT_RAWSTATUS */
+    case 0x70: return g->level;                 /* EXT_PORT */
+    case 0x78: return 0x010219c8;               /* VER_ID: v2 */
+    }
+    return 0;
+}
+
+static void gpio_write(void *opaque, hwaddr off, uint64_t v, unsigned size)
+{
+    RkGpio *g = opaque;
+    uint32_t *r = gpio_reg(g, off);
+    int shift = off & 4 ? 16 : 0;
+    uint32_t mask = (v >> 16) << shift;
+
+    if (r) {
+        *r = (*r & ~mask) | ((v & 0xffff) << shift & mask);
+    } else if ((off & ~4) == 0x60) {            /* PORT_EOI: edges done */
+        g->raw &= ~((v & 0xffff) << shift & mask);
+    } else if (off == 0x48) {
+        g->dbclk_con = v;
+    }
+    gpio_update(g);
+}
+
+static const MemoryRegionOps gpio_ops = {
+    .read = gpio_read,
+    .write = gpio_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 4, .max_access_size = 4 },
+};
+
+void rk3576_gpio_in(RK3576State *s, int bank, int pin, bool level)
+{
+    RkGpio *g = &s->gpio[bank];
+
+    g->in = deposit32(g->in, pin, 1, level);
+    gpio_update(g);
+}
+
 /* ------------------------------------------------------------ the SoC */
+
+I2CBus *rk3576_i2c_bus(RK3576State *s, int n)
+{
+    return s->i2c[n].bus;
+}
+
+void rk3576_i2c_target(RK3576State *s, int n, const RkI2cTarget *t)
+{
+    s->i2c[n].target = t;
+}
 
 qemu_irq rk3576_spi(RK3576State *s, int spi)
 {
@@ -386,6 +491,11 @@ static void rk3576_init(Object *obj)
                                   : ARM_CPU_TYPE_NAME("cortex-a53"));
     }
     object_initialize_child(obj, "gic", &s->gic, TYPE_ARM_GIC);
+    for (int n = 0; n < RK3576_NI2C; n++) {
+        g_autofree char *name = g_strdup_printf("i2c%d", n);
+
+        object_initialize_child(obj, name, &s->i2c[n], TYPE_RK_I2C);
+    }
 }
 
 static void rk3576_realize(DeviceState *dev, Error **errp)
@@ -480,11 +590,39 @@ static void rk3576_realize(DeviceState *dev, Error **errp)
                           "rk3576.timer0", 0x20);
     memory_region_add_subregion(sysmem, TIMER0_BASE, &s->timer0.mr);
 
+    for (int b = 0; b < RK3576_NGPIO; b++) {
+        RkGpio *g = &s->gpio[b];
+        g_autofree char *name = g_strdup_printf("rk3576.gpio%d", b);
+
+        g->irq = rk3576_spi(s, gpio_spi[b]);
+        g->in = g->level = 0xffffffff;          /* pulled up */
+        memory_region_init_io(&g->mr, OBJECT(s), &gpio_ops, g, name, 0x200);
+        memory_region_add_subregion(sysmem, gpio_base[b], &g->mr);
+    }
+
+    for (int n = 0; n < RK3576_NI2C; n++) {
+        SysBusDevice *i2c = SYS_BUS_DEVICE(&s->i2c[n]);
+
+        if (n == 2 && s->i2c2_bus) {
+            object_property_set_link(OBJECT(i2c), "bus",
+                                     OBJECT(s->i2c2_bus), &error_abort);
+        }
+        if (!sysbus_realize(i2c, errp)) {
+            return;
+        }
+        memory_region_add_subregion(sysmem, n ? 0x2ac40000 + (n - 1) * 0x10000
+                                              : 0x27300000,
+                                    sysbus_mmio_get_region(i2c, 0));
+        sysbus_connect_irq(i2c, 0, rk3576_spi(s, 88 + n));
+    }
+
     create_unimplemented_device("rk3576", PERIPH_BASE, PERIPH_SIZE);
 }
 
 static const Property rk3576_props[] = {
     DEFINE_PROP_BOOL("start-on", RK3576State, start_on, false),
+    DEFINE_PROP_LINK("i2c2-bus", RK3576State, i2c2_bus, TYPE_I2C_BUS,
+                     I2CBus *),
 };
 
 static void rk3576_class_init(ObjectClass *oc, const void *data)

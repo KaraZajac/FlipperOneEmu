@@ -41,6 +41,7 @@ struct FlipperOneState {
 
     RP2350State mcu;
     RK3576State rk3576;         /* the CPU: Linux's */
+    RkI2cTarget link;           /* its I2C0's target: the MCU's I2C1 */
     struct arm_boot_info binfo; /* ... a kernel started on it directly */
     Clock *mcu_clk;
     FlipperOnePanelState *panel;
@@ -238,12 +239,14 @@ static void flipper_one_main_int(void *opaque, int n, int level)
     rp2350_pin_drive(&s->mcu, 39, level ? -1 : 0);
 }
 
-/* CPU_INT (GPIO35, open drain, the board's pull-up): to the host link */
+/* CPU_INT (GPIO35, open drain, the board's pull-up): the RK3576's GPIO2_A6,
+ * and the host link */
 static void flipper_one_cpu_int(void *opaque, int pin, bool level,
                                 int64_t when_ns)
 {
     FlipperOneState *s = opaque;
 
+    rk3576_gpio_in(&s->rk3576, 2, 6, level);
     fo_host_int(s->host, level);
 }
 
@@ -315,6 +318,46 @@ static void flipper_one_backlight(void *opaque)
     fo_panel_backlight(s->panel, (duty * 255 + 32767) / 65535);
 }
 
+/*
+ * The link: the RK3576's I2C0 reaches the MCU's I2C1, which its firmware
+ * serves in slave mode at 0x69 (its intercom). The MCU's controller takes
+ * each byte when its FIFOs let it, holding SCL until then.
+ */
+static int flipper_one_link_start(void *opaque, uint8_t addr, bool read)
+{
+    FlipperOneState *s = opaque;
+
+    return rp2350_i2c_target_start(&s->mcu, 1, addr, read) ? 1 : -1;
+}
+
+static int flipper_one_link_write(void *opaque, uint8_t byte)
+{
+    FlipperOneState *s = opaque;
+
+    return rp2350_i2c_target_write(&s->mcu, 1, byte);
+}
+
+static int flipper_one_link_read(void *opaque, uint8_t *byte)
+{
+    FlipperOneState *s = opaque;
+
+    return rp2350_i2c_target_read(&s->mcu, 1, byte);
+}
+
+static void flipper_one_link_nack(void *opaque)
+{
+    FlipperOneState *s = opaque;
+
+    rp2350_i2c_target_nack(&s->mcu, 1);
+}
+
+static void flipper_one_link_stop(void *opaque)
+{
+    FlipperOneState *s = opaque;
+
+    rp2350_i2c_target_stop(&s->mcu, 1);
+}
+
 /* the RK3576's cores, with no kernel to start: reset, and off */
 static void flipper_one_rk3576_reset(void *opaque)
 {
@@ -336,9 +379,21 @@ static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
     object_initialize_child(OBJECT(ms), "rk3576", &s->rk3576, TYPE_RK3576);
     qdev_prop_set_bit(DEVICE(&s->rk3576), "start-on",
                       ms->kernel_filename != NULL);
+    /* its I2C2 is the main board's bus, the MCU's PIO I2C's too */
+    object_property_set_link(OBJECT(&s->rk3576), "i2c2-bus",
+                             OBJECT(s->main_bus.bus), &error_abort);
     sysbus_realize(SYS_BUS_DEVICE(&s->rk3576), &error_fatal);
     memory_region_add_subregion(get_system_memory(), RK3576_DRAM_BASE,
                                 ms->ram);
+    /* the MCU on I2C0, its PMIC on I2C1, its real-time clock on I2C8 */
+    s->link = (RkI2cTarget){
+        .start = flipper_one_link_start, .write = flipper_one_link_write,
+        .read = flipper_one_link_read, .nack = flipper_one_link_nack,
+        .stop = flipper_one_link_stop, .opaque = s,
+    };
+    rk3576_i2c_target(&s->rk3576, 0, &s->link);
+    i2c_slave_create_simple(rk3576_i2c_bus(&s->rk3576, 1), "rk806", 0x23);
+    i2c_slave_create_simple(rk3576_i2c_bus(&s->rk3576, 8), "hym8563", 0x51);
     if (!ms->kernel_filename) {
         qemu_register_reset(flipper_one_rk3576_reset, &s->rk3576);
         return;
@@ -373,8 +428,6 @@ static void flipper_one_init(MachineState *ms)
     qdev_prop_set_bit(mcu, "bootsel", s->bootsel);
     qdev_connect_clock_in(mcu, "sysclk", s->mcu_clk);
     sysbus_realize(SYS_BUS_DEVICE(mcu), &error_fatal);
-
-    flipper_one_rk3576(s, ms);
 
     /* the firmware's log UART: a PIO program's, on GPIO41 at 1.5 Mbaud */
     if (s->log_id) {
@@ -482,6 +535,8 @@ static void flipper_one_init(MachineState *ms)
     fo_usb_host_attach(s->usb_host, &s->mcu);
     rp2350_pin_listen(&s->mcu, 43, flipper_one_expander_reset, s);
     rp2350_pin_listen(&s->mcu, 38, flipper_one_expander_reset, s);
+
+    flipper_one_rk3576(s, ms);
 }
 
 static char *flipper_one_get_flash(Object *obj, Error **errp)
