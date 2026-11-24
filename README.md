@@ -32,10 +32,12 @@ Flipper OS build from its image on an emulated microSD card, to its login: its o
 kernel and device tree, Debian 13 under systemd, and FlipCTL, which draws Flipper OS's
 interface on the Flipper's screen (its frames go over the display SPI to the MCU
 firmware, which shows them) and answers its keys (which the MCU firmware passes on over
-their I2C link). The first boot takes about 8 minutes (TCG emulates eight cores). The
-MCU switches the RK3576 on and off as on the device: Flipper OS's power-off and reboot
-work, and so does the MCU's own Stop. The
-RK3576's USB, network, UFS, display outputs and more come next. [RESEARCH.md](RESEARCH.md) is the survey this
+their I2C link). It reaches its login in about two minutes, the first boot included
+(TCG emulates eight cores). The MCU switches the RK3576 on and off as on the device:
+Flipper OS's power-off and reboot work, and so does the MCU's own Stop (each power-off
+or reboot waits 90 s for BlueZ's `mpris-proxy`, which hangs with no Bluetooth adapter:
+the Wi-Fi and Bluetooth chip is on USB, not modelled yet). The RK3576's USB, network,
+UFS, display outputs and more come next. [RESEARCH.md](RESEARCH.md) is the survey this
 starts from:
 the device, what Flipper Devices publishes, and what emulating it takes.
 [PLAN.md](PLAN.md) is the order of work; the MCU comes first.
@@ -90,6 +92,8 @@ scripts/fo_picoboot.py --port 3240 load FIRMWARE.uf2 --reboot
 ./flipperoneemu shot FILE.png        # the screen as a picture
 ./flipperoneemu status | stop [-n NAME]
 scripts/smoke_test.py                # a throwaway device, checked: PASS or FAIL
+scripts/linux_check.py               # ... with Flipper OS too: boot, screen, keys, sensors,
+                                     # reboot, power-off (keeps a booted card in build/)
 ```
 
 A device is a folder, `devices/NAME`: the MCU's flash (made from the newest recovery

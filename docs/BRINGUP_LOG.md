@@ -824,3 +824,33 @@ register headers.
     - With eight busy loops: 1.459 A (1.09 W) and 0.520 A.
     The MCU's probes of these addresses now get an ACK, so `power consumption` no longer
     risks FW-01. The smoke test checks the five chips and the control board's rail.
+
+## A check of the whole device (2026-11-24)
+
+55. **The first boot in two to three minutes, and `scripts/linux_check.py`.** With QEMU
+    patches 0006 and 0007, a first boot (Flipper OS setting itself up on a new card)
+    reaches its login 107 to 200 s after the start; before them, about five minutes
+    (FlipCTL's first frame at 321 s). The MCU's clock keeps time through it: 239.2 s of
+    its own against 246.8 s of virtual time (97 %), where it was at half speed. Every
+    reboot and power-off waits 90 s. BlueZ's `mpris-proxy`, a user service, ignores
+    SIGTERM and is killed at the stop timeout; it waits for a Bluetooth adapter. The
+    Flipper One's adapter is in its Wi-Fi chip, which is on USB, not modelled yet. That
+    is Debian's behaviour and none of the MCU firmware's.
+
+    `scripts/linux_check.py` checks the whole device, as `smoke_test.py` checks the MCU,
+    on a throwaway device:
+    - the RK3576 starting at the MCU's rail, and the panel link's `rk3576 on`;
+    - the kernel on the Flipper One's device tree, and the MCU seeing CPU states 2 and 3;
+    - the login, FlipCTL's frame on the Flipper's screen, and View reaching FlipCTL;
+    - Linux reading VSYS (the INA219) and the five INA4230s over the bus it shares with
+      the MCU, and its root on the microSD card;
+    - `systemctl reboot` (the RK3576 starting again, a second login);
+    - `systemctl poweroff` (PSCI off, then the MCU cutting the rail);
+    - the MCU's CPU app switching it on again;
+    - no oops, panic or RCU stall, and no MCU crash.
+    Twenty checks, which pass. A first boot is long, so the first run keeps its card as
+    it is after the checked power-off (`build/linux-check/sd.img`, for that Flipper OS
+    build). Later runs start from a reflink of it. Two lessons for driving the console:
+    getty and the shell throw away what was typed before they were up, so the check
+    waits for a shell that answers; and a terminal escape split across two reads must
+    be stripped from the text whole, not per read.

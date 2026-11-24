@@ -129,6 +129,7 @@ class Panel:
         self.leds = []
         self.buzzed = False
         self.power = []                 # the board's supply, as told
+        self.rk3576 = []                # ... and the RK3576's run
         threading.Thread(target=self._read, daemon=True).start()
 
     def _read(self):
@@ -156,6 +157,8 @@ class Panel:
                         self.buzzed = True
                     elif word == "power":
                         self.power.append(rest.strip() == "on")
+                    elif word == "rk3576":
+                        self.rk3576.append(rest.strip() == "on")
 
     def screen(self):
         with self.lock:
