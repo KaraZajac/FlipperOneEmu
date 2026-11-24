@@ -43,8 +43,13 @@ LEFT_UPPER = ((640, 185), (312, 185, 30), (168, 385), (110, 466),
               (110, 640), (640, 640))
 LEFT_LOWER = ((640, 600), (110, 600), (110, 770), (183, 845),
               (248, 937, 36), (640, 937))
-NOSE = ((144, 388, 8), (180, 390, 10), (300, 472, 4), (300, 736, 4),
-        (180, 839, 10), (146, 841, 8), (-8, 604, 64))
+NOSE = ((144, 388, 8), (170, 390, 10), (300, 469, 4), (300, 739, 4),
+        (175, 839, 10), (146, 841, 8), (-8, 604, 64))
+NOSE_RIDGE = 587                        # its upper half lit, the lower not
+# the upper shoulder's flat top, above the crease from its corner; the lower
+# shoulder's band in shade, from the recess's corner down to the bottom
+TOP_FACE = ((336, 185), (640, 185), (640, 240), (478, 240), (462, 228))
+CREASE = ((357, 808), (403, 808), (300, 937), (232, 937))
 RECESS = ((640, 240), (474, 240, 18), (336, 466, 6), (336, 744, 6),
           (372, 806, 16), (640, 808))
 STATUS_PANEL = ((468, 285, 10), (590, 285, 10), (590, 441, 10),
@@ -60,16 +65,25 @@ LINK_BOX, LINK_LED, LINK_INDEX = QRectF(386, 395, 101, 31), QPointF(415, 410.5),
 
 RIGHT_WING = ((1370, 185), (1640, 185), (1640, 300), (1951, 560),
               (1951, 937), (1370, 937))
-BUMPER_TOP = ((1600, 165, 22), (1722, 165, 28), (1951, 486, 34),
+BUMPER_TOP = ((1600, 165, 22), (1722, 165, 28), (1951, 486, 42),
               (1951, 560, 8), (1700, 560), (1600, 420))
 BUMPER_LOW = ((1571, 729, 12), (1951, 729, 12), (1951, 957, 46),
               (1555, 957, 6), (1555, 934, 4), (1571, 926, 4))
-LOOP_OUT, LOOP_IN = QRectF(1738, 163, 212, 377), QRectF(1768, 208, 129, 238)
+LOOP = ((1738, 163, 40), (1950, 163, 40), (1950, 453, 28), (1738, 453, 0))
+LOOP_IN = QRectF(1768, 208, 129, 238)           # its opening
+WING_TOP = ((1384, 185), (1640, 185), (1640, 236), (1384, 236))
+# the bumper's light: a soft ridge inside its chamfer (the render's
+# highlight is there, not on the edge), brightening down to its corner,
+# whose face is lit most
+BUMPER_CORNER = ((1858, 446), (1990, 446), (1990, 600), (1910, 600),
+                 (1910, 545, 24), (1894, 500, 24))
 SIDE = QRectF(1879, 566, 72, 158)               # the recess down the side
 RAIL = ((1883, 571, 3), (1917, 571, 13), (1917, 721, 13), (1883, 721, 3))
 SHELF = (805, 823)                              # the right wing's step
 
-PAD, PAD_R, OK_R, SOCKET_R = QPointF(1585, 514), 151.5, 51.0, 176.0
+PAD, PAD_R, OK_R, SOCKET_R = QPointF(1585, 514), 151.5, 49.5, 177.0
+SOCKET = QPointF(1585, 518)                     # the pad's seat: a bit lower
+SWITCH_CUT = 192.5                              # App Switcher's arc, round it
 BACK, BACK_R = QPointF(1753, 729), 52.0
 SWITCH = QRectF(1415, 657, 136, 91)
 MIC = QRectF(1446, 262, 152, 50)
@@ -370,12 +384,37 @@ def _shadow(p):
 
 
 def _loop(p):
-    path = rrect(LOOP_OUT, 40).subtracted(rrect(LOOP_IN, 20))
-    fill(p, path, vgrad(163, 480, (0, "#5b595e"), (1, "#454348")))
-    edges(p, path, 7, rgba("#9a989e", 200), rgba("#1c1b1e", 220), True)
-    p.setPen(QPen(QColor(0, 0, 0, 90), 1.5))
+    """The loop for a lanyard: a metal bar seen a little from above, its top
+    face lit with a bright line along it, its underside black; the right
+    leg's inner face in shade behind a thin lit edge, a streak and a
+    highlight down its face. Both legs go into the bumper."""
+    outer, inner = poly(LOOP), rrect(LOOP_IN, 20)
+    body = outer.subtracted(inner)
+    textured(p, body, QColor("#4d4c50"))
+    p.save()
+    p.setClipPath(body)
+    fill(p, outer.subtracted(outer.translated(0, 10)), vgrad(
+        163, 174, (0, "#8c8a8f"), (1, "#7e7c81")))           # the top face
+    fill(p, outer.subtracted(outer.translated(-12, 0)), lgrad(
+        (1938, 0), (1952, 0), (0, "#6e6c71"), (0.4, "#4e4d51"),
+        (1, "#7f7d82")))                                      # the outer side
+    fill(p, inner.translated(0, -13).subtracted(inner),
+         QColor("#0f0f10"))                                   # the underside
+    fill(p, inner.translated(16, 0).subtracted(inner),
+         lgrad((1897, 0), (1913, 0), (0, "#5c5b5f"), (0.2, "#2a2a2c"),
+               (1, "#1d1d1f")))                               # the leg's inside
+    p.setPen(QPen(QColor("#a3a1a6"), 1.6))
+    p.drawLine(QPointF(1748, 173.5), QPointF(1922, 173.5))
+    p.setPen(QPen(QColor("#616065"), 1.6))
+    p.drawLine(QPointF(1768, 191), QPointF(1897, 191))
+    p.setPen(QPen(QColor("#5f5e62"), 3.5))
+    p.drawLine(QPointF(1922.5, 206), QPointF(1922.5, 450))
+    p.setPen(QPen(QColor("#76747a"), 3))
+    p.drawLine(QPointF(1940.5, 196), QPointF(1940.5, 450))
+    p.restore()
+    p.setPen(QPen(QColor(0, 0, 0, 120), 1.5))
     p.setBrush(Qt.NoBrush)
-    p.drawPath(path)
+    p.drawPath(body)
 
 
 def _right_wing(p):
@@ -389,27 +428,52 @@ def _right_wing(p):
     textured(p, lower, vgrad(SHELF[1], 937, (0, "#5a585c"), (1, "#4c4a4e")))
     p.fillRect(QRectF(1380, SHELF[0], 200, SHELF[1] - SHELF[0]),
                vgrad(SHELF[0], SHELF[1], (0, "#1c1c1e"), (1, "#2a292c")))
+    p.save()
+    p.setClipPath(wing)
+    textured(p, poly(WING_TOP), vgrad(185, 236, (0, "#5f5d62"),
+                                      (0.85, "#58565b"), (1, "#6a686d")))
+    p.fillRect(QRectF(1384, 236, 260, 6), vgrad(236, 242, (0, rgba("#000000", 70)),
+                                                (1, rgba("#000000", 0))))
+    p.restore()
     edges(p, wing, 4, rgba("#8a888d", 160), rgba("#18171a", 200))
     # the recess down the right side, a rail in it
-    p.fillRect(SIDE, lgrad((1879, 0), (1951, 0), (0, "#151516"),
-                           (0.6, "#262628"), (1, "#1c1c1e")))
+    p.fillRect(SIDE, QColor("#2b2a2d"))
+    p.fillRect(QRectF(1931, SIDE.top(), 14, SIDE.height()),
+               QColor("#0f0f10"))                  # a deep slot by the edge
+    p.fillRect(QRectF(1945, SIDE.top(), 6, SIDE.height()), QColor("#38373a"))
     rail = poly(RAIL)
-    fill(p, rail, lgrad((1883, 0), (1917, 0), (0, "#545257"),
-                        (0.25, "#424145"), (1, "#2b2a2d")))
-    p.setPen(QPen(QColor("#8e8c92"), 1.8))
-    p.drawLine(QPointF(1889, 576), QPointF(1889, 716))
+    fill(p, rail, lgrad((1883, 0), (1917, 0), (0, "#4a494d"),
+                        (0.3, "#3e3d41"), (1, "#3a393c")))
+    p.setPen(QPen(QColor("#8e8c92"), 2.2))
+    p.drawLine(QPointF(1891, 576), QPointF(1891, 716))
     edges(p, rail, 2, rgba("#6a686d", 160), rgba("#0a0a0b", 200))
 
 
 def _left_wing(p):
+    """Its faces, flat, as the light finds them: the upper chamfer lit, the
+    flat top above its crease less, the lower shoulder between, a band in
+    shade down it, its bottom edge catching the light."""
     upper = poly(LEFT_UPPER)
-    textured(p, upper, lgrad((190, 380), (470, 190), (0, "#858387"),
-                             (0.45, "#6f6d71"), (1, "#57555a")))
+    textured(p, upper, lgrad((200, 380), (420, 230), (0, "#8a888b"),
+                             (1, "#8e8c8f")))
+    top = poly(TOP_FACE)
+    p.save()
+    p.setClipPath(upper)
+    textured(p, top, lgrad((350, 0), (640, 0), (0, "#5d5b5e"),
+                           (1, "#57555a")))
+    p.setPen(QPen(QColor(255, 255, 255, 40), 2))
+    p.drawLine(QPointF(336, 186), QPointF(462, 229))
+    p.restore()
     lower = poly(LEFT_LOWER)
-    textured(p, lower, lgrad((180, 840), (420, 940), (0, "#59575b"),
-                             (1, "#48464a")))
+    textured(p, lower, vgrad(640, 937, (0, "#605e63"), (0.85, "#646267"),
+                             (1, "#6c6a6f")))
+    p.save()
+    p.setClipPath(lower)
+    textured(p, poly(CREASE), QColor("#4d4b4e"))
+    p.restore()
     wing = upper.united(lower)
-    edges(p, wing, 4, rgba("#b4b2b7", 170), rgba("#202022", 200))
+    edges(p, wing, 4, rgba("#aeacb1", 130), rgba("#7a787d", 180))
+    edges(p, wing, 1.5, rgba("#d0ced3", 90), rgba("#1a1a1c", 200))
     # the recess the network lights and the touchpad sit in
     recess = poly(RECESS)
     textured(p, recess, vgrad(240, 808, (0, "#3d3d40"), (1, "#353437")))
@@ -421,9 +485,16 @@ def _left_wing(p):
 
 def _nose(p):
     nose = poly(NOSE)
-    fill(p, nose, vgrad(386, 843, (0, "#47464a"), (0.35, "#3d3c40"),
-                        (1, "#323134")))
-    edges(p, nose, 16, rgba("#807e84", 220), rgba("#141416", 230), True, True)
+    ridge = (NOSE_RIDGE - 386) / (843 - 386)
+    fill(p, nose, vgrad(386, 843, (0, "#504e51"), (ridge, "#4d4b4e"),
+                        (ridge + 0.0001, "#38383a"), (1, "#343436")))
+    # the ridge through its tip: a fine light line on the upper face's edge
+    p.save()
+    p.setClipPath(nose)
+    p.setPen(QPen(QColor(255, 255, 255, 34), 1.6))
+    p.drawLine(QPointF(0, NOSE_RIDGE - 1), QPointF(300, NOSE_RIDGE - 1))
+    p.restore()
+    edges(p, nose, 16, rgba("#7a787e", 200), rgba("#141416", 220), True, True)
     edges(p, nose, 2.5, rgba("#a3a1a7", 200), rgba("#0c0c0d", 220), True)
     p.setPen(QPen(QColor(0, 0, 0, 120), 1.5))
     p.setBrush(Qt.NoBrush)
@@ -511,9 +582,9 @@ def _touchpad(p, st):
 def _ptt(p, st):
     path = poly(PTT)
     down = "ptt" in st.down
-    fill(p, path, vgrad(171, 187, (0, "#e4783a" if down else "#ffc093"),
-                        (0.45, "#f38c4a" if down else "#fb9a5a"),
-                        (1, "#c9611f" if down else "#e8763a")),
+    fill(p, path, vgrad(171, 187, (0, "#e0804c" if down else "#f6b08f"),
+                        (0.5, "#e07a42" if down else "#ec9163"),
+                        (1, "#c05a1e" if down else "#dc7232")),
          QPen(QColor("#7c3a12"), 1))
     if st.hover == "ptt":
         _hover(p, path)
@@ -665,23 +736,62 @@ def _name(p, name):
 
 def _bumpers(p):
     top = poly(BUMPER_TOP)
-    fill(p, top, vgrad(165, 560, (0, "#3a393c"), (0.3, "#2e2d30"),
-                       (1, "#29282a")))
-    edges(p, top, 24, rgba("#67656a", 255), rgba("#121213", 230), True, True)
-    edges(p, top, 3, rgba("#9a989e", 220), rgba("#0a0a0b", 220), True)
+    fill(p, top, vgrad(165, 560, (0, "#38373a"), (0.3, "#333235"),
+                       (1, "#2e2d30")))
+    edges(p, top, 18, rgba("#5a585d", 230), rgba("#121213", 200), True, True)
     p.setPen(QPen(QColor(0, 0, 0, 160), 1.5))
     p.setBrush(Qt.NoBrush)
     p.drawPath(top)
+    # its faces: the top lit, a band round the chamfer and the corner lit
+    # most where it turns down the side
+    p.save()
+    p.setClipPath(top)
+    p.fillRect(QRectF(1590, 160, 200, 34), vgrad(165, 194, (0, "#504e51"),
+                                                 (0.7, "#4a484c"),
+                                                 (1, rgba("#4a484c", 0))))
+    # light on its face beside the meter's panel, fading toward the edge:
+    # across the panel's direction, from its upper edge (1680, 246)
+    across = QLinearGradient(QPointF(1680, 246), QPointF(1753.6, 194.2))
+    across.setColorAt(0, QColor(255, 255, 255, 0))
+    across.setColorAt(0.3, QColor(255, 255, 255, 30))
+    across.setColorAt(1, QColor(255, 255, 255, 0))
+    fill(p, poly(((1600, 170), (1770, 170), (1990, 480), (1990, 600),
+                  (1600, 600))), QBrush(across))
+    g = QRadialGradient(QPointF(1936, 512), 110)
+    g.setColorAt(0, QColor("#a8a6ab"))
+    g.setColorAt(0.5, QColor("#8c8a8f"))
+    g.setColorAt(1, QColor("#69676c"))
+    corner = [pt[:2] for pt in BUMPER_CORNER]
+    for inset, alpha in ((0, 0.5), (7, 1.0)):       # its edge soft
+        p.setOpacity(alpha)
+        fill(p, poly([(x + (inset if i >= 4 or i == 0 else 0), y)
+                      for i, (x, y) in enumerate(corner)], 20), QBrush(g))
+    p.setOpacity(1)
+    p.restore()
+    edges(p, top, 3, rgba("#9a989e", 220), rgba("#0a0a0b", 220), True)
     _meter_slot(p)
     low = poly(BUMPER_LOW)
-    fill(p, low, vgrad(729, 957, (0, "#2a2a2b"), (1, "#202021")))
-    edges(p, low, 14, rgba("#625f65", 240), rgba("#0e0e0f", 230), soft=True)
+    fill(p, low, vgrad(729, 957, (0, "#2c2c2c"), (0.4, "#2b2b2b"),
+                       (0.42, "#1f1f20"), (0.46, "#262626"), (1, "#262627")))
+    p.save()
+    p.setClipPath(low)
+    p.fillRect(QRectF(1925, 729, 30, 230), lgrad((1925, 0), (1951, 0),
+                                                 (0, rgba("#7a787d", 0)),
+                                                 (1, rgba("#7a787d", 150))))
+    p.fillRect(QRectF(1550, 944, 410, 14), vgrad(944, 957,
+                                                (0, rgba("#5a585d", 0)),
+                                                (1, rgba("#5a585d", 170))))
+    p.restore()
+    edges(p, low, 10, rgba("#5a585d", 220), rgba("#0e0e0f", 160), soft=True)
     p.setPen(QPen(QColor(0, 0, 0, 160), 1.5))
     p.setBrush(Qt.NoBrush)
     p.drawPath(low)
-    # Back's seat in it
-    fill(p, circle(BACK, BACK_R + 9), vgrad(BACK.y() - 61, BACK.y() + 61,
-                                            (0, "#0c0c0d"), (1, "#1a1a1b")))
+    # Back's seat: a notch in the bumper's top, dark below the button
+    p.save()
+    p.setClipPath(low)
+    fill(p, circle(BACK, BACK_R + 9), vgrad(BACK.y(), BACK.y() + 61,
+                                            (0, "#0a0a0b"), (1, "#151516")))
+    p.restore()
 
 
 def _meter_slot(p):
@@ -766,22 +876,23 @@ def _battery(p, c, st):
 
 
 def _socket(p):
-    socket = circle(PAD, SOCKET_R)
-    fill(p, socket, vgrad(PAD.y() - SOCKET_R, PAD.y() + SOCKET_R,
-                          (0, "#29292a"), (1, "#333334")),
-         QPen(QColor("#0e0e0f"), 2.5))
-    edges(p, socket, 12, rgba("#000000", 230), rgba("#5a585d", 180), True, True)
+    socket = circle(SOCKET, SOCKET_R)
+    fill(p, socket, vgrad(SOCKET.y() - SOCKET_R, SOCKET.y() + SOCKET_R,
+                          (0, "#2e2e30"), (1, "#2a2a2c")),
+         QPen(QColor("#121213"), 3))
+    edges(p, socket, 6, rgba("#3a393c", 200), rgba("#0e0e0f", 200), True, True)
 
 
 def _pad(p, st):
     disc = circle(PAD, PAD_R)
     fill(p, disc.translated(0, 5), QColor(0, 0, 0, 110))
-    g = QRadialGradient(PAD + QPointF(-60, -70), PAD_R * 1.9)
-    g.setColorAt(0, QColor("#ff9b57"))
-    g.setColorAt(0.6, QColor("#fd8a3e"))
-    g.setColorAt(1, QColor("#ef7a2e"))
+    # a shallow dish: its far, lower right side faces the light
+    g = QLinearGradient(PAD + QPointF(-110, -110), PAD + QPointF(110, 110))
+    g.setColorAt(0, QColor("#fd8a38"))
+    g.setColorAt(0.5, QColor("#fd9246"))
+    g.setColorAt(1, QColor("#fba468"))
     fill(p, disc, QBrush(g), QPen(QColor("#a5481a"), 2))
-    edges(p, disc, 5, rgba("#ffc89e", 200), rgba("#b4501a", 200), True)
+    edges(p, disc, 5, rgba("#ffc89e", 170), rgba("#c45a1c", 150), True)
     for name, (dx, dy) in (("up", (0, -1)), ("down", (0, 1)),
                            ("left", (-1, 0)), ("right", (1, 0))):
         at = PAD + QPointF(dx, dy) * 100
@@ -803,7 +914,7 @@ def _pad(p, st):
                    PAD + QPointF(dx, dy) * 130 + QPointF(1.6, 1.6))
     # OK: a cap with a dark edge, in a dip
     fill(p, circle(PAD, OK_R + 9), QBrush(_halo(PAD, OK_R + 9)))
-    fill(p, circle(PAD, OK_R + 3), QColor("#170a03"))
+    fill(p, circle(PAD, OK_R + 3.5), QColor("#2e1608"))
     down = "ok" in st.down
     g = QRadialGradient(PAD + QPointF(-18, -22), OK_R * 1.6)
     g.setColorAt(0, QColor("#f48a42" if down else "#ffb578"))
@@ -817,13 +928,13 @@ def _pad(p, st):
 
 def _halo(c, radius):
     g = QRadialGradient(c, radius)
-    g.setColorAt(0.8, QColor(120, 45, 5, 150))
-    g.setColorAt(1, QColor(120, 45, 5, 0))
+    g.setColorAt(0.85, QColor(150, 60, 10, 110))
+    g.setColorAt(1, QColor(150, 60, 10, 0))
     return g
 
 
 def _switch_and_back(p, st):
-    key = rrect(SWITCH, 13).subtracted(circle(PAD, SOCKET_R + 6))
+    key = rrect(SWITCH, 13).subtracted(circle(SOCKET, SWITCH_CUT))
     down = "switch" in st.down
     fill(p, key.translated(0, 3), QColor(0, 0, 0, 90))
     fill(p, key, vgrad(SWITCH.top(), SWITCH.bottom(),
@@ -832,6 +943,12 @@ def _switch_and_back(p, st):
          QPen(QColor("#0d0d0e"), 1.6))
     edges(p, key, 3, rgba("#000000", 180) if down else rgba("#78767c", 200),
           rgba("#000000", 170))
+    p.save()                        # the bevel along its arc, in shade
+    p.setClipPath(key)
+    p.setPen(QPen(QColor(0, 0, 0, 90), 16))
+    p.setBrush(Qt.NoBrush)
+    p.drawEllipse(SOCKET, SWITCH_CUT, SWITCH_CUT)
+    p.restore()
     if st.hover == "switch" and not down:
         _hover(p, key)
     o = QPointF(0, 1.5) if down else QPointF(0, 0)
@@ -855,7 +972,7 @@ def _switch_and_back(p, st):
     if st.hover == "back" and not down:
         _hover(p, circle(BACK, BACK_R))
     c = BACK + (QPointF(0, 1.5) if down else QPointF(0, 0))
-    p.setPen(QPen(QColor("#c4561a"), 4.4, Qt.SolidLine, Qt.RoundCap,
+    p.setPen(QPen(QColor("#dc743a"), 4.2, Qt.SolidLine, Qt.RoundCap,
                   Qt.RoundJoin))
     p.setBrush(Qt.NoBrush)
     arrow = QPainterPath(c + QPointF(-14, -26))
@@ -871,9 +988,9 @@ def _switch_and_back(p, st):
 
 def _mic(p):
     box = rrect(MIC, 11)
-    fill(p, box, vgrad(MIC.top(), MIC.bottom(), (0, "#141416"),
-                       (1, "#1e1e20")))
-    edges(p, box, 4, rgba("#000000", 220), rgba("#5f5d62", 200))
+    fill(p, box, vgrad(MIC.top(), MIC.bottom(), (0, "#353437"),
+                       (1, "#3c3b3e")), QPen(QColor("#121213"), 1.6))
+    edges(p, box, 4.5, rgba("#0c0c0d", 200), rgba("#9a989e", 230))
     for y in (274, 294):
         hole = rrect(QRectF(1458, y, 38, 9.5), 3)
         fill(p, hole, QColor("#030303"))
@@ -916,7 +1033,8 @@ def hit(q):
     d = q - BACK
     if math.hypot(d.x(), d.y()) <= BACK_R:
         return "back"
-    if SWITCH.contains(q) and r > SOCKET_R:
+    d = q - SOCKET
+    if SWITCH.contains(q) and math.hypot(d.x(), d.y()) > SWITCH_CUT:
         return "switch"
     if poly(PTT).boundingRect().adjusted(-6, -10, 6, 8).contains(q):
         return "ptt"
