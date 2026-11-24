@@ -3,8 +3,9 @@
 """A Flipper One, drawn: the screen in a body, with buttons to click.
 
 FlipperOneView is the widget in the middle of the window (fo_gui.py). It shows
-what the front-panel link reports (the screen, its backlight, the 17 LEDs) and
-turns the mouse and the keyboard into the buttons and the touchpad.
+what the front-panel link reports (the screen, its backlight, the 17 LEDs; it
+shakes while the vibration motor runs) and turns the mouse and the keyboard
+into the buttons and the touchpad.
 
 The body is fo_body's drawing, kept as a picture at the window's size and
 drawn again only when a button, an LED or the zoom changes. The LCD goes on
@@ -45,6 +46,10 @@ class FlipperOneView(QtWidgets.QWidget):
         self.body = None                # the body, drawn at this size
         self.cache = None               # ... with the buttons and lights
         self.colours = lcd_colours(0)
+        self.shake = 0                  # the motor runs: 1..4, where it is
+        self.shaker = QtCore.QTimer(self)
+        self.shaker.setInterval(33)
+        self.shaker.timeout.connect(self._shake)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setMouseTracking(True)
         self.set_zoom(zoom)
@@ -85,6 +90,19 @@ class FlipperOneView(QtWidgets.QWidget):
         if colours != self.st.leds:
             self.st.leds = colours
             self._redraw()
+
+    def set_haptic(self, on):
+        """The vibration motor: the drawing shakes while it runs."""
+        if on and not self.shaker.isActive():
+            self.shaker.start()
+        elif not on and self.shaker.isActive():
+            self.shaker.stop()
+            self.shake = 0
+            self.update()
+
+    def _shake(self):
+        self.shake = self.shake % 4 + 1
+        self.update()
 
     def set_hint(self, *lines):
         self.hint = tuple(lines)
@@ -140,6 +158,9 @@ class FlipperOneView(QtWidgets.QWidget):
             self.cache = self._picture(self.body,
                                        lambda p: body.draw_controls(p, self.st))
         p = QPainter(self)
+        if self.shake:                  # a few of the drawing's units about
+            dx, dy = ((5, 0), (0, 4), (-5, 0), (0, -4))[self.shake - 1]
+            p.translate(dx * self.k, dy * self.k)
         p.drawPixmap(0, 0, self.cache)
         target = self._lcd_rect()
         p.setRenderHint(QPainter.SmoothPixmapTransform, False)

@@ -56,6 +56,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.link.lcd.connect(self._lcd)
         self.link.backlight.connect(self.view.set_backlight)
         self.link.leds.connect(self.view.set_leds)
+        self.link.haptic.connect(self.view.set_haptic)
         self.link.stopped.connect(self._stopped)
         self.view.key.connect(self._key)
         self.view.touch.connect(self._touch)
@@ -132,6 +133,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.state = "off"
         self.view.release_all()
         self.view.set_lcd(False)
+        self.view.set_haptic(False)
         self._say("not running: Device > Start")
         self._hint()
 

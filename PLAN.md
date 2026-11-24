@@ -47,8 +47,9 @@ screen and its CLI.
       gdb's symbols to come
 
 ## M2: the MCU's board ☐
-- ◐ The control bus: PCAL6416 (the buttons, 2026-11-24), IQS7211E (the touchpad,
-      2026-11-24); DRV2605L (haptics), TPS62868x (the display's supply) to come
+- ☑ The control bus (2026-11-24): PCAL6416 (the buttons), IQS7211E (the touchpad),
+      DRV2605L (haptics: the window shakes while its motor runs), TPS62868x (the
+      display's supply)
 - ☐ The main bus (PIO I2C): PCAL6416 (rails, `MASKROM_EN`), BQ2579x, BQ28Z620, INA219,
       INA4230 ×5, FUSB302, HD3SS3220
 - ◐ The backlight's PWM (2026-11-23); the WS2812 LEDs (17 on three chains), the

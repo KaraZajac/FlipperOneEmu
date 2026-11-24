@@ -37,7 +37,8 @@ struct FlipperOneState {
     FlipperOnePanelState *panel;
     FoJd9853 display;
     I2CSlave *buttons;          /* the control bus's PCAL6416 */
-    I2CSlave *touchpad;         /* ... and IQS7211E */
+    I2CSlave *touchpad;         /* ... IQS7211E */
+    I2CSlave *haptic;           /* ... DRV2605L */
     CharFrontend log;
     char *flash;
     char *log_id;
@@ -72,6 +73,22 @@ static void flipper_one_touch_rdy(void *opaque, int n, int level)
     FlipperOneState *s = opaque;
 
     rp2350_pin_drive(&s->mcu, 9, level ? -1 : 0);
+}
+
+/* the haptic driver: its EN is GPIO7; its motor, the window's to show */
+static void flipper_one_haptic_en(void *opaque, int pin, bool level,
+                                  int64_t when_ns)
+{
+    FlipperOneState *s = opaque;
+
+    qemu_set_irq(qdev_get_gpio_in(DEVICE(s->haptic), 0), level);
+}
+
+static void flipper_one_haptic(void *opaque, int n, int level)
+{
+    FlipperOneState *s = opaque;
+
+    fo_panel_haptic(s->panel, level);
 }
 
 /* the screen's backlight: GPIO6's PWM (or its level, as a plain pin) */
@@ -132,8 +149,15 @@ static void flipper_one_init(MachineState *ms)
     s->mcu.pwm_fn = flipper_one_backlight;
 
     /* the control bus (I2C0, GPIO20/21): the buttons' expander at 0x20,
-     * the touchpad's controller at 0x56 */
+     * the screen's supply at 0x47, the touchpad's controller at 0x56, the
+     * haptic driver at 0x5A */
     s->mcu.ext_pullup |= (1ull << 46) | (1ull << 9);
+    i2c_slave_create_simple(rp2350_i2c_bus(&s->mcu, 0), "tps62868x", 0x47);
+    s->haptic = i2c_slave_create_simple(rp2350_i2c_bus(&s->mcu, 0),
+                                        "drv2605l", 0x5a);
+    qdev_connect_gpio_out(DEVICE(s->haptic), 0,
+                          qemu_allocate_irq(flipper_one_haptic, s, 0));
+    rp2350_pin_listen(&s->mcu, 7, flipper_one_haptic_en, s);
     s->buttons = i2c_slave_create_simple(rp2350_i2c_bus(&s->mcu, 0),
                                          "pcal6416", 0x20);
     qdev_connect_gpio_out(DEVICE(s->buttons), 0,

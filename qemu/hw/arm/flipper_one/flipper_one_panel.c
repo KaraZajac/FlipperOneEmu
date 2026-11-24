@@ -1,7 +1,8 @@
 /*
  * The Flipper One's front panel, for a program that shows it
- * (docs/PANEL_LINK.md): out go the screen, its backlight, the LEDs and
- * whether the machine runs; in come the buttons and the touchpad.
+ * (docs/PANEL_LINK.md): out go the screen, its backlight, the LEDs, the
+ * vibration motor and whether the machine runs; in come the buttons and the
+ * touchpad.
  *
  * The screen is the panel's 256x144 picture, 0 black to 255 white, which the
  * display controller's model draws into; what changed since the program was
@@ -101,6 +102,12 @@ static void panel_lights(FlipperOnePanelState *s, bool all)
         }
         flipper_link_send(&s->lk, "%s\n", line->str);
     }
+    /* a buzz shorter than a tick is still told, for a tick */
+    if (all || (s->haptic || s->haptic_blip) != s->sent_haptic) {
+        s->sent_haptic = s->haptic || s->haptic_blip;
+        flipper_link_send(&s->lk, "haptic %d\n", s->sent_haptic);
+    }
+    s->haptic_blip = false;
 }
 
 static void panel_everything(FlipperOnePanelState *s)
@@ -208,6 +215,12 @@ void fo_panel_led(FlipperOnePanelState *s, int index, uint32_t rgb)
 void fo_panel_lcd_on(FlipperOnePanelState *s, bool on)
 {
     s->lcd_on = on;
+}
+
+void fo_panel_haptic(FlipperOnePanelState *s, bool on)
+{
+    s->haptic = on;
+    s->haptic_blip |= on && s->lk.open;     /* not one from before it came */
 }
 
 static void panel_realize(DeviceState *dev, Error **errp)

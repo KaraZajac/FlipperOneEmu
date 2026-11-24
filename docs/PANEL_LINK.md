@@ -67,6 +67,15 @@ The 17 LEDs as `rrggbb`, in the order the WS2812s are chained: Net (LINK), Wi-Fi
 (ETH 1), Eth1 (ETH 0); Power (the Power key), the battery's outline (two), the battery's
 watts 1 to 4; USB charging, USB watts 1 to 4, the battery's centre.
 
+```
+haptic 1
+haptic 0
+```
+
+Whether the vibration motor runs (the DRV2605L drives it). A buzz shorter than the
+panel's 16 ms still comes, as `haptic 1` for one look and `haptic 0` at the next. The
+window shakes its drawing while it runs.
+
 ### To the emulator
 
 ```

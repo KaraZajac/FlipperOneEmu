@@ -67,11 +67,14 @@ struct FlipperOnePanelState {
     bool lcd_on;                        /* the controller's display is on */
     uint8_t backlight;                  /* 0 ... 255 */
     uint32_t leds[FO_LEDS];             /* 0xRRGGBB, in the WS2812s' order */
+    bool haptic;                        /* the vibration motor runs */
+    bool haptic_blip;                   /* ... it ran since the last tick */
     /* ... and what the program was last told of it */
     uint8_t sent[FO_LCD_H][FO_LCD_W];
     bool sent_lcd_on;
     int sent_backlight;
     uint32_t sent_leds[FO_LEDS];
+    bool sent_haptic;
     int sent_running;                   /* -1: nothing yet */
 
     /* what the program holds down, and where it touches the touchpad */
@@ -89,6 +92,7 @@ struct FlipperOnePanelState {
 void fo_panel_backlight(FlipperOnePanelState *s, uint8_t level);
 void fo_panel_led(FlipperOnePanelState *s, int index, uint32_t rgb);
 void fo_panel_lcd_on(FlipperOnePanelState *s, bool on);
+void fo_panel_haptic(FlipperOnePanelState *s, bool on);
 
 /* ------------------------------------------- the display controller */
 

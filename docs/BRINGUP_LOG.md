@@ -233,3 +233,18 @@ register headers.
     Booting only reads, so it never showed. Low byte first, the store works: the settings
     are saved, `nvm list` lists them, and a restart finds them ("Loaded haptic
     calibration data from NVM").
+
+## The haptics (2026-11-24)
+
+27. **The rest of the control bus.** A DRV2605L at 0x5A (`drv2605l.c`), its EN on
+    GPIO7: 8-bit registers as the datasheet starts them, the waveform sequencer
+    (library effects and waits) from GO, real-time playback, and auto-calibration and
+    diagnostics that end with GO cleared and DIAG_RESULT 0. The firmware's haptic
+    service calibrates at its first start (GO polled every 10 ms) and saves the result
+    (entry 26); the self-check plays a double click when a check fails. The motor runs
+    while EN is high, the chip out of standby and playing; how long each library effect
+    lasts is not published, so clicks are 60 ms, buzzes 400 ms, the alerts as named.
+    The panel link says `haptic 1` and `haptic 0`, and the window shakes its drawing
+    meanwhile, as FlipperZeroEmu's does for the Zero's vibration motor. The display's
+    VCI supply, a TPS62868x at 0x47 (`tps62868x.c`), takes its voltage and forced PWM.
+    The self-check now says "Haptic: ok"; every chip on the control bus answers.

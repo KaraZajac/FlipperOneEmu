@@ -25,6 +25,7 @@ class PanelLink(QtCore.QObject):
     lcd = QtCore.Signal(bool)           # the controller's display is on
     backlight = QtCore.Signal(int)      # 0..255
     leds = QtCore.Signal(list)          # 17 x 0xRRGGBB
+    haptic = QtCore.Signal(bool)        # the vibration motor runs
     stopped = QtCore.Signal(str)        # time stands still ("paused", "debug"
                                         # ...: why), or goes on ("")
 
@@ -136,6 +137,8 @@ class PanelLink(QtCore.QObject):
             colours = [int(x, 16) for x in rest.split()]
             if len(colours) == LEDS:
                 self.leds.emit(colours)
+        elif word == "haptic":
+            self.haptic.emit(int(rest) != 0)
         elif word == "running":
             on, _, why = rest.partition(" ")
             self.stopped.emit("" if int(on) else why.strip() or "paused")
