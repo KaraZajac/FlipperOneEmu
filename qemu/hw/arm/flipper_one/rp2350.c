@@ -397,6 +397,10 @@ static void rp2350_realize(DeviceState *dev, Error **errp)
         if (!sysbus_realize(SYS_BUS_DEVICE(armv7m), errp)) {
             return;
         }
+        /* an M-profile core has no MPIDR; QEMU's PSCI finds a core by it
+         * (arm_get_cpu_by_id()), and the RK3576's A53s are 0x0-0x3: these
+         * two take ids that no A-profile core has */
+        s->cpu[c].cpu->mp_affinity = 0xff00 | c;
         rp2350_coproc_init(s, c);
         rp2350_ppb_realize(s, c);
     }

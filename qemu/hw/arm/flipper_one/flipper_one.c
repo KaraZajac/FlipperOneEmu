@@ -12,6 +12,7 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 #include "qemu/osdep.h"
+#include "qemu/units.h"
 #include "qemu/error-report.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
@@ -25,8 +26,12 @@
 #include "hw/arm/machines-qom.h"
 #include "chardev/char.h"
 #include "system/runstate.h"
+#include "system/reset.h"
 #include "flipper_one.h"
 #include "rp2350.h"
+#include "rk3576.h"
+#include "hw/arm/boot.h"
+#include "system/address-spaces.h"
 
 #define TYPE_FLIPPER_ONE MACHINE_TYPE_NAME("flipper-one")
 OBJECT_DECLARE_SIMPLE_TYPE(FlipperOneState, FLIPPER_ONE)
@@ -35,6 +40,8 @@ struct FlipperOneState {
     MachineState parent_obj;
 
     RP2350State mcu;
+    RK3576State rk3576;         /* the CPU: Linux's */
+    struct arm_boot_info binfo; /* ... a kernel started on it directly */
     Clock *mcu_clk;
     FlipperOnePanelState *panel;
     FoJd9853 display;
@@ -308,6 +315,41 @@ static void flipper_one_backlight(void *opaque)
     fo_panel_backlight(s->panel, (duty * 255 + 32767) / 65535);
 }
 
+/* the RK3576's cores, with no kernel to start: reset, and off */
+static void flipper_one_rk3576_reset(void *opaque)
+{
+    RK3576State *soc = opaque;
+
+    for (int i = 0; i < RK3576_NCPUS; i++) {
+        cpu_reset(CPU(&soc->cpu[i]));
+    }
+}
+
+/*
+ * The CPU, the RK3576, and its DRAM at 0x40000000 (-m, 4 GiB unless told).
+ * A kernel (-kernel, -dtb, -initrd, -append) starts on it at once, as
+ * U-Boot would start it: at EL2, PSCI from QEMU over SMC; without one its
+ * cores stay off.
+ */
+static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
+{
+    object_initialize_child(OBJECT(ms), "rk3576", &s->rk3576, TYPE_RK3576);
+    qdev_prop_set_bit(DEVICE(&s->rk3576), "start-on",
+                      ms->kernel_filename != NULL);
+    sysbus_realize(SYS_BUS_DEVICE(&s->rk3576), &error_fatal);
+    memory_region_add_subregion(get_system_memory(), RK3576_DRAM_BASE,
+                                ms->ram);
+    if (!ms->kernel_filename) {
+        qemu_register_reset(flipper_one_rk3576_reset, &s->rk3576);
+        return;
+    }
+    s->binfo.ram_size = ms->ram_size;
+    s->binfo.loader_start = RK3576_DRAM_BASE;
+    s->binfo.board_id = -1;
+    s->binfo.psci_conduit = QEMU_PSCI_CONDUIT_SMC;
+    arm_load_kernel(&s->rk3576.cpu[0], ms, &s->binfo);
+}
+
 static void flipper_one_init(MachineState *ms)
 {
     FlipperOneState *s = FLIPPER_ONE(ms);
@@ -331,6 +373,8 @@ static void flipper_one_init(MachineState *ms)
     qdev_prop_set_bit(mcu, "bootsel", s->bootsel);
     qdev_connect_clock_in(mcu, "sysclk", s->mcu_clk);
     sysbus_realize(SYS_BUS_DEVICE(mcu), &error_fatal);
+
+    flipper_one_rk3576(s, ms);
 
     /* the firmware's log UART: a PIO program's, on GPIO41 at 1.5 Mbaud */
     if (s->log_id) {
@@ -512,13 +556,16 @@ static void flipper_one_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
 
-    mc->desc = "Flipper One (so far its MCU, a Raspberry Pi RP2350B)";
+    mc->desc = "Flipper One: its MCU (a Raspberry Pi RP2350B) and its CPU "
+               "(a Rockchip RK3576)";
     mc->init = flipper_one_init;
-    mc->default_ram_size = 0;
-    /* the RP2350's two cores (TCG gives a thread to as many as this says) */
-    mc->default_cpus = 2;
-    mc->min_cpus = 2;
-    mc->max_cpus = 2;
+    mc->default_ram_size = 4 * GiB;             /* the RK3576's DRAM */
+    mc->default_ram_id = "flipper-one.dram";
+    /* the RP2350's two cores and the RK3576's eight (TCG gives a thread to
+     * as many as this says) */
+    mc->default_cpus = 2 + RK3576_NCPUS;
+    mc->min_cpus = 2 + RK3576_NCPUS;
+    mc->max_cpus = 2 + RK3576_NCPUS;
     object_class_property_add_str(oc, "flash", flipper_one_get_flash,
                                   flipper_one_set_flash);
     object_class_property_set_description(oc, "flash",

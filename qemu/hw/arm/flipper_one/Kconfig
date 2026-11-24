@@ -7,5 +7,7 @@ config FLIPPER_ONE
     select ARM_V7M
     select UNIMP
     select PL011
+    select ARM_GIC
+    select SERIAL_MM
     select I2C
     select BITBANG_I2C

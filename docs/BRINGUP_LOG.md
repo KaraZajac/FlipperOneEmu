@@ -583,3 +583,43 @@ register headers.
     is plugged in (shutdown's only way out). Ship mode also wakes on QON pulled low:
     where the Flipper One has QON is not known yet. A machine reset in QEMU resets
     the CPUs only if the board asks, so the cores could be held off right there.
+
+## The RK3576 (2026-11-24)
+
+47. **Flipper OS's kernel, to a shell.** A build's Flipper One image (build 2501: 6 GiB,
+    GPT: `loader`, `metadata`, `root`) keeps its kernels in a btrfs root: a `boot`
+    subvolume with the boot entries (BLS), and in each profile (snapshots `@Minimal`,
+    `@Desktop`, ...) the kernel, initrd and device trees an entry names.
+    `scripts/fetch_os.py` takes them out without a mount (`btrfs restore` reads the
+    filesystem from a file) into `firmware/os/BUILD/`. The machine now has the RK3576
+    beside the RP2350: four Cortex-A53s (MPIDR 0x0-0x3) and four A72s (0x100-0x103) in
+    two clusters, EL2 and no EL3, PSCI from QEMU over SMC (as TF-A's BL31 gives it), the
+    GIC-400, the generic timer at 24 MHz, 4 GiB of DRAM at 0x40000000, UART0 and UART4 as
+    16550s. `run --linux` starts the kernel with the device tree of the board revision
+    the MCU firmware is for; its cores stay off without one. What it took:
+    - QEMU's `arm_load_kernel()` walks every CPU of the machine: it would have made the
+      RP2350's M33s Linux CPUs and PSCI secondaries. Patch 0004 leaves M-profile CPUs
+      alone. And PSCI finds a core by its MPIDR: the M33s had QEMU's default 0 and 1,
+      which are A53s 0 and 1 here; they have ids no A-profile core has now.
+    - The kernel stopped where the clocks come up: `time_init()` registers the CRU's
+      PLLs and polls each one's lock bit with `readl_poll_timeout()`, which needs a
+      clock that runs to time out: none does yet there. The CRU is modelled: its
+      registers kept (with their write masks in the top half, as Rockchip's are), each
+      PLL locked. Its PLLs start in slow mode (the crystal) until the kernel sets them.
+    - Then every core sat in PSCI's CPU_SUSPEND: the device tree's idle state says
+      `local-timer-stop`, so the kernel wakes idle cores with a broadcast timer, the
+      Rockchip timer at 0x2acc0000, which nothing modelled. It is now: a count down at
+      the rate the kernel has set clk_timer0 to (CPLL / 10, 100 MHz), worked out from
+      the CRU's registers as the kernel works it out.
+    - The PMU's power domains (the kernel's own table for the RK3576: on/off, repair and
+      chain status, idle requests acknowledged) and the TRNG (32 bytes ready on request)
+      are modelled: each timed out, one after another, for minutes.
+    The kernel reaches `/init` 14 s after power-on; Debian's initramfs looks for the root
+    filesystem, which has nowhere to be yet, and drops to BusyBox:
+    `./flipperoneemu console 'uname -a'` answers `Linux (none) 7.4.0-rc4-g08a94c1da821
+    ... aarch64`, the device tree's model is "Flipper One rev. F0B0C1", 8 CPUs, 4 GB.
+    The MCU firmware runs beside it as before. What fails, and comes next: the rk3x I2C
+    (the MCU's link on i2c0 — `flipper-one-mcu 0-0069` times out — the RK806 PMIC on
+    i2c1, which most regulators wait for, the main board's chips on i2c2, the RTC);
+    SCMI (its shared memory at 0x4010f000 is RAM to the kernel without the reserved
+    region U-Boot adds, and nothing answers it); storage; DWC3, PCIe, GMAC, the display.

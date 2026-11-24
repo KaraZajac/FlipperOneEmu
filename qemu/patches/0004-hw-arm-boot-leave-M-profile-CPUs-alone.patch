@@ -1,0 +1,68 @@
+From: FlipperOneEmu
+Subject: [PATCH] hw/arm/boot: leave M-profile CPUs alone
+
+arm_load_kernel() walks every CPU of the machine: it gives each the
+Linux boot information, registers its reset handler for each, and with
+PSCI makes every CPU but the primary a powered-off secondary. In a
+machine with a microcontroller beside an application processor (the
+Flipper One: an RP2350's two Cortex-M33s and an RK3576's Cortex-A53s and
+A72s) that took the M-profile cores too: they would have been reset as
+Linux CPUs and held off as PSCI secondaries.
+
+Walk only the A- and R-profile CPUs. An M-profile core has its own boot
+(armv7m_load_kernel(), or its board's) and is never one this loader
+starts. Machines with only A- or R-profile CPUs are not changed.
+
+---
+--- a/hw/arm/boot.c	2026-11-24 12:29:39.023779246 -0500
++++ b/hw/arm/boot.c	2026-11-24 12:29:39.041191519 -0500
+@@ -652,6 +652,18 @@
+     return -1;
+ }
+ 
++/*
++ * The CPUs this loader starts: A- and R-profile ones. An M-profile core in
++ * the same machine (a microcontroller beside an application processor) has
++ * its own boot, through armv7m_load_kernel() or its board's code, and must
++ * be left alone: not given the Linux boot information, not reset here,
++ * not made a PSCI secondary.
++ */
++static bool arm_boot_cpu(CPUState *cs)
++{
++    return !arm_feature(&ARM_CPU(cs)->env, ARM_FEATURE_M);
++}
++
+ static void do_cpu_reset(void *opaque)
+ {
+     ARMCPU *cpu = opaque;
+@@ -1108,7 +1120,9 @@
+     info->is_linux = is_linux;
+ 
+     for (cs = first_cpu; cs; cs = CPU_NEXT(cs)) {
+-        ARM_CPU(cs)->env.boot_info = info;
++        if (arm_boot_cpu(cs)) {
++            ARM_CPU(cs)->env.boot_info = info;
++        }
+     }
+ }
+ 
+@@ -1190,6 +1204,9 @@
+      * arranging that we start it correctly.
+      */
+     for (cs = first_cpu; cs; cs = CPU_NEXT(cs)) {
++        if (!arm_boot_cpu(cs)) {
++            continue;
++        }
+         qemu_register_reset(do_cpu_reset, ARM_CPU(cs));
+         nb_cpus++;
+     }
+@@ -1257,6 +1274,9 @@
+         for (cs = first_cpu; cs; cs = CPU_NEXT(cs)) {
+             Object *cpuobj = OBJECT(cs);
+ 
++            if (!arm_boot_cpu(cs)) {
++                continue;
++            }
+             object_property_set_int(cpuobj, "psci-conduit", info->psci_conduit,
+                                     &error_abort);
+             /* Secondary CPUs start in PSCI powered-down state.  */

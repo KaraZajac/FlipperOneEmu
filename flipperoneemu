@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026, Kara Zajac
 # SPDX-License-Identifier: BSD-3-Clause
-"""FlipperOneEmu: the Flipper One in QEMU (so far its MCU, the RP2350).
+"""FlipperOneEmu: the Flipper One in QEMU: its MCU (the RP2350) and its CPU
+(the RK3576).
 
     ./flipperoneemu run [-n NAME] [--uf2 FILE] [--detach] [--gdb PORT]
+    ./flipperoneemu run --linux [BUILD] ...  Flipper OS's kernel on the RK3576
+                                         (scripts/fetch_os.py fetches a build)
     ./flipperoneemu gui [-n NAME]        the window; it starts the device too
     ./flipperoneemu stop [-n NAME]
     ./flipperoneemu status [-n NAME]
@@ -11,6 +14,8 @@
     ./flipperoneemu shot FILE.png [-n NAME] [--zoom N]
     ./flipperoneemu where [-n NAME]      each core's PC, and the function there
     ./flipperoneemu cli [-n NAME] [COMMAND...]   the MCU firmware's CLI (UART1)
+    ./flipperoneemu console [-n NAME] [--uart4]  Linux's console (the RK3576's
+                                         UART0: the debug port; UART4: the MCU's)
 
 A device is a folder, devices/NAME (default "one"): the MCU's flash image
 (flash.bin, made from a recovery .uf2 the first time, and written to as the
@@ -34,6 +39,7 @@ import zlib
 ROOT = pathlib.Path(__file__).resolve().parent
 QEMU = ROOT / "build" / "qemu" / "qemu-system-aarch64"
 BOOTROM = ROOT / "firmware" / "bootrom" / "A4" / "bootrom-combined.bin"
+OS_DIR = ROOT / "firmware" / "os"
 SCRIPTS = ROOT / "scripts"
 
 
@@ -89,7 +95,7 @@ def cmd_run(args):
     if args.uf2 or not (d / "flash.bin").exists():
         make_flash(d, args.uf2)
     for sock in ("panel.sock", "monitor.sock", "cli.sock", "host.sock",
-                 "usb.sock"):
+                 "usb.sock", "linux.sock", "linux4.sock"):
         (d / sock).unlink(missing_ok=True)
     machine = f"flipper-one,flash={d / 'flash.bin'},log=mculog"
     if args.bootsel:
@@ -99,6 +105,12 @@ def cmd_run(args):
            "-bios", str(BOOTROM), "-display", "none",
            "-chardev", f"socket,id=cli,path={d / 'cli.sock'},server=on,wait=off",
            "-serial", "chardev:cli",
+           "-serial", "null",                   # (the RP2350's UART0)
+           # the RK3576's UART0 (the debug port) and UART4 (to the MCU)
+           "-chardev", f"socket,id=linux,path={d / 'linux.sock'},server=on,wait=off",
+           "-serial", "chardev:linux",
+           "-chardev", f"socket,id=linux4,path={d / 'linux4.sock'},server=on,wait=off",
+           "-serial", "chardev:linux4",
            "-monitor", f"unix:{d / 'monitor.sock'},server=on,wait=off",
            "-chardev", f"socket,id=panel,path={d / 'panel.sock'},server=on,wait=off",
            "-global", "flipper-one-panel.link=panel",
@@ -108,6 +120,8 @@ def cmd_run(args):
            "-global", "flipper-one-host.link=host",
            "-name", f"flipperone-{args.name}",
            "-d", "guest_errors", "-D", str(d / "qemu.log")]
+    if args.linux is not None:
+        cmd += linux_args(d, args.linux)
     if args.gdb:
         cmd += ["-gdb", f"tcp::{args.gdb}"]
     if args.usbip:
@@ -254,16 +268,30 @@ def cmd_where(args):
     return 0
 
 
+def cmd_console(args):
+    """Linux's console: the RK3576's UART0 (or UART4)"""
+    return terminal(args, "linux4.sock" if args.uart4 else "linux.sock",
+                    "the RK3576's " + ("UART4" if args.uart4 else "UART0") +
+                    ", Linux's console", "\n")
+
+
 def cmd_cli(args):
     """the MCU firmware's CLI (UART1): a command, or a terminal"""
+    return terminal(args, "usb.sock" if args.usb else "cli.sock",
+                    "the MCU's CLI", "\r")
+
+
+def terminal(args, sock, what, enter):
+    """a command and its answer, or a terminal, on one of a device's serial
+    ports; @enter: what ends a line there"""
     d = device_dir(args.name)
     s = socket.socket(socket.AF_UNIX)
     try:
-        s.connect(str(d / ("usb.sock" if args.usb else "cli.sock")))
+        s.connect(str(d / sock))
     except OSError:
         die(f"{args.name} is not running")
     if args.command:
-        s.sendall((" ".join(args.command) + "\r").encode())
+        s.sendall((" ".join(args.command) + enter).encode())
         s.settimeout(args.wait)
         out = b""
         try:
@@ -285,7 +313,7 @@ def cmd_cli(args):
     old = termios.tcgetattr(sys.stdin) if sys.stdin.isatty() else None
     if old:
         tty.setraw(sys.stdin)
-    print("(the MCU's CLI; Ctrl-] to leave)\r")
+    print(f"({what}; Ctrl-] to leave)\r")
     try:
         while True:
             for key, _ in sel.select():
@@ -298,10 +326,38 @@ def cmd_cli(args):
                     data = os.read(0, 1024)
                     if not data or b"\x1d" in data:
                         return 0
-                    s.sendall(data.replace(b"\n", b"\r"))
+                    s.sendall(data.replace(b"\n", enter.encode()))
     finally:
         if old:
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old)
+
+
+def linux_args(d, build):
+    """QEMU's arguments for Flipper OS's kernel on the RK3576: a build's (the
+    newest fetched unless told), with the device tree of the board revision
+    the MCU firmware is for, and its boot entry's options; the debug port's
+    UART0 is the console last named, the one the initramfs's shell uses"""
+    builds = sorted((p for p in OS_DIR.glob("*/os.json")),
+                    key=lambda p: int(p.parent.name) if p.parent.name.isdigit()
+                    else -1)
+    if build:
+        builds = [p for p in builds if p.parent.name == build]
+    if not builds:
+        die("no Flipper OS build: run scripts/fetch_os.py")
+    info = json.loads(builds[-1].read_text())
+    target = "f1"
+    try:
+        uf2 = json.loads((d / "firmware.json").read_text())["uf2"]
+        target = "f2" if "-f2-" in pathlib.Path(uf2).name else "f1"
+    except (OSError, ValueError, KeyError):
+        pass
+    rev = {"f1": "rev-f0b0c1", "f2": "rev-f0b1c2"}[target]
+    dtb = ROOT / info["dtbs"] / "rockchip" / f"rk3576-flipper-one-{rev}.dtb"
+    if not dtb.exists():
+        die(f"no {dtb.relative_to(ROOT)}")
+    return ["-kernel", str(ROOT / info["kernel"]), "-dtb", str(dtb),
+            "-initrd", str(ROOT / info["initrd"]),
+            "-append", info["options"] + " console=ttyS0,1500000n8"]
 
 
 def png(path, width, height, rgb):
@@ -377,7 +433,8 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter,
                                  epilog=__doc__.split("\n\n", 1)[1])
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("run", "gui", "stop", "status", "log", "shot", "where", "cli"):
+    for name in ("run", "gui", "stop", "status", "log", "shot", "where", "cli",
+                 "console"):
         p = sub.add_parser(name)
         p.add_argument("-n", "--name", default="one", help="the device (devices/NAME)")
         if name == "run":
@@ -390,17 +447,25 @@ def main():
             p.add_argument("--bootsel", action="store_true",
                            help="start with BOOTSEL held: the boot ROM's USB "
                                 "boot (its drive and PICOBOOT)")
+            p.add_argument("--linux", nargs="?", const="", metavar="BUILD",
+                           help="start Flipper OS's kernel on the RK3576 (a "
+                                "build fetched by scripts/fetch_os.py; the "
+                                "newest unless told)")
         if name in ("gui", "shot"):
             p.add_argument("--zoom", type=int)
         if name == "shot":
             p.add_argument("file")
-        if name == "cli":
+        if name in ("cli", "console"):
             p.add_argument("command", nargs="*", help="one command, then quit")
             p.add_argument("--wait", type=float, default=1.5,
                            help="seconds of quiet that end a command's answer")
+        if name == "cli":
             p.add_argument("--usb", action="store_true",
                            help="the CLI on the MCU's USB serial port (a "
                                 "computer plugged in), not its UART")
+        if name == "console":
+            p.add_argument("--uart4", action="store_true",
+                           help="UART4, the line to the MCU, not UART0")
     args = ap.parse_args()
     return globals()["cmd_" + args.cmd](args)
 

@@ -10,7 +10,8 @@ RP2350's own boot ROM, and the Flipper OS image.
 It is the sibling of [FlipperZeroEmu](https://github.com/KaraZajac/FlipperZeroEmu), which
 does the same for the Flipper Zero.
 
-**Status (2026-11-24): the MCU and its board run.** The RP2350's own boot ROM verifies
+**Status (2026-11-24): the MCU and its board run, and the CPU boots Flipper OS's kernel
+to a shell.** The RP2350's own boot ROM verifies
 the flash's partition table and starts the MCU firmware on the emulated chip. The
 firmware starts FreeRTOS, logs through its PIO UART, draws on the screen in the window
 (over HSTX and DMA to the emulated JD9853 panel), lights the backlight, answers on its
@@ -25,7 +26,10 @@ into its USB-C port, and the battery charges; a computer plugged in gets its USB
 port, also as a real USB device on this PC (USB/IP), and the firmware can be updated as
 picotool updates it, through the RP2350's boot ROM. Its `power reboot` power-cycles the
 board through the charger, and its power off (ship mode) turns it off until a charger
-is plugged in. The Linux side (the RK3576) is next. [RESEARCH.md](RESEARCH.md) is the survey this
+is plugged in. The RK3576 (four Cortex-A53s and four A72s) starts Flipper OS's own
+kernel and device tree from a published build, which boots to its initramfs's shell on
+the debug port's UART; storage, the RK3576's I2C (and so its link to the MCU) and more of
+its devices come next. [RESEARCH.md](RESEARCH.md) is the survey this
 starts from:
 the device, what Flipper Devices publishes, and what emulating it takes.
 [PLAN.md](PLAN.md) is the order of work; the MCU comes first.
@@ -62,6 +66,9 @@ and brings the MCU's own desktop.
 ./flipperoneemu run [-n NAME] [--detach] [--gdb PORT]   # a device without the window
 ./flipperoneemu run --bootsel ...    # ... started with BOOTSEL held: the boot ROM's USB boot
 ./flipperoneemu run --usbip 3240 ... # ... its USB given to this PC: sudo scripts/usbip_attach.py
+scripts/fetch_os.py                  # a Flipper OS build: its kernel, initrd and device trees
+./flipperoneemu run --linux ...      # ... started on the RK3576, beside the MCU
+./flipperoneemu console [-n NAME] [CMD]  # Linux's console (the RK3576's UART0); Ctrl-] leaves
 scripts/fo_picoboot.py --port 3240 load FIRMWARE.uf2 --reboot
                                      # an update, as picotool makes one: after the
                                      # CLI's `power boot` (or --bootsel), a computer
@@ -90,6 +97,7 @@ yet.
 | 0001 | target/arm: an M-profile chip's own coprocessors (the RP2350's GPIO, DCP and RCP) |
 | 0002 | armv7m_nvic: MPU_RNR and MPU_RLAR keep what the Cortex-M33 keeps |
 | 0003 | armv7m_nvic: model Lockup (FlipperZeroEmu's 0015) |
+| 0004 | hw/arm/boot: leave M-profile CPUs alone (the kernel loader, in a machine with both) |
 
 ## Layout
 

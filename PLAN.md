@@ -79,12 +79,19 @@ screen and its CLI.
       charger, a computer (the CLI over USB and USB/IP), an update through PICOBOOT
       and a reboot into it, `power reboot` and ship mode, BOOTSEL
 
-## M3: the RK3576 to a shell ☐
-- ☐ The cluster: 4× Cortex-A53 and 4× Cortex-A72, GIC-400, the generic timer at 24 MHz,
-      PSCI
-- ☐ CRU, PMU and power domains, GRFs, pinctrl, GPIO banks, the Rockchip timer, the
-      DesignWare UARTs (the console at 1,500,000 baud)
-- ☐ The published kernel and the Flipper One device tree, started directly
+## M3: the RK3576 to a shell ◐
+- ☑ The cluster: 4× Cortex-A53 and 4× Cortex-A72, GIC-400, the generic timer at 24 MHz,
+      PSCI (QEMU's, over SMC) (2026-11-24)
+- ◐ CRU (its registers, the PLLs locked, the clocks the timer counts at), the PMU's
+      power domains, the TRNG, the Rockchip timer (the broadcast clockevent), the
+      DesignWare UARTs (UART0 the console, UART4 the MCU's line) (2026-11-24); GRFs,
+      pinctrl and the GPIO banks as unimplemented registers so far
+- ☑ The published kernel and the Flipper One device tree, started directly: Flipper
+      OS's initramfs, to its shell (`scripts/fetch_os.py`, `run --linux`, `console`)
+      (2026-11-24)
+- ☐ The rk3x I2C: the MCU's link (i2c0), the RK806 PMIC (i2c1, whose regulators most
+      of the SoC waits for), the main board's chips (i2c2), the RTC (i2c8)
+- ☐ SCMI (TF-A's clocks): its shared memory reserved as U-Boot does, and an answer
 - ☐ Storage: microSD (dw-mshc) or UFS with the published image; then U-Boot from the
       image (SPL, TF-A BL31, U-Boot proper, a BLS entry)
 - ☐ The MCU powers it: `VCC5V0_SYS_S5_EN` switches the cluster on; `MASKROM_EN`; BOOT1's
