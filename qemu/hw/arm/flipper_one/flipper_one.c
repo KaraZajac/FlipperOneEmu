@@ -43,6 +43,7 @@ struct FlipperOneState {
     FoI2cPins main_bus;         /* the main bus: a PIO program's, GPIO22/23 */
     I2CSlave *main_expander;    /* ... its PCAL6416 */
     FoBattery battery;
+    FoLeds leds;                /* the WS2812s, GPIO29-31 */
     CharFrontend log;
     char *flash;
     char *log_id;
@@ -77,6 +78,14 @@ static void flipper_one_main_int(void *opaque, int n, int level)
     FlipperOneState *s = opaque;
 
     rp2350_pin_drive(&s->mcu, 39, level ? -1 : 0);
+}
+
+/* the LED chains' supplies: the control expander's pins 15, 14, 13 */
+static void flipper_one_led_power(void *opaque, int chain, int level)
+{
+    FlipperOneState *s = opaque;
+
+    fo_leds_power(&s->leds, chain, level);
 }
 
 /*
@@ -196,6 +205,11 @@ static void flipper_one_init(MachineState *ms)
                                          "pcal6416", 0x20);
     qdev_connect_gpio_out(DEVICE(s->buttons), 0,
                           qemu_allocate_irq(flipper_one_buttons_int, s, 0));
+    fo_leds_init(&s->leds, &s->mcu, s->panel);
+    for (int chain = 0; chain < FO_LED_CHAINS; chain++) {
+        qdev_connect_gpio_out_named(DEVICE(s->buttons), "pins", 15 - chain,
+            qemu_allocate_irq(flipper_one_led_power, s, chain));
+    }
     s->touchpad = i2c_slave_create_simple(rp2350_i2c_bus(&s->mcu, 0),
                                           "iqs7211e", 0x56);
     qdev_connect_gpio_out(DEVICE(s->touchpad), 0,

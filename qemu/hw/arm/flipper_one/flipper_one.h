@@ -115,6 +115,27 @@ typedef struct FoJd9853 {
 void fo_jd9853_init(FoJd9853 *d, struct RP2350State *soc,
                     FlipperOnePanelState *panel);
 
+/* ------------------------------------------------------- the LEDs */
+
+#define FO_LED_CHAINS   3
+
+typedef struct FoLedChain {
+    bool powered;
+    int64_t rise_ns, fall_ns;
+    int bits;                           /* since the chain started again */
+    uint32_t shift;
+} FoLedChain;
+
+typedef struct FoLeds {
+    FlipperOnePanelState *panel;
+    FoLedChain chain[FO_LED_CHAINS];
+} FoLeds;
+
+/* ws2812.c: the chains on GPIO29-31; a chain's supply, on or off */
+void fo_leds_init(FoLeds *l, struct RP2350State *soc,
+                  FlipperOnePanelState *panel);
+void fo_leds_power(FoLeds *l, int chain, bool on);
+
 /* ------------------------------------------------- the control bus */
 
 /* pcal6416.c: the levels outside drives its pins to (1: high); its RESET is

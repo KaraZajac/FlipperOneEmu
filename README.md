@@ -10,17 +10,19 @@ RP2350's own boot ROM, and the Flipper OS image.
 It is the sibling of [FlipperZeroEmu](https://github.com/KaraZajac/FlipperZeroEmu), which
 does the same for the Flipper Zero.
 
-**Status (2026-11-23): the MCU runs.** The RP2350's own boot ROM verifies the flash's
-partition table and starts the MCU firmware on the emulated chip. The firmware starts
-FreeRTOS, logs through its PIO UART, draws its self-check screen in the window (over
-HSTX and DMA to the emulated JD9853 panel), lights the backlight, answers on its CLI,
-and takes the window's buttons (through the control bus's I2C expander) and touchpad
-(through its IQS7211E): its desktop, menus and touchpad test work. Its haptic driver
-buzzes (the window shakes), and its settings are kept in the flash across restarts.
-Its main bus (I2C from a PIO program) reaches the main board's expander, which powers
-the Linux side, the battery's gauge (the status bar shows its charge), its charger, the
-system rail's current meter and the USB-C port's chips: the self-check finds them all. The chips on the main bus for power, charging and USB-C, and the LEDs,
-are next. [RESEARCH.md](RESEARCH.md) is the survey this starts from:
+**Status (2026-11-24): the MCU and its board run.** The RP2350's own boot ROM verifies
+the flash's partition table and starts the MCU firmware on the emulated chip. The
+firmware starts FreeRTOS, logs through its PIO UART, draws on the screen in the window
+(over HSTX and DMA to the emulated JD9853 panel), lights the backlight, answers on its
+CLI, and takes the window's buttons (through the control bus's I2C expander) and
+touchpad (through its IQS7211E): its desktop, menus and touchpad test work. Its haptic
+driver buzzes (the window shakes), its 17 LEDs light in the window as it drives them,
+and its settings are kept in the flash across restarts. Its main bus (I2C from a PIO
+program) reaches the main board's expander, which powers the Linux side, the battery's
+gauge (the status bar shows its charge), its charger, the system rail's current meter
+and the USB-C port's chips: the self-check finds every chip. A USB cable to plug in, and
+the Linux side (the RK3576), are next. [RESEARCH.md](RESEARCH.md) is the survey this
+starts from:
 the device, what Flipper Devices publishes, and what emulating it takes.
 [PLAN.md](PLAN.md) is the order of work; the MCU comes first.
 [docs/BRINGUP_LOG.md](docs/BRINGUP_LOG.md) is what was found on the way.

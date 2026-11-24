@@ -330,3 +330,17 @@ register headers.
     TX FIFO only fills it, and the block looks at it next; and when a state machine
     takes a word from a FIFO it feeds (or puts one in a FIFO it drains), the DMA answers
     at once, inside the PIO's run, as its DREQ does on the chip.
+
+## The LEDs (2026-11-24)
+
+34. **The WS2812s.** Seventeen LEDs on three chains (`ws2812.c`), each driven by the
+    Pico SDK's ws2812 PIO program at 800 kHz from a DMA transfer: GPIO29 the network
+    lights (4), GPIO30 Power, the battery's outline (2) and watts (4), GPIO31 USB
+    charging, its watts (4) and the battery's centre, the panel's order. Each chain's
+    supply is an output of the control expander (pins 15, 14, 13), which the firmware
+    turns on before it writes and off when a chain is dark. A high pulse longer than
+    0.56 µs is a 1; each LED takes 24 bits, green, red, blue, and passes the rest on;
+    the line low for 50 µs starts the chain again; an LED without power is dark. They
+    first decoded as pairs of LEDs with long gaps between: entry 33. Now the CLI's
+    `led TYPE COLOR` (numbers: `led 4 1` is Power, green) lights the window's LEDs, at
+    the half brightness the firmware sends.

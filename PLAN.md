@@ -40,7 +40,7 @@ screen and its CLI.
       any program (docs/PANEL_LINK.md). Drawn and connected, and the screen and its
       backlight are live (2026-11-23); drawn again part by part from measurements of the
       device's renders (scripts/fo_body.py, 2026-11-24); its buttons and touchpad work
-      (2026-11-24); its LEDs come alive with the WS2812s' model
+      (2026-11-24); its LEDs light as the firmware drives them (2026-11-24)
 - ◐ A launcher: run, the window, stop, status, the firmware's log (RTT), its CLI, a
       picture of the screen, where the cores are; a folder per emulated Flipper One.
       gdb's symbols to come
@@ -55,8 +55,8 @@ screen and its CLI.
       charger, no USB input yet), INA219 (VSYS), FUSB302 and HD3SS3220 (USB-C, nothing
       plugged in) (2026-11-24): the self-check finds every chip; INA4230 ×5 and a
       cable to plug in to come
-- ◐ The backlight's PWM (2026-11-23); the WS2812 LEDs (17 on three chains), the
-      headset key (ADC)
+- ◐ The backlight's PWM (2026-11-23); the WS2812 LEDs (17 on three chains, their
+      supplies on the control expander, 2026-11-24); the headset key (ADC) to come
 - ☑ The desktop and menus, the buttons and the touchpad from the window (2026-11-24)
 - ☐ RPC: the screen stream and input, through the CLI's `rpc`
 - ☐ USB: the CLI's CDC port (`37C1:F101`), and BOOTSEL: a UF2 copied onto the boot ROM's
