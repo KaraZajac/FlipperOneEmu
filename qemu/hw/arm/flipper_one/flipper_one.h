@@ -90,4 +90,24 @@ void fo_panel_backlight(FlipperOnePanelState *s, uint8_t level);
 void fo_panel_led(FlipperOnePanelState *s, int index, uint32_t rgb);
 void fo_panel_lcd_on(FlipperOnePanelState *s, bool on);
 
+/* ------------------------------------------- the display controller */
+
+struct RP2350State;
+
+typedef struct FoJd9853 {
+    struct RP2350State *soc;
+    FlipperOnePanelState *panel;
+    bool in_reset, selected;
+    int phase, bits, naddr;
+    uint8_t cur, instr, cmd;
+    uint8_t params[64];
+    int nparams;
+    uint32_t pos;                       /* RAMWR's place in the 258 x 144 */
+    bool te_on, sleep, disp_on, te_level;
+    QEMUTimer *te;
+} FoJd9853;
+
+void fo_jd9853_init(FoJd9853 *d, struct RP2350State *soc,
+                    FlipperOnePanelState *panel);
+
 #endif

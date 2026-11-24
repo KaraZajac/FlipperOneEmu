@@ -117,6 +117,13 @@ typedef struct RP2Timer {
     qemu_irq irq[4];
 } RP2Timer;
 
+/* a device of QEMU's own behind the RP2350's aliases (+0x1000 XOR, +0x2000
+ * set, +0x3000 clear), which it does not know: read, changed, written */
+typedef struct RP2Wrap {
+    MemoryRegion mr;
+    MemoryRegion *target;
+} RP2Wrap;
+
 /* the pins (rp2350_gpio.c): a listener is told of a pin's every change */
 #define RP2_PINS 48
 typedef void RP2PinFn(void *opaque, int pin, bool level, int64_t when_ns);
@@ -169,6 +176,43 @@ typedef struct RP2Pio {
     qemu_irq irq_line[2];
 } RP2Pio;
 
+/* what a core's PPB has beyond QEMU's (rp2350_ppb.c) */
+typedef struct RP2Ppb {
+    struct RP2350State *soc;
+    int core;
+    MemoryRegion dwt, actlr, demcr_mr, eppb;
+    uint32_t dwt_ctrl, demcr, actlr_value;
+    uint64_t base_cycles;
+    int64_t base_ns;
+    uint32_t comp[16];
+    uint32_t eppb_regs[3];
+} RP2Ppb;
+
+/* DMA: 16 channels */
+typedef struct RP2DmaChan {
+    uint32_t read_addr, write_addr;
+    uint32_t count;                     /* live: transfers left, MODE on top */
+    uint32_t reload;                    /* what TRANS_COUNT was written */
+    uint32_t ctrl;
+} RP2DmaChan;
+
+typedef struct RP2Dma {
+    RP2Block regs;
+    AddressSpace as;
+    RP2DmaChan ch[16];
+    uint32_t intr, inte[4], intf[4], timer[4];
+    uint32_t sniff_ctrl, sniff_data;
+    uint32_t pending;                   /* triggered, not yet run */
+    bool running, kicked;
+    QEMUTimer *later;                   /* the rest of a long transfer */
+    qemu_irq irq[4];
+} RP2Dma;
+
+/* HSTX's cycles on GPIO12-19, to the board: bit n of a cycle is GPIO12+n;
+ * @mask: the pins that HSTX has (their function is HSTX) */
+typedef void RP2HstxFn(void *opaque, const uint8_t *cycles, int n,
+                       uint8_t mask);
+
 /* SHA-256 accelerator */
 typedef struct RP2SHA {
     uint32_t h[8];
@@ -210,7 +254,8 @@ struct RP2350State {
 
     /* rp2350_sys.c */
     RP2Block resets, rosc, trng, sha256, powman, watchdog;
-    RP2Block xosc, pll_sys, pll_usb, clocks, psm, bootram_regs;
+    RP2Block xosc, pll_sys, pll_usb, clocks, psm, bootram_regs, adc;
+    uint16_t adc_mv[9];         /* AIN0-7 (GPIO40-47), the temperature sensor */
     RP2SHA sha;
 
     /* rp2350_qmi.c */
@@ -230,6 +275,21 @@ struct RP2350State {
 
     /* rp2350_pio.c */
     RP2Pio pio[3];
+
+    /* rp2350_ppb.c */
+    RP2Ppb ppb[2];
+
+    /* rp2350_dma.c, rp2350_hstx.c, rp2350_pwm.c */
+    RP2Dma dma;
+    RP2Block hstx_ctrl, hstx_fifo, pwm;
+    RP2HstxFn *hstx_fn;
+    void *hstx_opaque;
+    void (*pwm_fn)(void *opaque);
+    void *pwm_opaque;
+
+    /* UART0, UART1: QEMU's PL011, behind the aliases */
+    DeviceState *uart[2];
+    RP2Wrap uart_wrap[2];
 
     /* rp2350_sio.c */
     RP2SIO sio;
@@ -275,6 +335,26 @@ void rp2350_pin_listen(RP2350State *s, int pin, RP2PinFn *fn, void *opaque);
 /* decode @pin's changes as a UART at @baud, to @chr */
 void rp2350_pin_uart(RP2350State *s, int pin, uint32_t baud,
                      CharFrontend *chr);
+
+/* rp2350_dma.c */
+void rp2350_dma_realize(RP2350State *s);
+void rp2350_dma_reset(RP2350State *s);
+/* a DREQ may have come: busy channels go on */
+void rp2350_dma_kick(RP2350State *s);
+
+/* rp2350_hstx.c */
+void rp2350_hstx_realize(RP2350State *s);
+void rp2350_hstx_reset(RP2350State *s);
+void rp2350_hstx_attach(RP2350State *s, RP2HstxFn *fn, void *opaque);
+
+/* rp2350_pwm.c: a pin's duty, 0 to 65535 (-1: the pin is not PWM's) */
+void rp2350_pwm_realize(RP2350State *s);
+void rp2350_pwm_reset(RP2350State *s);
+int rp2350_pwm_duty(RP2350State *s, int pin);
+
+/* rp2350_ppb.c */
+void rp2350_ppb_realize(RP2350State *s, int core);
+void rp2350_ppb_reset(RP2350State *s);
 
 /* rp2350_pio.c */
 void rp2350_pio_realize(RP2350State *s);

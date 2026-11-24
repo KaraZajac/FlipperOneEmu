@@ -6,3 +6,4 @@ config FLIPPER_ONE
     depends on TCG && AARCH64
     select ARM_V7M
     select UNIMP
+    select PL011

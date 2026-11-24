@@ -90,6 +90,16 @@ def rounded(points, r):
     return path
 
 
+def lightness(level):
+    """How lit the backlight looks, 0 to 1, at a PWM level of 0 to 255.
+
+    The LEDs' light is the duty, but the eye sees lightness (CIE L*), not
+    light: the firmware's default of 10 % looks about 38 % as bright as full.
+    """
+    y = max(0, min(255, level)) / 255.0
+    return (116 * y ** (1 / 3) - 16) / 100 if y > 0.008856 else 9.033 * y
+
+
 def mix(c1, c2, t):
     c1, c2 = QColor(c1), QColor(c2)
     return QColor(round(c1.red() + (c2.red() - c1.red()) * t),
@@ -150,7 +160,7 @@ class FlipperOneView(QtWidgets.QWidget):
         self.update()
 
     def _palette(self):
-        paper = mix(PAPER_OFF, PAPER_ON, self.backlight / 255.0)
+        paper = mix(PAPER_OFF, PAPER_ON, lightness(self.backlight))
         self.colours = [mix(INK, paper, v / 255.0).rgb() for v in range(256)]
 
     def screen_image(self):

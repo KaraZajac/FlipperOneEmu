@@ -89,6 +89,13 @@ void rp2_block_init(RP2350State *s, RP2Block *b, const char *name,
     b->write = write;
     memory_region_init_io(&b->mr, OBJECT(s), &rp2_block_ops, b, name,
                           0x4000);
+    /*
+     * All of the SoC's blocks are one QEMU device, whose re-entrancy guard
+     * would refuse the DMA (its register write starting a transfer) the
+     * block it writes to: as on the chip, a block may be reached from
+     * another's access.
+     */
+    b->mr.disable_reentrancy_guard = true;
     memory_region_add_subregion(&s->bus, base, &b->mr);
 }
 
@@ -473,6 +480,75 @@ static void bootram_write(RP2Block *b, hwaddr reg, uint32_t value)
     }
 }
 
+/* -------------------------------------------------------------------- ADC */
+
+/*
+ * One conversion at a time, done at once: READY is EN.  The inputs are
+ * GPIO40-47 (AIN0-7) and the temperature sensor (AIN8), in adc_mv[]: what
+ * the board puts on them.  RESULT and the FIFO have the 12 bits of the
+ * selected one; ROBIN steps through the inputs it names.
+ */
+#define ADC_CS_EN           0x1
+#define ADC_CS_START_ONCE   0x4
+#define ADC_CS_START_MANY   0x8
+#define ADC_CS_READY        0x100
+
+static uint32_t adc_convert(RP2350State *s)
+{
+    int ain = (s->adc.regs[0] >> 12) & 0xf;
+    uint32_t mv = ain < 9 ? s->adc_mv[ain] : 0;
+    uint32_t robin = (s->adc.regs[0] >> 16) & 0x1ff;
+
+    if (robin) {                                    /* the next one it names */
+        for (int i = 1; i <= 9; i++) {
+            int next = (ain + i) % 9;
+
+            if ((robin >> next) & 1) {
+                s->adc.regs[0] = deposit32(s->adc.regs[0], 12, 4, next);
+                break;
+            }
+        }
+    }
+    return MIN(mv * 4096 / 3300, 4095);
+}
+
+static uint32_t adc_read(RP2Block *b, hwaddr reg)
+{
+    RP2350State *s = b->soc;
+
+    switch (reg) {
+    case 0x0:                                       /* CS */
+        return (b->regs[0] & ~ADC_CS_READY) |
+               (b->regs[0] & ADC_CS_EN ? ADC_CS_READY : 0);
+    case 0x8:                                       /* FCS: never empty */
+        return b->regs[2] | (b->regs[0] & ADC_CS_START_MANY ? 1u << 16 : 0x100);
+    case 0xc:                                       /* FIFO */
+        return adc_convert(s);
+    default:
+        return reg <= 0x20 ? b->regs[reg / 4] : 0;
+    }
+}
+
+static void adc_write(RP2Block *b, hwaddr reg, uint32_t value)
+{
+    RP2350State *s = b->soc;
+
+    switch (reg) {
+    case 0x0:                                       /* CS */
+        b->regs[0] = value & ~(ADC_CS_START_ONCE | ADC_CS_READY | 0x600);
+        if ((value & ADC_CS_START_ONCE) && (value & ADC_CS_EN)) {
+            b->regs[1] = adc_convert(s);            /* RESULT */
+        }
+        break;
+    case 0x4:                                       /* RESULT: read only */
+        break;
+    default:
+        if (reg <= 0x20) {
+            b->regs[reg / 4] = value;
+        }
+    }
+}
+
 /* ------------------------------------------------------------------------ */
 
 void rp2350_sys_realize(RP2350State *s)
@@ -498,6 +574,11 @@ void rp2350_sys_realize(RP2350State *s)
     rp2_block_init(s, &s->psm, "rp2350.psm", 0x40018000, psm_read, psm_write);
     rp2_block_init(s, &s->bootram_regs, "rp2350.bootram-regs",
                    RP2350_BOOTRAM_BASE, bootram_read, bootram_write);
+    rp2_block_init(s, &s->adc, "rp2350.adc", 0x400a0000, adc_read, adc_write);
+    for (int i = 0; i < 8; i++) {
+        s->adc_mv[i] = 3300;                        /* the GPIOs: pulled up */
+    }
+    s->adc_mv[8] = 706;                             /* the sensor: 27 C */
     /* the pads: kept (rp2350_gpio.c reads them); the QSPI pins' blocks too */
     rp2_block_init(s, &s->io_qspi, "rp2350.io_qspi", 0x40030000, NULL, NULL);
     rp2_block_init(s, &s->pads_bank0, "rp2350.pads_bank0", 0x40038000,
@@ -540,6 +621,7 @@ void rp2350_sys_reset(RP2350State *s)
     s->clocks.regs[0xbc / 4] = 0xffffffff;          /* ENABLED0/1 */
     s->clocks.regs[0xc0 / 4] = 0xffffffff;
     memset(s->psm.regs, 0, sizeof(s->psm.regs));
+    memset(s->adc.regs, 0, sizeof(s->adc.regs));
     memset(s->bootram_regs.regs, 0, sizeof(s->bootram_regs.regs));
     s->bootram_regs.regs[BOOTRAM_STAT] = 0xff;
     memset(s->io_qspi.regs, 0, sizeof(s->io_qspi.regs));

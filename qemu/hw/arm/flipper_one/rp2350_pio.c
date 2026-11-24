@@ -61,12 +61,15 @@ static bool tx_push(RP2PioSM *sm, uint32_t v)
     return true;
 }
 
+static bool fifo_moved;                     /* a DREQ may have come */
+
 static uint32_t tx_pop(RP2PioSM *sm)
 {
     uint32_t v = sm->txf[sm->tx_head];
 
     sm->tx_head = (sm->tx_head + 1) % 8;
     sm->tx_n--;
+    fifo_moved = true;
     return v;
 }
 
@@ -76,6 +79,7 @@ static bool rx_push(RP2PioSM *sm, uint32_t v)
         return false;
     }
     sm->rxf[(sm->rx_head + sm->rx_n++) % 8] = v;
+    fifo_moved = true;
     return true;
 }
 
@@ -559,6 +563,10 @@ static void pio_run(RP2350State *s, RP2Pio *p)
         timer_del(p->timer);
     }
     p->running = false;
+    if (fifo_moved) {
+        fifo_moved = false;
+        rp2350_dma_kick(s);
+    }
 }
 
 static void pio_timer(void *opaque)

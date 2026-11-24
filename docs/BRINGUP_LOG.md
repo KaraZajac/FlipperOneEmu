@@ -129,3 +129,48 @@ register headers.
 16. **Then the ADC.** `./flipperoneemu where` (each core's PC and function, from the
     firmware's and the boot ROM's ELF) finds core 0 in the SDK's `adc_init()`, which
     waits for the ADC's READY.
+
+17. **The ADC.** READY follows EN, and a START_ONCE conversion is done at once: RESULT
+    is the board's voltage on that input, from the machine's table (3.3 V on GPIO40-47,
+    0.706 V, 27 °C, on the temperature sensor).
+
+18. **Microseconds from the cycle counter.** `furi_delay_us()` counts the DWT's CYCCNT,
+    which QEMU's Cortex-M33 does not have. `rp2350_ppb.c` overlays each core's system
+    space with the DWT (CYCCNT counts the system clock from the virtual clock while
+    DEMCR.TRCENA and CYCCNTENA are set; four comparators, kept), ACTLR, DEMCR and the
+    RP2350's EPPB.
+
+19. **The UARTs.** `furi_hal_serial_init()` drains the UART's FIFO and waits for BUSY to
+    clear. UART0 and UART1 are QEMU's PL011, which is what the RP2350 has, behind a
+    wrapper that gives them the RP2350's XOR, set and clear aliases. UART1 is the CLI's:
+    QEMU's first serial port, the launcher's `devices/NAME/cli.sock`, and
+    `./flipperoneemu cli [COMMAND]`.
+
+20. **The end of its start.** The firmware's start then runs to its end: the self-check
+    starts, and "Startup complete" at 4.4 s. Every chip on its I2C buses is missing
+    (nothing is behind the DesignWare I2C, or the main bus's PIO I2C, yet), so each
+    service logs that its chip was not found, and the firmware goes on. The CLI answers
+    once its service is up: `help`, `device_info` (firmware `dev-23112026-87f6cca3`),
+    `uptime`, `free` (203 KiB of 475 KiB free).
+
+21. **The screen.** The JD9853 is wired to HSTX: IO0-3 on GPIO19, 16, 15 and 14, SCK on
+    GPIO18, CS on GPIO17, reset on GPIO12, TE on GPIO5. `rp2350_hstx.c` shifts each word
+    written to the FIFO out at once, N_SHIFTS cycles of the eight pins' BITn selections.
+    `jd9853.c` reads those cycles as QSPI transactions: the instruction (02h, or 32h
+    for data on four lines), three address bytes with the command in the middle, then
+    the data. RAMWR's bytes fill the panel's 258 × 144 window a byte a pixel, and the
+    leftmost 256 of each row are what the glass shows. A frame is a DMA transfer
+    (`rp2350_dma.c`: 16 channels, DREQ pacing, the trigger aliases, chaining, IRQs
+    DMA_IRQ_0-3) that the firmware starts on TE's rising edge (80 Hz while TEON). QEMU
+    first refused the DMA's writes into the HSTX FIFO ("Blocked re-entrant IO"): all
+    of the SoC's blocks are one QEMU device, and a transfer started by a write to one
+    block reached another. The blocks now let that happen, as the chip's bus does. The
+    self-check screen is in the window: "CPU: Dual Cortex-M33 @ 150MHz", "Memory free:
+    203K", each chip "NOT FOUND", and its duck.
+
+22. **The backlight.** GPIO6's PWM (`rp2350_pwm.c`: a pin's duty from its slice's TOP,
+    CC and polarity) goes to the window. The firmware's default is 10 % (26 of 255),
+    for 10 s after the last input (`LED_BACKLIGHT_TIME_DEFAULT`), then off. The window
+    draws it by lightness (CIE L\*): at 10 % duty an LED looks about 38 % as bright as at
+    full. The buttons come through the control bus's PCAL6416, so after those 10 s the
+    screen stays dark until the I2C models are in.

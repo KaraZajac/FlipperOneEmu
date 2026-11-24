@@ -27,6 +27,8 @@
 #include "target/arm/cpu.h"
 #include "target/arm/arm-powerctl.h"
 #include "target/arm/tcg/idau.h"
+#include "hw/char/pl011.h"
+#include "system/system.h"
 #include "rp2350.h"
 
 /*
@@ -151,6 +153,74 @@ static bool rp2350_load(MemoryRegion *mr, const char *path, hwaddr size,
     return true;
 }
 
+/* ------------------------------------------- QEMU's devices, aliased */
+
+static uint64_t wrap_read(void *opaque, hwaddr addr, unsigned size)
+{
+    RP2Wrap *w = opaque;
+    uint64_t v = 0;
+
+    memory_region_dispatch_read(w->target, addr & 0xfff, &v,
+                                size_memop(size) | MO_LE,
+                                MEMTXATTRS_UNSPECIFIED);
+    return v;
+}
+
+static void wrap_write(void *opaque, hwaddr addr, uint64_t value,
+                       unsigned size)
+{
+    RP2Wrap *w = opaque;
+    hwaddr reg = addr & 0xfff;
+    uint64_t old = 0;
+    MemOp op = size_memop(size) | MO_LE;
+
+    if (addr >> 12) {
+        memory_region_dispatch_read(w->target, reg, &old, op,
+                                    MEMTXATTRS_UNSPECIFIED);
+        switch (addr >> 12) {
+        case 1: value ^= old; break;
+        case 2: value |= old; break;
+        default: value = old & ~value; break;
+        }
+    }
+    memory_region_dispatch_write(w->target, reg, value, op,
+                                 MEMTXATTRS_UNSPECIFIED);
+}
+
+static const MemoryRegionOps wrap_ops = {
+    .read = wrap_read,
+    .write = wrap_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 4,
+};
+
+static void rp2350_wrap(RP2350State *s, RP2Wrap *w, const char *name,
+                        hwaddr base, MemoryRegion *target)
+{
+    w->target = target;
+    memory_region_init_io(&w->mr, OBJECT(s), &wrap_ops, w, name, 0x4000);
+    w->mr.disable_reentrancy_guard = true;         /* (the DMA, as blocks) */
+    memory_region_add_subregion(&s->bus, base, &w->mr);
+}
+
+/* UART1 has the firmware's CLI: the first serial port; UART0 the second */
+static void rp2350_uarts_realize(RP2350State *s)
+{
+    for (int i = 0; i < 2; i++) {
+        DeviceState *dev = qdev_new(TYPE_PL011);
+        g_autofree char *name = g_strdup_printf("rp2350.uart%d", i);
+
+        qdev_prop_set_chr(dev, "chardev", serial_hd(i ? 0 : 1));
+        qdev_connect_clock_in(dev, "clk", s->sysclk);
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+        sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, rp2350_irq(s, 33 + i));
+        s->uart[i] = dev;
+        rp2350_wrap(s, &s->uart_wrap[i], name, 0x40070000 + i * 0x8000,
+                    sysbus_mmio_get_region(SYS_BUS_DEVICE(dev), 0));
+    }
+}
+
 static void rp2350_init(Object *obj)
 {
     RP2350State *s = RP2350(obj);
@@ -261,6 +331,7 @@ static void rp2350_realize(DeviceState *dev, Error **errp)
             return;
         }
         rp2350_coproc_init(s, c);
+        rp2350_ppb_realize(s, c);
     }
     s->irqs = qemu_allocate_irqs(rp2350_irq_set, s, RP2350_NUM_IRQ);
 
@@ -268,6 +339,10 @@ static void rp2350_realize(DeviceState *dev, Error **errp)
     rp2350_timer_realize(s);
     rp2350_gpio_realize(s);
     rp2350_pio_realize(s);
+    rp2350_uarts_realize(s);
+    rp2350_dma_realize(s);
+    rp2350_hstx_realize(s);
+    rp2350_pwm_realize(s);
 }
 
 qemu_irq rp2350_irq(RP2350State *s, int n)
@@ -283,6 +358,10 @@ static void rp2350_reset_hold(Object *obj, ResetType type)
     rp2350_qmi_reset(RP2350(obj));
     rp2350_timer_reset(RP2350(obj));
     rp2350_pio_reset(RP2350(obj));
+    rp2350_ppb_reset(RP2350(obj));
+    rp2350_dma_reset(RP2350(obj));
+    rp2350_hstx_reset(RP2350(obj));
+    rp2350_pwm_reset(RP2350(obj));
     rp2350_gpio_reset(RP2350(obj));
 }
 

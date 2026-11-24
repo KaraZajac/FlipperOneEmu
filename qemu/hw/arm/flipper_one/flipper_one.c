@@ -33,11 +33,24 @@ struct FlipperOneState {
     RP2350State mcu;
     Clock *mcu_clk;
     FlipperOnePanelState *panel;
+    FoJd9853 display;
     CharFrontend log;
     char *flash;
     char *log_id;
     bool bootsel;
 };
+
+/* the screen's backlight: GPIO6's PWM (or its level, as a plain pin) */
+static void flipper_one_backlight(void *opaque)
+{
+    FlipperOneState *s = opaque;
+    int duty = rp2350_pwm_duty(&s->mcu, 6);
+
+    if (duty < 0) {
+        duty = (s->mcu.pin_level >> 6) & 1 ? 65535 : 0;
+    }
+    fo_panel_backlight(s->panel, (duty * 255 + 32767) / 65535);
+}
 
 static void flipper_one_init(MachineState *ms)
 {
@@ -79,6 +92,11 @@ static void flipper_one_init(MachineState *ms)
     s->panel = FLIPPER_ONE_PANEL(qdev_new(TYPE_FLIPPER_ONE_PANEL));
     object_property_add_child(OBJECT(ms), "panel", OBJECT(s->panel));
     qdev_realize_and_unref(DEVICE(s->panel), NULL, &error_fatal);
+
+    /* the screen: its controller on HSTX, its backlight on GPIO6's PWM */
+    fo_jd9853_init(&s->display, &s->mcu, s->panel);
+    s->mcu.pwm_fn = flipper_one_backlight;
+    s->mcu.pwm_opaque = s;
 }
 
 static char *flipper_one_get_flash(Object *obj, Error **errp)

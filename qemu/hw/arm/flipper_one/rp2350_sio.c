@@ -198,6 +198,7 @@ void rp2350_sio_realize(RP2350State *s)
     /* the Secure registers and their NonSecure copy */
     memory_region_init_io(&s->sio.mr, OBJECT(s), &sio_ops, s, "rp2350.sio",
                           0x40000);
+    s->sio.mr.disable_reentrancy_guard = true;
     memory_region_add_subregion(&s->bus, RP2350_SIO_BASE, &s->sio.mr);
 }
 

@@ -22,21 +22,23 @@ screen and its CLI.
       partition A (QMI direct mode, the flash, ATRANS, SHA-256); OTP reads as blank,
       try-before-you-buy images and the watchdog's reboots to come
 - ◐ Clocks, resets, PSM, XOSC, PLLs, ROSC, TRNG, SHA-256, POWMAN, watchdog, SIO
-      (GPIO, FIFOs, spinlocks, doorbells), BOOTRAM's locks, TIMER0/1 answer; IO_BANK0
-      and PADS keep what is written; TICKS, DWT's cycle counter to come
+      (GPIO, FIFOs, spinlocks, doorbells), BOOTRAM's locks, TIMER0/1, the ADC, DWT's
+      cycle counter answer; PADS keeps what is written; TICKS to come
 - ◐ PIO (three blocks, the RP2350's instructions; the firmware's log UART decoded
       from GPIO41 to devices/NAME/mcu.log, 2026-11-23); the pins and IO_BANK0's
-      interrupts; DMA and HSTX to come
-- ☐ The JD9853 panel and its tearing signal: the screen to the window and to PNG
-- ☐ DesignWare I2C (master and slave); the PL011 UARTs (the CLI on UART1)
+      interrupts; DMA (16 channels) and HSTX (2026-11-23); PWM's duty (2026-11-23)
+- ☑ The JD9853 panel and its tearing signal: the firmware's self-check screen in the
+      window and to PNG (2026-11-23)
+- ☑ The PL011 UARTs: the CLI on UART1 answers (`./flipperoneemu cli`, 2026-11-23)
+- ☐ DesignWare I2C (master and slave)
 - ◐ The window, as FlipperZeroEmu's (Kara, 2026-11-23): a Flipper One of this project's
       own drawing around the emulated screen, its 13 buttons and the touchpad to click,
       the keyboard, its 17 LEDs where the device has them; a front-panel link for it and
-      any program (docs/PANEL_LINK.md). Drawn and connected; its screen, LEDs and
-      buttons come alive with the models behind them (the JD9853, the WS2812s, the
-      control bus's expander, the IQS7211E)
-- ◐ A launcher: run, the window, stop, status, the firmware's log (RTT), a picture of
-      the screen, where the cores are; a folder per emulated Flipper One. The CLI and
+      any program (docs/PANEL_LINK.md). Drawn and connected, and the screen and its
+      backlight are live (2026-11-23); its LEDs and buttons come alive with the models
+      behind them (the WS2812s, the control bus's expander, the IQS7211E)
+- ◐ A launcher: run, the window, stop, status, the firmware's log (RTT), its CLI, a
+      picture of the screen, where the cores are; a folder per emulated Flipper One.
       gdb's symbols to come
 
 ## M2: the MCU's board ☐
@@ -44,7 +46,8 @@ screen and its CLI.
       TPS62868x (the display's supply)
 - ☐ The main bus (PIO I2C): PCAL6416 (rails, `MASKROM_EN`), BQ2579x, BQ28Z620, INA219,
       INA4230 ×5, FUSB302, HD3SS3220
-- ☐ The WS2812 LEDs (17 on three chains), the backlight's PWM, the headset key (ADC)
+- ◐ The backlight's PWM (2026-11-23); the WS2812 LEDs (17 on three chains), the
+      headset key (ADC)
 - ☐ The desktop and menus; buttons and touch from the window and the launcher
 - ☐ RPC: the screen stream and input, through the CLI's `rpc`
 - ☐ USB: the CLI's CDC port (`37C1:F101`), and BOOTSEL: a UF2 copied onto the boot ROM's

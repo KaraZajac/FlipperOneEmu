@@ -10,10 +10,12 @@ RP2350's own boot ROM, and the Flipper OS image.
 It is the sibling of [FlipperZeroEmu](https://github.com/KaraZajac/FlipperZeroEmu), which
 does the same for the Flipper Zero.
 
-**Status (2026-11-23): just started.** The RP2350's own boot ROM verifies the flash's
-partition table and starts the MCU firmware on the emulated chip; the firmware starts
-FreeRTOS on core 0 (core 1 waits in its ROM), logs through its PIO UART, and waits for
-the ADC, the next model on the way to its screen. [RESEARCH.md](RESEARCH.md) is the survey this starts from:
+**Status (2026-11-23): the MCU runs.** The RP2350's own boot ROM verifies the flash's
+partition table and starts the MCU firmware on the emulated chip. The firmware starts
+FreeRTOS, logs through its PIO UART, draws its self-check screen in the window (over
+HSTX and DMA to the emulated JD9853 panel), lights the backlight, and answers on its
+CLI. The chips on its I2C buses (the buttons' expander, the touchpad, the power chips)
+are next: the self-check finds none of them yet. [RESEARCH.md](RESEARCH.md) is the survey this starts from:
 the device, what Flipper Devices publishes, and what emulating it takes.
 [PLAN.md](PLAN.md) is the order of work; the MCU comes first.
 [docs/BRINGUP_LOG.md](docs/BRINGUP_LOG.md) is what was found on the way.
@@ -36,6 +38,7 @@ Space is PTT; drag on the touchpad. It talks to the emulator over a front-panel 
 ```sh
 ./flipperoneemu run [-n NAME] [--detach] [--gdb PORT]   # a device without the window
 ./flipperoneemu log [-n NAME]        # the firmware's log, from its RTT buffer
+./flipperoneemu cli [-n NAME] [CMD]  # the firmware's CLI (UART1); Ctrl-] leaves
 ./flipperoneemu where [-n NAME]      # where each core is: its PC and function
 ./flipperoneemu shot FILE.png        # the screen as a picture
 ./flipperoneemu status | stop [-n NAME]
@@ -62,7 +65,7 @@ access to what is not modelled yet.
 |---|---|
 | `qemu/hw/arm/flipper_one/` | The machine and its devices, linked into QEMU's source tree |
 | `qemu/patches/` | Changes to QEMU itself |
-| `flipperoneemu` | The launcher: run, the window, stop, status, log, shot |
+| `flipperoneemu` | The launcher: run, the window, stop, status, log, cli, shot, where |
 | `scripts/` | Setting up QEMU, fetching the firmware, the window (`fo_gui.py`, `fo_view.py`, `fo_link.py`), the launcher's parts, checks |
 | `docs/BRINGUP_LOG.md` | What was found on the way, in order |
 

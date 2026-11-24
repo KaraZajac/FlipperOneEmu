@@ -10,6 +10,7 @@
     ./flipperoneemu log [-n NAME]        the firmware's log, from its RTT buffer
     ./flipperoneemu shot FILE.png [-n NAME] [--zoom N]
     ./flipperoneemu where [-n NAME]      each core's PC, and the function there
+    ./flipperoneemu cli [-n NAME] [COMMAND...]   the MCU firmware's CLI (UART1)
 
 A device is a folder, devices/NAME (default "one"): the MCU's flash image
 (flash.bin, made from a recovery .uf2 the first time, and written to as the
@@ -87,11 +88,13 @@ def cmd_run(args):
     d.mkdir(parents=True, exist_ok=True)
     if args.uf2 or not (d / "flash.bin").exists():
         make_flash(d, args.uf2)
-    for sock in ("panel.sock", "monitor.sock"):
+    for sock in ("panel.sock", "monitor.sock", "cli.sock"):
         (d / sock).unlink(missing_ok=True)
     cmd = [str(QEMU), "-M", f"flipper-one,flash={d / 'flash.bin'},log=mculog",
            "-chardev", f"file,id=mculog,path={d / 'mcu.log'}",
-           "-bios", str(BOOTROM), "-display", "none", "-serial", "none",
+           "-bios", str(BOOTROM), "-display", "none",
+           "-chardev", f"socket,id=cli,path={d / 'cli.sock'},server=on,wait=off",
+           "-serial", "chardev:cli",
            "-monitor", f"unix:{d / 'monitor.sock'},server=on,wait=off",
            "-chardev", f"socket,id=panel,path={d / 'panel.sock'},server=on,wait=off",
            "-global", "flipper-one-panel.link=panel",
@@ -239,6 +242,56 @@ def cmd_where(args):
     return 0
 
 
+def cmd_cli(args):
+    """the MCU firmware's CLI (UART1): a command, or a terminal"""
+    d = device_dir(args.name)
+    s = socket.socket(socket.AF_UNIX)
+    try:
+        s.connect(str(d / "cli.sock"))
+    except OSError:
+        die(f"{args.name} is not running")
+    if args.command:
+        s.sendall((" ".join(args.command) + "\r").encode())
+        s.settimeout(args.wait)
+        out = b""
+        try:
+            while True:
+                chunk = s.recv(65536)
+                if not chunk:
+                    break
+                out += chunk
+        except socket.timeout:
+            pass
+        sys.stdout.write(out.decode("utf-8", "replace"))
+        return 0
+    import selectors
+    import termios
+    import tty
+    sel = selectors.DefaultSelector()
+    sel.register(s, selectors.EVENT_READ)
+    sel.register(sys.stdin, selectors.EVENT_READ)
+    old = termios.tcgetattr(sys.stdin) if sys.stdin.isatty() else None
+    if old:
+        tty.setraw(sys.stdin)
+    print("(the MCU's CLI; Ctrl-] to leave)\r")
+    try:
+        while True:
+            for key, _ in sel.select():
+                if key.fileobj is s:
+                    data = s.recv(65536)
+                    if not data:
+                        return 0
+                    os.write(1, data)
+                else:
+                    data = os.read(0, 1024)
+                    if not data or b"\x1d" in data:
+                        return 0
+                    s.sendall(data.replace(b"\n", b"\r"))
+    finally:
+        if old:
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old)
+
+
 def png(path, width, height, rgb):
     raw = b"".join(b"\0" + rgb[y * width * 3:(y + 1) * width * 3]
                    for y in range(height))
@@ -308,7 +361,7 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter,
                                  epilog=__doc__.split("\n\n", 1)[1])
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("run", "gui", "stop", "status", "log", "shot", "where"):
+    for name in ("run", "gui", "stop", "status", "log", "shot", "where", "cli"):
         p = sub.add_parser(name)
         p.add_argument("-n", "--name", default="one", help="the device (devices/NAME)")
         if name == "run":
@@ -319,6 +372,10 @@ def main():
             p.add_argument("--zoom", type=int)
         if name == "shot":
             p.add_argument("file")
+        if name == "cli":
+            p.add_argument("command", nargs="*", help="one command, then quit")
+            p.add_argument("--wait", type=float, default=1.5,
+                           help="seconds of quiet that end a command's answer")
     args = ap.parse_args()
     return globals()["cmd_" + args.cmd](args)
 
