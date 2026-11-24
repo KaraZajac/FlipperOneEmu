@@ -86,10 +86,17 @@ struct FlipperOnePanelState {
     int usb;                            /* in the USB-C port: 0 nothing, 1 a
                                            charger, 2 a computer; it stays
                                            when the program goes */
+    int headset;                        /* in the jack: FO_HEADSET_... */
 
     /* the board's input parts are told of a change */
     void (*input)(void *opaque);
     void *input_opaque;
+};
+
+/* a headset in the jack, and the button on its cable held */
+enum {
+    FO_HEADSET_NONE, FO_HEADSET_IN, FO_HEADSET_PLAY, FO_HEADSET_VOLUP,
+    FO_HEADSET_VOLDOWN, FO_HEADSET_ASSIST, FO_HEADSET_NUM
 };
 
 /* the parts that draw and light: what changed is sent on the next tick */

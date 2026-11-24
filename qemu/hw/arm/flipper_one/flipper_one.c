@@ -49,6 +49,7 @@ struct FlipperOneState {
     int usb;                    /* in the port: 0 nothing, 1 a charger, 2 a
                                    computer */
     bool usb20_sel;             /* the USB mux: the RK3576's, not the MCU's */
+    int headset;                /* in the jack: FO_HEADSET_... */
     DeviceState *usb_host;      /* the computer, for the MCU's USB */
     FoBattery battery;
     FoLeds leds;                /* the WS2812s, GPIO29-31 */
@@ -64,6 +65,7 @@ struct FlipperOneState {
  * finger, on the touchpad
  */
 static void flipper_one_usb(FlipperOneState *s, int what);
+static void flipper_one_headset(FlipperOneState *s, int what);
 
 static void flipper_one_input(void *opaque)
 {
@@ -76,6 +78,38 @@ static void flipper_one_input(void *opaque)
     if (p->usb != s->usb) {
         flipper_one_usb(s, p->usb);
     }
+    if (p->headset != s->headset) {
+        flipper_one_headset(s, p->headset);
+    }
+}
+
+/*
+ * The 3.5 mm jack: its switch on GPIO42 (pulled high with a plug in), the
+ * mic line on GPIO47 (ADC input 7). A four-pole headset's mic is biased at
+ * 2.2 V through 2.2 kΩ (the firmware's figures) and loads it as 6.8 kΩ
+ * (assumed): 1.66 V, above the 1.5 V the firmware takes for a mic present.
+ * A button on its cable puts its resistor across the mic, as the standard
+ * has them: play 0 Ω (10, its switch and the cable's wires: the firmware
+ * takes exactly nothing for no button), assistant 135 Ω, volume up 240 Ω,
+ * down 470 Ω.
+ */
+static void flipper_one_headset(FlipperOneState *s, int what)
+{
+    static const int ohms[FO_HEADSET_NUM] = {
+        [FO_HEADSET_IN] = 6800,             /* the mic alone */
+        [FO_HEADSET_PLAY] = 10,             /* "0 Ω": the switch, the cable */
+        [FO_HEADSET_ASSIST] = 135,
+        [FO_HEADSET_VOLUP] = 240, [FO_HEADSET_VOLDOWN] = 470,
+    };
+    int r = what == FO_HEADSET_IN ? 6800 :     /* ... a button across it */
+            ohms[what] * 6800 / (ohms[what] + 6800);
+
+    s->headset = what;
+    s->mcu.adc_mv[7] = what == FO_HEADSET_NONE ? 0 : 2200 * r / (r + 2200);
+    /* the switch pulls the line up, through the MCU's resets */
+    s->mcu.ext_pullup = deposit64(s->mcu.ext_pullup, 42, 1,
+                                  what != FO_HEADSET_NONE);
+    rp2350_pins_update(&s->mcu, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
 }
 
 /* the MCU's USB reaches the computer: one is plugged in, and the USB mux
@@ -271,6 +305,7 @@ static void flipper_one_init(MachineState *ms)
 
     /* the screen: its controller on HSTX, its backlight on GPIO6's PWM */
     fo_jd9853_init(&s->display, &s->mcu, s->panel);
+    s->mcu.adc_mv[7] = 0;                       /* the jack: empty */
     s->mcu.pwm_fn = flipper_one_backlight;
 
     /* the control bus (I2C0, GPIO20/21): the buttons' expander at 0x20,

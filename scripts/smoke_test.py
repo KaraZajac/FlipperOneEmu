@@ -18,7 +18,7 @@ Boots a throwaway device, devices/smoke-PID (removed at the end unless
 - its CLI: the firmware's own unit tests pass, and `power show` reads the
   gauge, the charger and the current meter as the battery model has them;
 - the buttons and the touchpad: `input dump` sees a key and a touch sent on
-  the front-panel link;
+  the front-panel link; a headset in the jack, its mic, a button on it;
 - Power's Flipper OS menu over the frame, and Stop there: the MCU's desktop;
 - a charger plugged in, then pulled out: the charger's interrupts through
   the main board's expander, `power show` charging;
@@ -460,6 +460,21 @@ def body(check, name, d, out, port):
           dump[-200:])
     check("input dump: a touch", "touch: Start" in dump and
           "touch: Move" in dump, dump[-200:])
+
+    # ------------------------------------------ a headset in the jack
+    panel.s.sendall(b"headset 1\n")
+    check("a headset in the jack: the firmware sees it, and its mic",
+          wait_log(d, r"Headphones status changed: 00000011", 5))
+    time.sleep(0.3)
+    panel.s.sendall(b"headset volup\n")
+    check("... its volume up button (B)",
+          wait_log(d, r"Headphones status changed: 00001011", 3))
+    panel.s.sendall(b"headset 1\n")
+    time.sleep(0.5)
+    panel.s.sendall(b"headset 0\n")
+    check("... and its going", wait_log(d, r"(?s)00001011.*"
+                                         r"Headphones status changed: 00000000",
+                                         3))
 
     # ----------------------------------------- the Flipper OS menu, Stop
     before = panel.screen()

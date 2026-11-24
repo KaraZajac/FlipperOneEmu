@@ -83,6 +83,12 @@ usb 1
 What is in the USB-C port (0 nothing, 1 a charger, 2 a computer): on connecting, and
 when a program plugs something in or pulls it out.
 
+```
+headset 1
+```
+
+What is in the headphone jack, as below: on connecting, and at each change.
+
 ### To the emulator
 
 ```
@@ -118,6 +124,19 @@ Linux side off), the computer enumerates the MCU's USB device, and its CDC seria
 is `devices/NAME/usb.sock`. The charger chip sees either (and takes 300 ms to know which
 it is), the battery charges, the USB-C chips see their partner. What is plugged in
 stays when the program goes. The window's Device menu has them (Ctrl+U, Ctrl+Shift+U).
+
+```
+headset 1
+headset volup
+headset 1
+headset 0
+```
+
+A headset in the 3.5 mm jack (a four-pole one, with a mic), a button on its cable held
+down (`play`, `volup`, `voldown`, `assist`: the standard's 0, 240, 470 and 135 Ω across
+the mic line) and let go, and the headset pulled out. The firmware looks at the jack
+every 100 ms and takes a second after a plug goes in to look for the mic; a button
+shorter than that is not seen. The window's Device menu has them (The headphone jack).
 
 ```
 refresh

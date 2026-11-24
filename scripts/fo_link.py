@@ -28,6 +28,8 @@ class PanelLink(QtCore.QObject):
     haptic = QtCore.Signal(bool)        # the vibration motor runs
     usb = QtCore.Signal(int)            # in the USB-C port: 0 nothing,
                                         # 1 a charger, 2 a computer
+    headset = QtCore.Signal(str)        # in the jack: "0", "1", or the
+                                        # button held ("play", "volup", ...)
     stopped = QtCore.Signal(str)        # time stands still ("paused", "debug"
                                         # ...: why), or goes on ("")
 
@@ -109,6 +111,12 @@ class PanelLink(QtCore.QObject):
         if self.up:
             self.send("refresh")
 
+    def set_headset(self, what):
+        """the jack: 0 empty, 1 a headset, or its button held: play, volup,
+        voldown or assist"""
+        if self.up:
+            self.send(f"headset {what}")
+
     def set_usb(self, what):
         """into the USB-C port: 0 nothing, 1 a charger, 2 a computer"""
         if self.up:
@@ -148,6 +156,8 @@ class PanelLink(QtCore.QObject):
             self.haptic.emit(int(rest) != 0)
         elif word == "usb":
             self.usb.emit(int(rest))
+        elif word == "headset":
+            self.headset.emit(rest.strip())
         elif word == "running":
             on, _, why = rest.partition(" ")
             self.stopped.emit("" if int(on) else why.strip() or "paused")

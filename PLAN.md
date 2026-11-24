@@ -56,11 +56,12 @@ screen and its CLI.
       plugged in) (2026-11-24): the self-check finds every chip; a charger to plug in
       (the window's Ctrl+U): the charger's flow, the battery charging over time, the
       USB-C chips' partner (2026-11-24); INA4230 ×5 to come
-- ◐ The backlight's PWM (2026-11-23); the WS2812 LEDs (17 on three chains, their
-      supplies on the control expander, 2026-11-24); the headset key (ADC) to come
+- ☑ The backlight's PWM (2026-11-23); the WS2812 LEDs (17 on three chains, their
+      supplies on the control expander, 2026-11-24); the headphone jack: its switch,
+      and a headset's mic and buttons on the ADC (2026-11-24)
 - ☑ The desktop and menus, the buttons and the touchpad from the window (2026-11-24)
 - ☐ RPC: the screen stream and input, through the CLI's `rpc`
-- ◐ USB: the RP2350's controller as a device, and a computer at the cable's end that
+- ☑ USB: the RP2350's controller as a device, and a computer at the cable's end that
       enumerates it: the firmware's CDC port (`37C1:F101`) on `devices/NAME/usb.sock`
       (2026-11-24); BOOTSEL: the boot ROM's own USB boot enumerates (2026-11-24); USB/IP,
       as FlipperZeroEmu's USB is: the device on this PC's own kernel (2026-11-24)

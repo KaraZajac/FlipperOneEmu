@@ -485,3 +485,16 @@ register headers.
     its way (a cable pulled out in the middle of a command's answer, then plugged in
     again) leaves it mute until the MCU restarts. The smoke test reads each answer to
     its prompt before going on.
+
+## The headphone jack (2026-11-24)
+
+43. **A headset.** The jack's switch is GPIO42 (high with a plug in: a pull-up of the
+    board's, so that it holds through the MCU's resets) and the mic line GPIO47, the
+    ADC's input 7. The firmware's headphones service looks every 100 ms: a plug,
+    then, a second later, a mic, when the line is above 1.5 V; then a button, from the
+    resistance it works out against a 2.2 kΩ bias. A 1.5 V mic was never a mic: the
+    model now biases it at 2.2 V through 2.2 kΩ, with the mic as 6.8 kΩ (assumed):
+    1.66 V. And the play button's 0 Ω was never a button: the firmware wants more than
+    nothing (on a device the switch and the wires give it a few ohms): 10 Ω. Each
+    button now comes as the firmware has them: play A, volume up B, down C, assistant
+    D (`headset play|volup|voldown|assist` on the panel link; the window's Device menu).

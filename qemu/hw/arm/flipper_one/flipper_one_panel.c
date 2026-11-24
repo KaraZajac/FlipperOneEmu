@@ -2,8 +2,8 @@
  * The Flipper One's front panel, for a program that shows it
  * (docs/PANEL_LINK.md): out go the screen, its backlight, the LEDs, the
  * vibration motor and whether the machine runs; in come the buttons, the
- * touchpad, and what is plugged into the USB-C port (a charger, a
- * computer) or pulled out.
+ * touchpad, what is plugged into the USB-C port (a charger, a computer) or
+ * pulled out, and a headset in the jack with the button on its cable.
  *
  * The screen is the panel's 256x144 picture, 0 black to 255 white, which the
  * display controller's model draws into; what changed since the program was
@@ -23,6 +23,10 @@
 #include "flipper_one.h"
 
 #define TICK_MS         16
+
+static const char *const headset_names[FO_HEADSET_NUM] = {
+    "0", "1", "play", "volup", "voldown", "assist",
+};
 #define ROWS_PER_LINE   16              /* 4 KiB of picture to a line at most */
 
 static const char *const key_names[FO_KEY_NUM] = {
@@ -117,6 +121,7 @@ static void panel_everything(FlipperOnePanelState *s)
     panel_lights(s, true);
     panel_rows(s, true);
     flipper_link_send(&s->lk, "usb %d\n", s->usb);
+    flipper_link_send(&s->lk, "headset %s\n", headset_names[s->headset]);
 }
 
 static void panel_tick(void *opaque)
@@ -181,6 +186,14 @@ static void panel_line(void *opaque, char *line)
             s->touch_p = MIN(MAX(p, 0), 255);
         }
         panel_input(s);
+    } else if (!strcmp(line, "headset") && arg) {
+        for (int i = 0; i < FO_HEADSET_NUM; i++) {
+            if (!strcmp(arg, headset_names[i])) {
+                s->headset = i;
+                flipper_link_send(&s->lk, "headset %s\n", arg);
+                panel_input(s);
+            }
+        }
     } else if (!strcmp(line, "usb") && arg && arg[0] >= '0' &&
                arg[0] <= '2' && !arg[1]) {
         s->usb = arg[0] - '0';

@@ -60,11 +60,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.link.leds.connect(self.view.set_leds)
         self.link.haptic.connect(self.view.set_haptic)
         self.link.usb.connect(self._usb)
+        self.link.headset.connect(self._headset)
         self.link.stopped.connect(self._stopped)
         self.view.key.connect(self._key)
         self.view.touch.connect(self._touch)
         self.lcd_on = False
         self.usb = 0
+        self.headset = "0"
 
         self._menus()
         self._lost()
@@ -90,6 +92,26 @@ class MainWindow(QtWidgets.QMainWindow):
             a.setChecked(what == 0)
             group.addAction(a)
             self.usb_actions.append(a)
+        jack = device.addMenu("The &headphone jack")
+        group = QtGui.QActionGroup(self)
+        self.jack_actions = []
+        for what, text in (("0", "&Nothing in it"), ("1", "A &headset")):
+            a = self._action(jack, text, lambda _=False, w=what:
+                             self.link.set_headset(w))
+            a.setCheckable(True)
+            a.setChecked(what == "0")
+            group.addAction(a)
+            self.jack_actions.append(a)
+        jack.addSeparator()
+        self.button_actions = []
+        for what, text in (("play", "Its &play button"),
+                           ("volup", "Its volume &up"),
+                           ("voldown", "Its volume &down"),
+                           ("assist", "Its &assistant button")):
+            a = self._action(jack, text, lambda _=False, w=what:
+                             self._headset_button(w))
+            a.setEnabled(False)
+            self.button_actions.append(a)
         device.addSeparator()
         self._action(device, "Save the &screen as a picture…", self.save_screen,
                      "Ctrl+S")
@@ -153,6 +175,18 @@ class MainWindow(QtWidgets.QMainWindow):
     def _plug(self, what):
         self.link.set_usb(what)
         self.usb_actions[self.usb].setChecked(True)     # until it says so
+
+    def _headset(self, what):
+        self.headset = what
+        self.jack_actions[0 if what == "0" else 1].setChecked(True)
+        for a in self.button_actions:
+            a.setEnabled(what != "0")
+
+    def _headset_button(self, what):
+        """a press of the headset's button: held a moment, let go"""
+        if self.headset != "0":
+            self.link.set_headset(what)
+            QtCore.QTimer.singleShot(300, lambda: self.link.set_headset("1"))
 
     def _usb(self, what):
         self.usb = what if 0 <= what <= 2 else 0
