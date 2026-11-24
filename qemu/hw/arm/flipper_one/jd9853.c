@@ -12,8 +12,12 @@
  * The glass is monochrome behind a colour controller: each byte of RGB666
  * memory is one grey pixel, 86 columns of three a row.  The firmware writes
  * the whole window (258 x 144 bytes, MADCTL and the window set so that it
- * shows upright), and the leftmost 256 of each row are what the glass
- * shows: RAMWR writes from the window's start, RAMWRC goes on.
+ * shows upright), and the glass shows 256 of each row, from the second on:
+ * the firmware's GUI kept its first column empty for that ("the pixel shift
+ * bug", from March 2026), and since September it puts a frame from the
+ * RK3576 one pixel on, so that the frame's leftmost 256 are what shows, as
+ * the kernel's binding (flipper,one-display.yaml) has it.  RAMWR writes from
+ * the window's start, RAMWRC goes on.
  *
  * TE (tearing effect, GPIO5) pulses at the panel's 80 Hz while TEON is set
  * and the controller is out of reset: the firmware starts each frame there,
@@ -36,6 +40,7 @@
 #define HSTX_IO2        (15 - 12)
 #define HSTX_IO3        (14 - 12)
 #define ROW             258
+#define GLASS_X0        1                       /* its first pixel shown */
 #define TE_PERIOD_NS    12500000                /* 80 Hz */
 #define TE_HIGH_NS      2000000
 
@@ -111,8 +116,8 @@ static void jd_byte(FoJd9853 *d, uint8_t b)
         if (d->cmd == 0x2c || d->cmd == 0x3c) {     /* RAMWR, RAMWRC */
             uint32_t y = d->pos / ROW, x = d->pos % ROW;
 
-            if (y < FO_LCD_H && x < FO_LCD_W) {
-                d->panel->fb[y][x] = b;
+            if (y < FO_LCD_H && x >= GLASS_X0 && x - GLASS_X0 < FO_LCD_W) {
+                d->panel->fb[y][x - GLASS_X0] = b;
             }
             d->pos++;
         } else if (d->nparams < sizeof(d->params)) {

@@ -363,3 +363,15 @@ register headers.
     from "CPU not responding" to "Waiting for CPU screen…"; the LED colour registers
     light the window's LEDs, the haptic register buzzes, and reading the system
     interrupt register lets CPU_INT go.
+
+## The screen's frames (2026-11-24)
+
+36. **Which 256 columns the glass shows.** The panel's window is 258 pixels a row, and
+    the glass shows 256 of them. The model had shown the first 256; it is the 256 from
+    the second on. The firmware's history says so: from March its GUI left its first
+    column empty ("workaround for the pixel shift bug", a padding of one pixel, on the
+    right too from July), and in September (#247) that padding went and the frame
+    receiver took it over, putting each frame from the RK3576 one pixel on, so that
+    the frame's leftmost 256 columns are the ones that show, as the kernel's binding
+    (`flipper,one-display.yaml`) says. The emulated screen moved one pixel left; a
+    frame from the link now shows exactly.
