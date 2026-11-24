@@ -12,9 +12,12 @@
  * machines up to the present when a timer of its own comes due, and when
  * anything may have changed for them: the CPU at its registers, a pin's
  * level.  A machine that stalls (a FIFO, a WAIT, an IRQ) costs nothing until
- * then, and goes on at that moment.  Pins it drives change at the time of
- * the instruction that drove them; the pins (rp2350_gpio.c) take them from
- * pad_out and pad_oe, PIO pin 0 being GPIOBASE.
+ * then, and goes on at that moment; so does one that jumps to itself, always,
+ * which nothing but the CPU or the DMA can move on (a program that ran off
+ * its end, into empty instruction memory, is such a loop: JMP 0 at 0).
+ * Pins it drives change at the time of the instruction that drove them; the
+ * pins (rp2350_gpio.c) take them from pad_out and pad_oe, PIO pin 0 being
+ * GPIOBASE.
  *
  * Copyright (c) 2026, Kara Zajac
  * SPDX-License-Identifier: BSD-3-Clause
@@ -189,6 +192,7 @@ static bool sm_step(RP2350State *s, RP2Pio *p, int n)
 {
     RP2PioSM *sm = &p->sm[n];
     bool exec = sm->has_exec;
+    uint8_t pc0 = sm->pc;
     uint16_t insn = exec ? sm->exec : p->imem[sm->pc];
     int ss_count = (sm->pinctrl >> 29) & 7;
     int field = (insn >> 8) & 0x1f;
@@ -236,6 +240,14 @@ static bool sm_step(RP2350State *s, RP2Pio *p, int n)
         if (take) {
             sm->pc = arg & 31;
             jumped = true;
+            if (!exec && !((arg >> 5) & 7) && sm->pc == pc0) {
+                /* a JMP to itself, always: nothing more happens until
+                 * something from outside does (the CPU, the DMA), so it
+                 * waits for that here rather than running each cycle */
+                sm->next_ps += (1 + delay) * sm_period_ps(s, sm);
+                on_pins = false;
+                goto stall;
+            }
         }
         break;
     }
@@ -810,6 +822,9 @@ static void pio_write(RP2Block *b, hwaddr reg, uint32_t value)
             p->sm[n].exec = value;
             p->sm[n].has_exec = true;
             p->sm[n].stalled = false;
+            /* in place of the one it stalled on: an IRQ WAIT is done with
+             * (else the next IRQ WAIT would pass without setting its flag) */
+            p->sm[n].irq_waiting = false;
             p->sm[n].next_ps = now_ps;
             break;
         case 0x14: p->sm[n].pinctrl = value; break;

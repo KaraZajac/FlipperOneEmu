@@ -120,6 +120,7 @@ yet.
 | `flipperoneemu` | The launcher: run, the window, stop, status, log, cli, shot, where |
 | `scripts/` | Setting up QEMU, fetching the firmware, the window (`fo_gui.py`, `fo_view.py`, `fo_link.py`), the launcher's parts, checks |
 | `docs/BRINGUP_LOG.md` | What was found on the way, in order |
+| `docs/FIRMWARE_BUGS.md` | Bugs in the MCU firmware that the emulator turned up |
 
 ## License
 
