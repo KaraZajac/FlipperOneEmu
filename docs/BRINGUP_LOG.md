@@ -396,3 +396,19 @@ register headers.
     host's time, ten a second, and comes out on the panel pixel for pixel. The MCU
     asks for a frame when it shows the CPU's screen again (bit 1 of the system
     interrupt register, 0x0104); a program answers it as Flipper OS does.
+
+## A charger (2026-11-24)
+
+38. **An expander's latched input, read: INT again.** The firmware latches the main
+    board's expander's inputs (and the buttons'), so that a short pulse on one, such as
+    the charger's 256 µs INT, is held until it reads the input port; then its worker
+    looks at which inputs went from high to low since the last read. The PCAL6416
+    model compared a pin's later changes with the pin as it was at the read, not with
+    what the read returned: after a pulse had come and gone, the read gave the latched
+    low, the pin was high again, and nothing more happened, so the firmware took the
+    line for still asserted and every later pulse for no change. On the chip a change
+    is from what was read: the pin back high is a change again, INT goes up at the read
+    and down again a moment later, and the next read sees the pulse's end. The model
+    now does that, the second look at the transfer's end, so that INT's fall is an edge
+    for the MCU's GPIO interrupt. A quick press and release between two reads of the
+    buttons' expander is now seen whole too.

@@ -10,7 +10,10 @@
  * changes pulls INT low, and sets its bit in the interrupt status; with
  * its input latch set, the input port keeps the level it changed to until
  * it is read. Reading a port of the input register lets INT go for that
- * port. Drive strength, pull-ups and the output's configuration are kept.
+ * port, and a change is from what was read: a latched level that the pin
+ * has left since is a change again (INT at once, and the next read has the
+ * pin as it is), so that a pulse shorter than a read is seen to begin and
+ * to end. Drive strength, pull-ups and the output's configuration are kept.
  * RESET low puts every register back as it starts, and the chip does not
  * answer on the bus until it goes high again. The "pins" outputs say which
  * pins it drives high (an output at 1); an input, or one it drives low, 0.
@@ -45,6 +48,8 @@ struct Pcal6416State {
     uint16_t seen;                  /* the inputs' levels when last read */
     uint16_t latched;               /* latched inputs changed since read */
     uint16_t latched_level;         /* ... and the level each changed to */
+    bool look_again;                /* the input was read: at the transfer's
+                                       end, what changed since */
     bool in_reset;                  /* RESET is low */
     qemu_irq int_out;               /* 0: asserted */
     qemu_irq pin_out[16];           /* "pins": an output's level (1: driven
@@ -110,12 +115,15 @@ static uint8_t pcal_read_byte(Pcal6416State *s, int reg, int port)
 
         v = (levels & ~(s->latched & mask)) | (s->latched_level & s->latched
                                                 & mask);
-        v ^= s->r[R_POLARITY];
-        /* the read lets INT go for this port */
-        s->seen = (s->seen & ~mask) | (levels & mask);
+        /* the read lets INT go for this port; a change is from what it
+         * read: a latched level the pin has since left is a change again,
+         * seen when the transfer ends (INT up, then down again) */
+        s->seen = (s->seen & ~mask) | (v & mask);
         s->latched &= ~mask;
         s->r[R_INT_STATUS] &= ~mask;
+        s->look_again = true;
         pcal_int(s);
+        v ^= s->r[R_POLARITY];
     } else {
         v = s->r[reg];
     }
@@ -180,6 +188,9 @@ static int pcal_event(I2CSlave *i2c, enum i2c_event event)
             return -1;                          /* no ACK */
         }
         s->have_command = false;
+    } else if (event == I2C_FINISH && s->look_again) {
+        s->look_again = false;
+        pcal_update(s);
     }
     return 0;
 }
@@ -207,6 +218,7 @@ static void pcal_reset(DeviceState *dev)
     s->have_command = false;
     s->seen = pcal_levels(s);
     s->latched = s->latched_level = 0;
+    s->look_again = false;
     pcal_int(s);
 }
 
