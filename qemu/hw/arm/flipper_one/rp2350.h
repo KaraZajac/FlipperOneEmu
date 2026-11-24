@@ -64,7 +64,7 @@ struct RP2Block {
 typedef struct RP2Usb {
     MemoryRegion mr;
     qemu_irq irq;
-    uint32_t addr, main_ctrl, sie_ctrl, sie_status, buff_status;
+    uint32_t addr, main_ctrl, sie_ctrl, sie_status, buff_status, buff_cpu;
     uint32_t ep_abort, ep_abort_done, ep_stall_arm, nak_poll;
     uint32_t ep_status_stall_nak, muxing, pwr, inte, intf, sof;
     bool connected, suspended, vbus;    /* what the bus and the cable do */
@@ -304,7 +304,7 @@ struct RP2350State {
     RP2350RCP rcp;
 
     /* rp2350_sys.c */
-    RP2Block resets, rosc, trng, sha256, powman, watchdog, otp;
+    RP2Block resets, rosc, trng, sha256, powman, watchdog, otp, accessctrl;
     RP2Block xosc, pll_sys, pll_usb, clocks, psm, bootram_regs, adc;
     uint16_t adc_mv[9];         /* AIN0-7 (GPIO40-47), the temperature sensor */
     RP2SHA sha;
@@ -350,7 +350,17 @@ struct RP2350State {
     RP2SIO sio;
     MemoryRegion usb_dpram;     /* the USB controller's RAM, 4 KiB */
     RP2Usb usb;
-    bool bootsel;               /* the BOOTSEL button: QSPI CS held low */
+    bool bootsel;               /* the BOOTSEL button: QSPI CS held low,
+                                   through the first start only (then let
+                                   go, as a hand does) */
+    bool started;               /* ... it has been */
+    bool watchdog_fired;        /* the reset to come is the watchdog's */
+    uint32_t watchdog_reason;   /* ... TIMER (1) or FORCE (2) */
+    QEMUTimer *watchdog_timer;  /* its count running down */
+    int64_t watchdog_due;       /* ... to 0 then (ns) */
+    bool core1_held;            /* PSM FRCE_OFF.PROC1: core 1 held off */
+    bool core1_cycled;          /* ... since it last started: restart it */
+    bool core1_work;            /* its power work queued, not yet run */
 
     char *bootrom;              /* the boot ROM's image, 32 KiB */
     char *flash;                /* the flash's image, up to 16 MiB */

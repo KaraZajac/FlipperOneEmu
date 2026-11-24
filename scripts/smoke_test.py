@@ -25,6 +25,11 @@ Boots a throwaway device, devices/smoke-PID (removed at the end unless
 - a computer plugged in: it enumerates the MCU's USB device, and the CLI
   answers on its USB serial port, and over USB/IP (fo_usbip.py playing the
   PC's kernel);
+- an update, as picotool makes one: `power boot` (the firmware reboots into
+  the boot ROM's USB boot, through the watchdog), PICOBOOT over USB/IP
+  (fo_picoboot.py): the flash read, a spare sector erased, written and read
+  back, the device's own firmware loaded, a reboot: the firmware starts
+  again;
 - the same device again with BOOTSEL held: the RP2350's boot ROM's own USB
   boot, which the computer enumerates.
 
@@ -32,6 +37,7 @@ Exit status 0 = pass. Screenshots go to --out.
 """
 import argparse
 import base64
+import json
 import os
 import pathlib
 import queue
@@ -306,7 +312,9 @@ def main():
     if subprocess.run(run).returncode:
         sys.exit("the device did not start")
     try:
-        body(check, name, d, out, port)
+        panel = body(check, name, d, out, port)
+        update(check, d, port, panel)
+        log_checks(check, d)
         bootsel(check, name, d)
     finally:
         subprocess.run([sys.executable, str(LAUNCHER), "stop", "-n", name],
@@ -526,8 +534,66 @@ def body(check, name, d, out, port):
     check("over USB/IP, the PC's side: the CLI answers", "Uptime:" in text,
           text[-200:])
     panel.s.sendall(b"usb 0\n")
+    return panel
 
-    # ---------------------------------------------- the log, at the end
+
+SPARE = 0x10700000      # a sector of FW A's partition far past the image
+
+
+def update(check, d, port, panel):
+    """the firmware's update path: `power boot` into the boot ROM's USB boot,
+    PICOBOOT over USB/IP as picotool drives it, a reboot into the firmware"""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import fo_picoboot
+
+    def boot_roms():
+        return (d / "qemu.out").read_text(errors="replace").count(
+            '"RP2350 Boot"')
+    seen, starts = boot_roms(), log_text(d).count("Startup complete")
+    cli(d, "power boot", None, 0.5)
+    panel.s.sendall(b"usb 2\n")
+    if not check("power boot: a computer enumerates the boot ROM's USB boot "
+                 "(2E8A:000F)", until(lambda: boot_roms() > seen, 15)):
+        return
+    uf2 = json.loads((d / "firmware.json").read_text())["uf2"]
+    try:
+        pb = fo_picoboot.Picoboot(port)
+    except OSError as e:
+        check("PICOBOOT: its interface, over USB/IP", False, str(e))
+        return
+    try:
+        pb.exclusive()
+        pb.exit_xip()
+        flash = (d / "flash.bin").read_bytes()
+        check("PICOBOOT: a read of the flash is what it holds",
+              pb.read(0x10000000, 4096) == flash[:4096])
+        pb.erase(SPARE, 4096)
+        check("... a sector erased reads 0xFF",
+              pb.read(SPARE, 4096) == b"\xff" * 4096)
+        pattern = bytes((i * 7 + 3) & 0xff for i in range(256))
+        pb.write(SPARE + 256, pattern)
+        check("... a page written reads back", pb.read(SPARE, 768) ==
+              b"\xff" * 256 + pattern + b"\xff" * 256)
+        t = time.time()
+        n = fo_picoboot.load(pb, uf2, progress=None)
+        blocks = sorted(fo_picoboot.uf2_blocks(uf2))
+        back = all(pb.read(a, len(page)) == page
+                   for a, page in blocks[::len(blocks) // 7])
+        check(f"the device's firmware loaded through it ({n} pages, "
+              f"{time.time() - t:.1f} s), and reads back", back)
+        pb.reboot()
+    except OSError as e:
+        check("PICOBOOT", False, str(e))
+        return
+    finally:
+        pb.close()
+    check("a reboot into it: the firmware starts again", until(
+        lambda: log_text(d).count("Startup complete") > starts, 20, 0.2))
+    panel.s.sendall(b"usb 0\n")
+
+
+def log_checks(check, d):
+    """the log, at the end: no crash, no error but the known ones"""
     text = log_text(d)
     crash = CRASH.search(text)
     check("no crash in the log", not crash, crash and crash.group(0))

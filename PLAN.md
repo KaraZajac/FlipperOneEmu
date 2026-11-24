@@ -64,11 +64,18 @@ screen and its CLI.
 - ☑ USB: the RP2350's controller as a device, and a computer at the cable's end that
       enumerates it: the firmware's CDC port (`37C1:F101`) on `devices/NAME/usb.sock`
       (2026-11-24); BOOTSEL: the boot ROM's own USB boot enumerates (2026-11-24); USB/IP,
-      as FlipperZeroEmu's USB is: the device on this PC's own kernel (2026-11-24)
-- ◐ Checks: `scripts/smoke_test.py` (2026-11-24): a throwaway device through its
+      as FlipperZeroEmu's USB is: the device on this PC's own kernel (2026-11-24); an
+      update as picotool makes one: `power boot` or the button into the boot ROM's USB
+      boot, PICOBOOT (`scripts/fo_picoboot.py`: read, erase, write, a UF2 loaded, a
+      reboot through the watchdog) (2026-11-24)
+- ☐ The charger's power switch: `power reboot` (its system power reset), ship mode and
+      `power off` (the board off until a charger or a computer is plugged in)
+- ☑ Checks: `scripts/smoke_test.py` (2026-11-24): a throwaway device through its
       sockets: the boot and each chip, the host link and a frame shown pixel for
       pixel, the LEDs and the motor, the CLI and the firmware's unit tests, the
-      buttons and the touchpad, the Flipper OS menu and its Stop; an update to come
+      buttons and the touchpad, the headset, the Flipper OS menu and its Stop, a
+      charger, a computer (the CLI over USB and USB/IP), an update through PICOBOOT
+      and a reboot into it, BOOTSEL
 
 ## M3: the RK3576 to a shell ☐
 - ☐ The cluster: 4× Cortex-A53 and 4× Cortex-A72, GIC-400, the generic timer at 24 MHz,

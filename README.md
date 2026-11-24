@@ -21,7 +21,10 @@ and its settings are kept in the flash across restarts. Its main bus (I2C from a
 program) reaches the main board's expander, which powers the Linux side, the battery's
 gauge (the status bar shows its charge), its charger, the system rail's current meter
 and the USB-C port's chips: the self-check finds every chip. A charger can be plugged
-into its USB-C port, and the battery charges. The Linux side (the RK3576) is next. [RESEARCH.md](RESEARCH.md) is the survey this
+into its USB-C port, and the battery charges; a computer plugged in gets its USB serial
+port, also as a real USB device on this PC (USB/IP), and the firmware can be updated as
+picotool updates it, through the RP2350's boot ROM. The Linux side (the RK3576) is
+next. [RESEARCH.md](RESEARCH.md) is the survey this
 starts from:
 the device, what Flipper Devices publishes, and what emulating it takes.
 [PLAN.md](PLAN.md) is the order of work; the MCU comes first.
@@ -58,6 +61,10 @@ and brings the MCU's own desktop.
 ./flipperoneemu run [-n NAME] [--detach] [--gdb PORT]   # a device without the window
 ./flipperoneemu run --bootsel ...    # ... started with BOOTSEL held: the boot ROM's USB boot
 ./flipperoneemu run --usbip 3240 ... # ... its USB given to this PC: sudo scripts/usbip_attach.py
+scripts/fo_picoboot.py --port 3240 load FIRMWARE.uf2 --reboot
+                                     # an update, as picotool makes one: after the
+                                     # CLI's `power boot` (or --bootsel), a computer
+                                     # plugged in (Ctrl+Shift+U)
 ./flipperoneemu log [-n NAME]        # the firmware's log, from its RTT buffer
 ./flipperoneemu cli [-n NAME] [CMD]  # the firmware's CLI (UART1); Ctrl-] leaves
 ./flipperoneemu cli --usb ...         # ... on its USB serial port (a computer plugged in)

@@ -471,7 +471,8 @@ static void flipper_one_class_init(ObjectClass *oc, const void *data)
     object_class_property_add_bool(oc, "bootsel", flipper_one_get_bootsel,
                                    flipper_one_set_bootsel);
     object_class_property_set_description(oc, "bootsel",
-        "Start with the RP2350's BOOTSEL held: its boot ROM's USB mode");
+        "Start with the RP2350's BOOTSEL held (and let it go after): its "
+        "boot ROM's USB mode");
     object_class_property_add(oc, "battery", "int", flipper_one_get_battery,
                               flipper_one_set_battery, NULL, NULL);
     object_class_property_set_description(oc, "battery",

@@ -25,10 +25,13 @@
 #include "hw/misc/unimp.h"
 #include "target/arm/cpu-qom.h"
 #include "target/arm/cpu.h"
-#include "target/arm/arm-powerctl.h"
+#include "target/arm/internals.h"
+#include "hw/core/cpu.h"
+#include "qemu/main-loop.h"
 #include "target/arm/tcg/idau.h"
 #include "hw/char/pl011.h"
 #include "system/system.h"
+#include "system/reset.h"
 #include "rp2350.h"
 
 /*
@@ -251,15 +254,58 @@ static void rp2350_irq_set(void *opaque, int n, int level)
     }
 }
 
+/*
+ * PSM FRCE_OFF.PROC1 holds core 1 off; letting go starts it again in its
+ * boot ROM. QEMU's arm_set_cpu_off() and arm_set_cpu_on_and_reset() each
+ * queue work for the core, and an "on" that comes before the "off" has
+ * run finds the core still on and is dropped ("CPU 1 is already on"): the
+ * off runs after it and the core stays off. The SDK's
+ * multicore_reset_core1(), which the firmware calls as it starts, is an
+ * off and an on a few instructions apart, and then waits for core 1's
+ * handshake: core 0 would wait forever. Here one piece of work does what
+ * the PSM asks when it runs: off, or, if the core was held off since it
+ * last started (however briefly), a reset and on.
+ */
+static void core1_power_work(CPUState *cs, run_on_cpu_data data)
+{
+    RP2350State *s = data.host_ptr;
+    ARMCPU *cpu = ARM_CPU(cs);
+
+    assert(bql_locked());
+    s->core1_work = false;
+    if (s->core1_held) {
+        arm_set_cpu_power_state(cpu, PSCI_OFF);
+        cs->halted = 1;
+        cs->exception_index = EXCP_HLT;
+    } else if (s->core1_cycled) {
+        s->core1_cycled = false;
+        cpu_reset(cs);
+        cs->halted = 0;
+        arm_set_cpu_power_state(cpu, PSCI_ON);
+    }
+}
+
 void rp2350_core1_power(RP2350State *s, bool on)
 {
-    ARMCPU *cpu = s->cpu[1].cpu;
-
-    if (on) {
-        arm_set_cpu_on_and_reset(cpu->mp_affinity);
-    } else {
-        arm_set_cpu_off(cpu->mp_affinity);
+    s->core1_held = !on;
+    s->core1_cycled |= !on;
+    if (!s->core1_work) {
+        s->core1_work = true;
+        async_run_on_cpu(CPU(s->cpu[1].cpu), core1_power_work,
+                         RUN_ON_CPU_HOST_PTR(s));
     }
+}
+
+/*
+ * CPUs are not reset with the devices: without this a reset of the chip
+ * (the watchdog's, as after a PICOBOOT reboot; SYSRESETREQ) would reset
+ * everything but the cores, which would run on where they were. Both
+ * start again in the boot ROM, as armv7m_load_kernel() has a board's core
+ * reset.
+ */
+static void rp2350_core_reset(void *opaque)
+{
+    cpu_reset(CPU(opaque));
 }
 
 static void rp2350_realize(DeviceState *dev, Error **errp)
@@ -341,6 +387,7 @@ static void rp2350_realize(DeviceState *dev, Error **errp)
         if (!sysbus_realize(SYS_BUS_DEVICE(armv7m), errp)) {
             return;
         }
+        qemu_register_reset(rp2350_core_reset, s->cpu[c].cpu);
         rp2350_coproc_init(s, c);
         rp2350_ppb_realize(s, c);
     }
@@ -365,6 +412,14 @@ qemu_irq rp2350_irq(RP2350State *s, int n)
 
 static void rp2350_reset_hold(Object *obj, ResetType type)
 {
+    RP2350State *s = RP2350(obj);
+
+    if (s->started) {
+        s->bootsel = false;     /* held to start, let go since: a reboot
+                                   (PICOBOOT's, the watchdog's) boots */
+    }
+    s->started = true;
+    s->core1_held = s->core1_cycled = false;    /* both cores start */
     rp2350_coproc_reset(RP2350(obj));
     rp2350_sys_reset(RP2350(obj));
     rp2350_sio_reset(RP2350(obj));

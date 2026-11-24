@@ -11,12 +11,20 @@
  *             the SDK swap them themselves)
  *   POWMAN    registers that want the password 0x5afe in their top half
  *             (scratch and boot registers aside); a power-on reset
- *   WATCHDOG  its scratch and reason registers (no timer yet)
+ *   WATCHDOG  LOAD a count of 1 µs ticks (the SDK's and the boot ROM's
+ *             tick); with ENABLE it runs down (CTRL's TIME), and at 0 the
+ *             chip resets, as TRIGGER resets it at once: keeping the
+ *             watchdog's scratch registers and POWMAN's boot ones (where
+ *             the boot ROM and the firmware leave the next start's kind: a
+ *             reboot into BOOTSEL, a flash update), REASON TIMER or FORCE,
+ *             POWMAN's HAD_POR clear. Its debug pauses are QEMU's own: the
+ *             virtual clock stands still while gdb has the machine
  *
  * Copyright (c) 2026, Kara Zajac
  * SPDX-License-Identifier: BSD-3-Clause
  */
 #include "qemu/osdep.h"
+#include "system/runstate.h"
 #include "qemu/bswap.h"
 #include "qemu/guest-random.h"
 #include "qemu/log.h"
@@ -141,6 +149,46 @@ static uint32_t rosc_read(RP2Block *b, hwaddr reg)
         return 0;
     default:
         return reg < 0x28 ? b->regs[reg / 4] : 0;
+    }
+}
+
+/* ------------------------------------------------------------ ACCESSCTRL */
+
+/*
+ * Who may reach each bus endpoint: a register an endpoint (ROM, XIP, the
+ * SRAMs, then each peripheral), its bits NSU, NSP, SU, SP, CORE0, CORE1,
+ * DMA, DBG. Written with 0xacce in the upper half, else not at all; the
+ * memories start open to all, the peripherals to Secure code only. What
+ * they say is kept and read back (the boot ROM grants its NonSecure USB
+ * boot the USB controller, and checks the grant before it lets that code
+ * hand it a buffer in the USB controller's RAM); the bus does not filter
+ * by them (the IDAU exempts the peripherals).
+ */
+#define ACCESSCTRL_FIRST    0x14            /* ROM */
+#define ACCESSCTRL_MEMORIES 0x40            /* ... XIP_MAIN, SRAM0-9 */
+#define ACCESSCTRL_LAST     0xe8            /* XIP_AUX */
+
+static void accessctrl_reset_values(RP2Block *b)
+{
+    memset(b->regs, 0, sizeof(b->regs));
+    for (hwaddr r = ACCESSCTRL_FIRST; r <= ACCESSCTRL_LAST; r += 4) {
+        b->regs[r / 4] = r <= ACCESSCTRL_MEMORIES ? 0xff : 0xfc;
+    }
+}
+
+static void accessctrl_write(RP2Block *b, hwaddr reg, uint32_t value)
+{
+    if ((value >> 16) != 0xacce) {
+        return;                                     /* no password: ignored */
+    }
+    if (reg == 0x08) {                              /* CFGRESET */
+        if (value & 1) {
+            accessctrl_reset_values(b);
+        }
+    } else if (reg == 0x0c || reg == 0x10) {        /* GPIO_NSMASK0/1 */
+        b->regs[reg / 4] = value;                   /* (all 32 bits) */
+    } else if (reg < RP2_REGS * 4) {
+        b->regs[reg / 4] = value & 0xffff;
     }
 }
 
@@ -354,15 +402,71 @@ static void powman_write(RP2Block *b, hwaddr reg, uint32_t value)
 
 /* -------------------------------------------------------------- WATCHDOG */
 
+#define WD_ENABLE           0x40000000u
+#define WD_TRIGGER          0x80000000u
+#define WD_TIME             0x00ffffffu
+
+static void watchdog_reset_chip(RP2350State *s, uint32_t reason)
+{
+    s->watchdog_fired = true;
+    s->watchdog_reason = reason;
+    timer_del(s->watchdog_timer);
+    qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+}
+
+static void watchdog_expired(void *opaque)
+{
+    watchdog_reset_chip(opaque, 0x1);               /* REASON: TIMER */
+}
+
+/* what is left of the count, in its 1 µs ticks */
+static uint32_t watchdog_time(RP2350State *s)
+{
+    int64_t left = s->watchdog_due - qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
+    if (!(s->watchdog.regs[0] & WD_ENABLE)) {
+        return s->watchdog.regs[1] & WD_TIME;       /* (as loaded) */
+    }
+    return MAX(left, 0) / 1000;
+}
+
+static void watchdog_run(RP2350State *s, uint32_t count)
+{
+    s->watchdog_due = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                      (int64_t)count * 1000;
+    if (s->watchdog.regs[0] & WD_ENABLE) {
+        timer_mod(s->watchdog_timer, s->watchdog_due);
+    } else {
+        timer_del(s->watchdog_timer);
+    }
+}
+
+static uint32_t watchdog_read(RP2Block *b, hwaddr reg)
+{
+    if (reg == 0x0) {                               /* CTRL, TIME */
+        return (b->regs[0] & ~WD_TIME) | watchdog_time(b->soc);
+    }
+    return reg < RP2_REGS * 4 ? b->regs[reg / 4] : 0;
+}
+
 static void watchdog_write(RP2Block *b, hwaddr reg, uint32_t value)
 {
+    RP2350State *s = b->soc;
+    uint32_t left;
+
     switch (reg) {
     case 0x0:                                       /* CTRL */
-        if (value & 0x80000000u) {
-            qemu_log_mask(LOG_UNIMP, "rp2350: watchdog: TRIGGER (a reset) "
-                          "is not modelled yet\n");
+        left = watchdog_time(s);
+        b->regs[0] = value & ~(WD_TRIGGER | WD_TIME);
+        if (value & WD_TRIGGER) {
+            watchdog_reset_chip(s, 0x2);            /* REASON: FORCE */
+            break;
         }
-        b->regs[0] = value & ~0x80000000u;
+        watchdog_run(s, left);                      /* on, off: from here */
+        break;
+    case 0x4:                                       /* LOAD */
+        b->regs[1] = value & WD_TIME;
+        watchdog_run(s, value & WD_TIME);
         break;
     case 0x8:                                       /* REASON: read only */
         break;
@@ -576,13 +680,16 @@ void rp2350_sys_realize(RP2350State *s)
     rp2_block_init(s, &s->rosc, "rp2350.rosc", 0x400e8000, rosc_read, NULL);
     rp2_block_init(s, &s->trng, "rp2350.trng", 0x400f0000, trng_read, NULL);
     rp2_block_init(s, &s->otp, "rp2350.otp", 0x40120000, NULL, otp_write);
+    rp2_block_init(s, &s->accessctrl, "rp2350.accessctrl", 0x40060000, NULL,
+                   accessctrl_write);
     rp2_block_init(s, &s->sha256, "rp2350.sha256", 0x400f8000,
                    sha256_read, sha256_write);
     s->sha256.raw = sha256_raw;
     rp2_block_init(s, &s->powman, "rp2350.powman", 0x40100000,
                    powman_read, powman_write);
     rp2_block_init(s, &s->watchdog, "rp2350.watchdog", 0x400d8000,
-                   NULL, watchdog_write);
+                   watchdog_read, watchdog_write);
+    s->watchdog_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, watchdog_expired, s);
     rp2_block_init(s, &s->xosc, "rp2350.xosc", 0x40048000, xosc_read, NULL);
     rp2_block_init(s, &s->pll_sys, "rp2350.pll_sys", 0x40050000,
                    pll_read, NULL);
@@ -608,22 +715,44 @@ void rp2350_sys_realize(RP2350State *s)
 
 void rp2350_sys_reset(RP2350State *s)
 {
+    bool by_watchdog;
+
     memset(s->resets.regs, 0, sizeof(s->resets.regs));
     s->resets.regs[0] = RESETS_ALL;
     memset(s->rosc.regs, 0, sizeof(s->rosc.regs));
     s->rosc.regs[0] = 0xaa0;                        /* CTRL */
     memset(s->trng.regs, 0, sizeof(s->trng.regs));
     memset(s->otp.regs, 0, sizeof(s->otp.regs));
+    accessctrl_reset_values(&s->accessctrl);
     memset(s->sha256.regs, 0, sizeof(s->sha256.regs));
     s->sha256.regs[0] = SHA_CSR_KEEP;               /* BSWAP, DMA_SIZE 2 */
     s->sha256.regs[0] &= ~0x0100u;
     memcpy(s->sha.h, sha_h0, sizeof(s->sha.h));
     s->sha.n = s->sha.nbytes = 0;
     s->sha.acc = 0;
-    memset(s->powman.regs, 0, sizeof(s->powman.regs));
-    s->powman.regs[POWMAN_CHIP_RESET] = POWMAN_HAD_POR;
+    by_watchdog = s->watchdog_fired;
+    if (by_watchdog) {
+        /* the watchdog's: its scratch and POWMAN's scratch and boot
+         * registers are kept, and so is CHIP_RESET's double tap/rescue */
+        uint32_t keep_wd[8], keep_pm[12], chip_reset;
+
+        memcpy(keep_wd, &s->watchdog.regs[0x0c / 4], sizeof(keep_wd));
+        memcpy(keep_pm, &s->powman.regs[0xb0 / 4], sizeof(keep_pm));
+        chip_reset = s->powman.regs[POWMAN_CHIP_RESET] & 0x11u;
+        memset(s->powman.regs, 0, sizeof(s->powman.regs));
+        memset(s->watchdog.regs, 0, sizeof(s->watchdog.regs));
+        memcpy(&s->watchdog.regs[0x0c / 4], keep_wd, sizeof(keep_wd));
+        memcpy(&s->powman.regs[0xb0 / 4], keep_pm, sizeof(keep_pm));
+        s->powman.regs[POWMAN_CHIP_RESET] = chip_reset;
+        s->watchdog.regs[0x08 / 4] = s->watchdog_reason;    /* REASON */
+        s->watchdog_fired = false;
+    } else {
+        memset(s->powman.regs, 0, sizeof(s->powman.regs));
+        s->powman.regs[POWMAN_CHIP_RESET] = POWMAN_HAD_POR;
+        memset(s->watchdog.regs, 0, sizeof(s->watchdog.regs));
+    }
     s->powman.regs[0x38 / 4] = 0xf;                 /* STATE */
-    memset(s->watchdog.regs, 0, sizeof(s->watchdog.regs));
+    timer_del(s->watchdog_timer);                   /* stopped: ENABLE 0 */
     memset(s->xosc.regs, 0, sizeof(s->xosc.regs));
     s->xosc.regs[0xc / 4] = 0xc4;                   /* STARTUP */
     for (int i = 0; i < 2; i++) {
@@ -640,7 +769,15 @@ void rp2350_sys_reset(RP2350State *s)
     }
     s->clocks.regs[0xbc / 4] = 0xffffffff;          /* ENABLED0/1 */
     s->clocks.regs[0xc0 / 4] = 0xffffffff;
-    memset(s->psm.regs, 0, sizeof(s->psm.regs));
+    if (!by_watchdog) {
+        memset(s->psm.regs, 0, sizeof(s->psm.regs));
+    } else if (s->psm.regs[1] & PSM_PROC1) {
+        /* the PSM made the watchdog's reset (WDSEL: what it resets) and
+         * keeps its registers through it; the boot ROM reads WDSEL after
+         * (a reset that left the oscillators running is one more before
+         * its USB boot). A core 1 forced off stays off. */
+        rp2350_core1_power(s, false);
+    }
     memset(s->adc.regs, 0, sizeof(s->adc.regs));
     memset(s->bootram_regs.regs, 0, sizeof(s->bootram_regs.regs));
     s->bootram_regs.regs[BOOTRAM_STAT] = 0xff;

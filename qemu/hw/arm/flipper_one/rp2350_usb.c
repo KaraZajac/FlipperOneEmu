@@ -20,7 +20,9 @@
  * AVAILABLE (an IN one FULL with its data, an OUT one empty): it clears
  * AVAILABLE, sets the length and FULL (OUT) or clears FULL (IN), moves the
  * selector on if the endpoint is double-buffered, and sets the endpoint's
- * BUFF_STATUS bit (EP0's if SIE_CTRL asks for it). A buffer not available
+ * BUFF_STATUS bit (EP0's if SIE_CTRL asks for it), and in
+ * BUFF_CPU_SHOULD_HANDLE which of its two buffers that was (the boot ROM's
+ * USB stack keeps its double buffers in step by it). A buffer not available
  * NAKs (EP_STATUS_STALL_NAK, if asked for); STALL set (on EP0, armed in
  * EP_STALL_ARM too) stalls. A SETUP is always taken: into the DPRAM,
  * SETUP_REC, EP0's stall disarmed. A bus reset sets BUS_RESET and clears
@@ -112,10 +114,38 @@ static uint32_t dp_read32(RP2350State *s, uint32_t off)
     return ldl_le_p(usb_dp(s) + off);
 }
 
-static void dp_write32(RP2350State *s, uint32_t off, uint32_t v)
+/*
+ * A buffer control word's two halves are written each on its own: the CPU
+ * arms one buffer with a 16-bit store (the boot ROM does), on its own
+ * thread, while the controller (the host's transactions, here) may be
+ * done with the other. A read-modify-write of the whole word would put
+ * back what the CPU had just changed in the other half: an armed buffer
+ * never seen, the host NAKed for ever. So the controller writes only the
+ * half it took, in one store, and takes RESET out of buffer 0's half
+ * without touching the rest of it.
+ */
+static uint16_t *dp_half(RP2350State *s, uint32_t off, int half)
 {
-    stl_le_p(usb_dp(s) + off, v);
-    memory_region_set_dirty(&s->usb_dpram, off, 4);
+    return (uint16_t *)(usb_dp(s) + off + 2 * half);
+}
+
+static void dp_write_half(RP2350State *s, uint32_t off, int half,
+                          uint16_t v)
+{
+    qatomic_set(dp_half(s, off, half), cpu_to_le16(v));
+    memory_region_set_dirty(&s->usb_dpram, off + 2 * half, 2);
+}
+
+static void dp_take_reset(RP2350State *s, uint32_t off)
+{
+    uint16_t *p = dp_half(s, off, 0);
+    uint16_t cur = qatomic_read(p), was;
+
+    while ((was = qatomic_cmpxchg(p, cur, cpu_to_le16(le16_to_cpu(cur) &
+                                                      ~BUF_RESET))) != cur) {
+        cur = was;
+    }
+    memory_region_set_dirty(&s->usb_dpram, off, 2);
 }
 
 static uint32_t usb_intr(RP2350State *s)
@@ -277,7 +307,7 @@ static bool usb_buf(RP2350State *s, int ep, bool out, UsbBuf *b)
     if (dp_read32(s, b->ctrl_off) & BUF_RESET) {
         /* armed again (SEL): from buffer 0; the bit is a command */
         u->next_buf[sel] = 0;
-        dp_write32(s, b->ctrl_off, dp_read32(s, b->ctrl_off) & ~BUF_RESET);
+        dp_take_reset(s, b->ctrl_off);
     }
     b->half = b->double_buf ? u->next_buf[sel] : 0;
     if (b->half) {
@@ -299,6 +329,8 @@ static void usb_buf_done(RP2350State *s, int ep, bool out, UsbBuf *b)
     }
     if (tell) {
         u->buff_status |= 1u << sel;
+        /* which of the two it was: BUFF_CPU_SHOULD_HANDLE */
+        u->buff_cpu = deposit32(u->buff_cpu, sel, 1, b->half);
     }
     usb_irq(s);
 }
@@ -306,12 +338,6 @@ static void usb_buf_done(RP2350State *s, int ep, bool out, UsbBuf *b)
 static uint16_t buf_half(uint32_t ctrl, int half)
 {
     return half ? ctrl >> 16 : ctrl & 0xffff;
-}
-
-static uint32_t buf_set_half(uint32_t ctrl, int half, uint16_t v)
-{
-    return half ? (ctrl & 0xffff) | (uint32_t)v << 16
-                : (ctrl & 0xffff0000) | v;
 }
 
 /* the endpoint stalls, or NAKs (and says so, if asked) */
@@ -377,7 +403,7 @@ RP2UsbResult rp2350_usb_out(RP2350State *s, uint8_t addr, int ep,
     memcpy(usb_dp(s) + b.data_off, data, len);
     memory_region_set_dirty(&s->usb_dpram, b.data_off, MAX(len, 1));
     half = (half & ~(BUF_AVAIL | BUF_LEN)) | BUF_FULL | len;
-    dp_write32(s, b.ctrl_off, buf_set_half(ctrl, b.half, half));
+    dp_write_half(s, b.ctrl_off, b.half, half);
     usb_buf_done(s, ep, true, &b);
     return RP2_USB_ACK;
 }
@@ -403,7 +429,7 @@ RP2UsbResult rp2350_usb_in(RP2350State *s, uint8_t addr, int ep,
     *len = MIN(half & BUF_LEN, 64);
     memcpy(data, usb_dp(s) + b.data_off, *len);
     half &= ~(BUF_AVAIL | BUF_FULL);
-    dp_write32(s, b.ctrl_off, buf_set_half(ctrl, b.half, half));
+    dp_write_half(s, b.ctrl_off, b.half, half);
     usb_buf_done(s, ep, false, &b);
     return RP2_USB_ACK;
 }
@@ -419,7 +445,7 @@ static uint32_t usb_read(RP2Usb *u, RP2350State *s, hwaddr reg)
     case R_SIE_CTRL: return u->sie_ctrl;
     case R_SIE_STATUS: return usb_sie_status(s);
     case R_BUFF_STATUS: return u->buff_status;
-    case R_BUFF_CPU_SHOULD_HANDLE: return 0;
+    case R_BUFF_CPU_SHOULD_HANDLE: return u->buff_cpu;
     case R_EP_ABORT: return u->ep_abort;
     case R_EP_ABORT_DONE: return u->ep_abort_done;
     case R_EP_STALL_ARM: return u->ep_stall_arm;
@@ -557,7 +583,7 @@ void rp2350_usb_reset(RP2350State *s)
     bool vbus = u->vbus;
 
     u->addr = u->main_ctrl = u->sie_ctrl = u->sie_status = 0;
-    u->buff_status = u->ep_abort = u->ep_abort_done = 0;
+    u->buff_status = u->buff_cpu = u->ep_abort = u->ep_abort_done = 0;
     u->ep_stall_arm = u->ep_status_stall_nak = u->muxing = u->pwr = 0;
     u->nak_poll = 0x00100010;
     u->inte = u->intf = 0;

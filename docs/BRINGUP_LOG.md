@@ -498,3 +498,55 @@ register headers.
     nothing (on a device the switch and the wires give it a few ohms): 10 Ω. Each
     button now comes as the firmware has them: play A, volume up B, down C, assistant
     D (`headset play|volup|voldown|assist` on the panel link; the window's Device menu).
+
+## An update (2026-11-24)
+
+44. **A firmware update, as picotool makes one.** `scripts/fo_picoboot.py` speaks
+    PICOBOOT, the boot ROM's vendor interface, over USB/IP: a 32-byte command on the
+    bulk OUT endpoint, its data, an empty packet back when it is done; `load FILE.uf2
+    --reboot` erases each sector a UF2 touches, writes its pages and reboots, as
+    picotool does. What it took:
+    - Reads were refused ("invalid address"): the boot ROM checks a NonSecure
+      caller's buffer in USB RAM against ACCESSCTRL (its USBCTRL register's NSP bit),
+      which was not modelled. It is now: the registers, their password, CFGRESET.
+      Its filter on bus accesses still is not.
+    - BUFF_CPU_SHOULD_HANDLE read 0. The boot ROM's USB stack keeps a double-buffered
+      endpoint's two buffers in step by it (which of the two a completion was), so a
+      completion in the second buffer was taken for the first, and the stack armed an
+      empty packet too many after an erase: the next read's data.
+    - Then, now and then, a write got no answer. The controller's model updated a
+      buffer control word with a read-modify-write of both halves; the boot ROM arms
+      one buffer with a 16-bit store, and the emulated CPU runs on its own thread: a
+      store between the model's read and write was undone, the buffer never armed,
+      the host NAKed for ever. The model writes only the half a transaction took now
+      (and takes RESET out of buffer 0's half with a compare-and-swap).
+    - REBOOT2 arms the watchdog: its count (LOAD, in the 1 µs ticks the boot ROM and
+      the SDK run it at) and TRIGGER now reset the chip, keeping what the chip keeps:
+      the watchdog's scratch registers (where the next start's kind waits: BOOTSEL, a
+      flash update), REASON, POWMAN's boot registers, and the PSM's registers. The
+      boot ROM reads WDSEL after a watchdog reset: one that left the oscillators
+      running is unsafe for its USB boot, and it makes one more first. With WDSEL
+      forgotten, every reset was one of those: a reboot loop.
+    - The cores were not reset at all. QEMU resets devices, not CPUs, unless a board
+      asks (armv7m_load_kernel() does it for a board's one core): the chip's reset
+      set every register back while the cores ran on where they were. Both start
+      again in the boot ROM now.
+    - Core 1's power (PSM FRCE_OFF.PROC1): QEMU's power-off and power-on each queue
+      work for the core, and an on that comes before the off has run is dropped
+      ("CPU 1 is already on"); the off then leaves the core off. The firmware's start
+      calls multicore_reset_core1(), an off and an on a few instructions apart, then
+      waits for core 1's handshake. One piece of work now does what the PSM asks when
+      it runs.
+    - `--bootsel` holds the button through the first start only: a reboot boots the
+      flash, as a hand let go would have it.
+    - In the USB/IP client (fo_usbip.py, from FlipperZeroEmu), the set of submissions
+      whose replies carry data was the class's, shared by every client in a process,
+      and each client numbers its submissions from 1: a second client read replies as
+      if data followed and lost its place in the stream. Each has its own now, and
+      fo_picoboot.py takes only the reply to what it sent.
+    The firmware's `power boot` (the SDK's reset_usb_boot()) reaches the boot ROM's USB
+    boot, and the smoke test makes an update: `power boot`, the flash read back, a
+    spare sector erased, written and read back, the device's own UF2 loaded (2188
+    pages in about 5 s) and read back, a reboot, and the firmware starting again. Not
+    yet: the firmware's `power reboot`, which is the charger's (its system power reset),
+    and its ship mode and power off.
