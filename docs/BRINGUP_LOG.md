@@ -744,7 +744,11 @@ register headers.
     request. A megabyte now takes 12 to 18 ms, and over a minute of booting the MCU's
     clock kept 98 % of time, against 81 % before. The generic timer's counters also took
     the lock on every read, and Linux reads them all the time (the vDSO too). QEMU patch
-    0006 reads them without it. A boot after the first now reaches FlipCTL's first frame
-    at 135 s. The contention that remains is QEMU's own: exceptions and interrupts are
-    taken under the lock, and its GIC model rescans all 480 interrupts for each core at
-    every acknowledge and EOI.
+    0006 reads them without it. Measured with and without it: without it the counters
+    are the lock's largest wait (549,000 times in 20 s of booting, 32 s of waiting, against
+    about 90,000 lock takings there with it); a loop of 200 `date`s in Linux takes 29 to
+    36 s instead of 26.5 to 29; and FlipCTL's first frame comes at 198 s instead of 135
+    to 169 s. The contention that remains is QEMU's own: exceptions and interrupts are
+    taken under the lock. A GIC that looked only at the enabled interrupts for the best
+    one (QEMU's rescans all 480 for each core at every acknowledge and EOI) made no
+    difference that the benchmark could measure, and was left out.
