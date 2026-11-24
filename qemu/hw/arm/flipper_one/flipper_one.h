@@ -285,10 +285,16 @@ typedef struct FoI2cPins {
     I2CBus *bus;
     bitbang_i2c_interface bb;
     bool sda_low;                       /* a chip pulls SDA low */
+    bool held;                          /* another master has the bus */
+    bool start_pending;                 /* ... and the MCU made a START */
+    int own_sda;                        /* the MCU's SDA, as last seen */
 } FoI2cPins;
 
 /* i2c_pins.c: a QEMU I2C bus behind a master that bit-bangs @sda, @scl */
 I2CBus *fo_i2c_pins_init(FoI2cPins *b, struct RP2350State *soc, int sda,
                          int scl, const char *name);
+/* another master on the bus takes it (false: the MCU has a transfer
+ * under way; ask again), or lets it go */
+bool fo_i2c_pins_claim(FoI2cPins *b, bool claim);
 
 #endif

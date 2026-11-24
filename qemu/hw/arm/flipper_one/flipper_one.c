@@ -352,6 +352,14 @@ static void flipper_one_backlight(void *opaque)
     fo_panel_backlight(s->panel, (duty * 255 + 32767) / 65535);
 }
 
+/* the main board's bus: the MCU's PIO I2C, and the RK3576's I2C2 */
+static bool flipper_one_main_bus_claim(void *opaque, bool claim)
+{
+    FlipperOneState *s = opaque;
+
+    return fo_i2c_pins_claim(&s->main_bus, claim);
+}
+
 /*
  * The link: the RK3576's I2C0 reaches the MCU's I2C1, which its firmware
  * serves in slave mode at 0x69 (its intercom). The MCU's controller takes
@@ -643,6 +651,7 @@ static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
         .stop = flipper_one_link_stop, .opaque = s,
     };
     rk3576_i2c_target(&s->rk3576, 0, &s->link);
+    rk3576_i2c_arbiter(&s->rk3576, 2, flipper_one_main_bus_claim, s);
     /* a microSD card (-drive if=sd): its detect switch, GPIO0_A7, low */
     {
         DriveInfo *di = drive_get(IF_SD, 0, 0);

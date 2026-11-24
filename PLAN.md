@@ -92,7 +92,8 @@ screen and its CLI.
 - ☑ The rk3x I2C (2026-11-24): the MCU's link (i2c0), the RK806 PMIC (i2c1, whose
       regulators most of the SoC waits for), the main board's chips (i2c2, the MCU's
       main bus: HD3SS3220, INA219, the expander, the charger and gauge; INA4230 ×5 to
-      come), the HYM8563 RTC (i2c8); the GPIO banks (v2, interrupts)
+      come), the HYM8563 RTC (i2c8); the GPIO banks (v2, interrupts); the main bus's
+      two masters take turns, as on a busy bus (2026-11-24)
 - ☐ SCMI (TF-A's clocks): its shared memory reserved as U-Boot does, and an answer
 - ◐ Storage: microSD (dw-mshc, QEMU's SD card) with the published image: Flipper OS
       boots to its login (2026-11-24); UFS; then U-Boot from the image (SPL, TF-A BL31,

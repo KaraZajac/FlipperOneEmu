@@ -70,6 +70,7 @@
 #define INT_ALL         0x7f
 
 #define HELD_NS         2000            /* SCL held: try again then */
+#define BUSY_NS         20000           /* the other master's transfer */
 
 static void rki2c_irq(RkI2cState *s)
 {
@@ -85,6 +86,14 @@ static uint8_t buf_byte(const uint32_t *buf, int i)
 
 static int port_start(RkI2cState *s, uint8_t byte)
 {
+    s->busy = false;
+    if (s->arb && !s->claimed) {
+        if (!s->arb(s->arb_opaque, true)) {
+            s->busy = true;
+            return 0;                           /* later */
+        }
+        s->claimed = true;
+    }
     if (s->target) {
         return s->target->start(s->target->opaque, byte >> 1, byte & 1);
     }
@@ -122,8 +131,12 @@ static void port_stop(RkI2cState *s)
 {
     if (s->target) {
         s->target->stop(s->target->opaque);
-    } else {
+    } else if (!s->arb || s->claimed) {         /* (not the other's) */
         i2c_end_transfer(s->bus);
+    }
+    if (s->claimed) {
+        s->claimed = false;
+        s->arb(s->arb_opaque, false);
     }
 }
 
@@ -162,7 +175,7 @@ static void rki2c_run(RkI2cState *s)
         }
         if (r == 0) {                           /* held: again, later */
             timer_mod(s->timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                                HELD_NS);
+                                (s->busy ? BUSY_NS : HELD_NS));
             return;
         }
         if (r < 0) {
@@ -319,9 +332,10 @@ static void rki2c_reset(DeviceState *dev)
 
     timer_del(s->timer);
     s->nsteps = 0;
-    if (s->active) {
+    if (s->active || s->claimed) {
         port_stop(s);
     }
+    s->busy = false;
     s->con = s->clkdiv = s->mrxaddr = s->mrxraddr = 0;
     s->mtxcnt = s->mrxcnt = s->ien = s->ipd = s->fcnt = 0;
     memset(s->txbuf, 0, sizeof(s->txbuf));

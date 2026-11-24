@@ -752,3 +752,49 @@ register headers.
     taken under the lock. A GIC that looked only at the enabled interrupts for the best
     one (QEMU's rescans all 480 for each core at every acknowledge and EOI) made no
     difference that the benchmark could measure, and was left out.
+
+## The main board's bus (2026-11-24)
+
+53. **The main bus's two masters, and a state machine that ran off its program.** On the
+    device the main board's bus has two masters. One is the MCU's PIO I2C. The other is
+    the RK3576's I2C2, through which Linux drives the expander, the charger, the INA219
+    and the USB-C chips. QEMU's I2C bus has no arbitration, and its core looks up the
+    addressed chip only at a transfer's first START. So a transfer that one master
+    started while the other's was under way went to the chip the other had addressed.
+    Now the bus takes one transfer at a time, as a busy bus does:
+    - the RK3576's controller waits while the MCU's transfer is under way (its START is
+      tried again every 20 µs);
+    - while the RK3576's transfer is under way, the MCU sees SCL held low, as the
+      other's clock pulls it. Its PIO program waits at its next bit (`wait 1 pin, 1`,
+      its clock stretching), and a START it made meanwhile reaches the bus afterwards.
+    Loaded from both sides (Linux reading the INA219 in a loop while the MCU's CLI ran
+    `i2c search main` again and again), Linux made 838 transfers. 139 of them waited for
+    the MCU's, and 2 of the MCU's STARTs waited for Linux's. Every reading was right
+    (7.944 to 7.948 V), with no error on either side.
+
+    Under that load the MCU's PIO I2C also hung: its searches stopped, QEMU's main loop
+    ran at 100 %, and Linux reported RCU stalls. There were two causes.
+    - **The PIO model's, mine.** The firmware recovers from a NACK by forcing
+      instructions (SMx_INSTR) while its state machine waits at `irq wait`. The model
+      kept that wait's state through them, so at the next NACK the `irq wait` passed
+      without raising its flag, and the firmware never knew. A forced instruction now
+      ends the wait. The datasheet does not say which is right; this is the reading
+      under which the recovery, which is the Pico examples' own, works.
+    - **The firmware's, FW-01** (docs/FIRMWARE_BUGS.md, found with a trace of the state
+      machine's last 64 instructions). The same recovery drains the TX FIFO with forced
+      `out null, 32`. With autopull, the datasheet's OSR refills in the same cycle as an
+      OUT that empties it, so the last word drained stays in the OSR. The program then
+      reads it as a header and executes the next words as instructions, and the STOP's
+      header (0x0800) is `jmp 0`, into empty instruction memory. In the emulator this
+      shows only when the transfer's later words were queued before the NACK came:
+      about one search in ten or twenty.
+    The emulator had a share in how bad that was. A state machine looping on `jmp 0`
+    ran instruction by instruction at 12.8 MHz in QEMU's main loop, which then had no
+    time for anything else, and both chips stalled. A state machine that jumps to
+    itself, always, now waits for the CPU or the DMA, as a stall does; on the chip such
+    a loop costs nothing either. Now FW-01 costs only the bus: QEMU's main thread uses
+    10 % of a core, Linux answers, and there are no RCU stalls. The hang in entry 48 (one
+    start in six with the kernel running, in the MCU's first read of the main bus) may
+    have been this recovery after a NACK at start-up; it has not come back. The MCU uses
+    the five INA4230s, which are not modelled yet, only in `power consumption`. Its
+    probes of them are NACKs, and so they can set off FW-01 too.

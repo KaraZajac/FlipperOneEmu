@@ -515,6 +515,14 @@ void rk3576_i2c_target(RK3576State *s, int n, const RkI2cTarget *t)
     s->i2c[n].target = t;
 }
 
+void rk3576_i2c_arbiter(RK3576State *s, int n,
+                        bool (*claim)(void *opaque, bool claim),
+                        void *opaque)
+{
+    s->i2c[n].arb = claim;
+    s->i2c[n].arb_opaque = opaque;
+}
+
 qemu_irq rk3576_spi(RK3576State *s, int spi)
 {
     return qdev_get_gpio_in(DEVICE(&s->gic), spi);

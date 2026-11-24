@@ -81,6 +81,10 @@ struct RkI2cState {
     bool active;                        /* a transfer is under way */
     bool need_addr;                     /* ... a START waits for its target */
     const RkI2cTarget *target;          /* NULL: QEMU's I2C devices */
+    bool (*arb)(void *opaque, bool claim);  /* another master on the bus */
+    void *arb_opaque;
+    bool claimed;                       /* ... this one has it */
+    bool busy;                          /* ... it has it: try again then */
     RkI2cStep steps[40];                /* the count under way */
     int nsteps, step, nread;
     bool reading;
@@ -89,6 +93,12 @@ struct RkI2cState {
 
 /* @t is what I2C@n's bus reaches */
 void rk3576_i2c_target(RK3576State *s, int n, const RkI2cTarget *t);
+/* I2C@n's bus has another master: @claim takes the bus before a START
+ * (false: the other has a transfer under way) and lets it go after the
+ * STOP */
+void rk3576_i2c_arbiter(RK3576State *s, int n,
+                        bool (*claim)(void *opaque, bool claim),
+                        void *opaque);
 
 /* a GPIO bank (Rockchip's v2: 32 pins, each register split in halves) */
 typedef struct RkGpio {
