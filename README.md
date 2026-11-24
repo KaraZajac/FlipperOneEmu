@@ -18,8 +18,8 @@ and takes the window's buttons (through the control bus's I2C expander) and touc
 (through its IQS7211E): its desktop, menus and touchpad test work. Its haptic driver
 buzzes (the window shakes), and its settings are kept in the flash across restarts.
 Its main bus (I2C from a PIO program) reaches the main board's expander, which powers
-the Linux side, the battery's gauge (the status bar shows its charge), its charger and
-the system rail's current meter. The chips on the main bus for power, charging and USB-C, and the LEDs,
+the Linux side, the battery's gauge (the status bar shows its charge), its charger, the
+system rail's current meter and the USB-C port's chips: the self-check finds them all. The chips on the main bus for power, charging and USB-C, and the LEDs,
 are next. [RESEARCH.md](RESEARCH.md) is the survey this starts from:
 the device, what Flipper Devices publishes, and what emulating it takes.
 [PLAN.md](PLAN.md) is the order of work; the MCU comes first.

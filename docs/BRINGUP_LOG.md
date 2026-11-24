@@ -310,3 +310,13 @@ register headers.
     (`ina219.c`): shunt and bus voltages, and the current and power registers from
     CALIBRATION as its datasheet defines them (400 mA, 7.96 V, 3.18 W). The self-check
     now finds every chip but the USB-C pair: "Current meter: ok", "Charger: ok".
+
+32. **The USB-C port, empty.** The FUSB302B (power delivery PHY, 0x22) and HD3SS3220
+    (port controller and mux, 0x47) on the main bus (`usb_c.c`), with no cable modelled:
+    register files that start as their datasheets have them and keep what is written,
+    the FUSB302's SW_RES, read-clear interrupts and non-advancing FIFO address, its
+    status reading nothing seen and the FIFOs empty, so the dual-role toggling the
+    firmware starts never finds a partner; the HD3SS3220 reporting nothing attached.
+    Their interrupts reach the MCU through the main expander and stay quiet. The
+    self-check's every line now says "ok", and the start's log has no errors left but
+    the blank OTP's.
