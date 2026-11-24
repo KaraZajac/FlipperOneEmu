@@ -268,3 +268,16 @@ register headers.
     firmware takes the host as running, stops the self-check and shows the host's screen.
     No RK3576 answers, so after 5 s it says "CPU not responding". Power opens its
     Flipper OS menu; Stop pulses the main reset, the rails go off, the desktop comes.
+
+29. **The battery's gauge.** A BQ28Z620 at 0x55 on the main bus (`bq28z620.c`): TI's
+    standard commands, 16-bit words read from the command's address on, reporting a
+    battery (`battery.c`) of assumed numbers: two lithium-ion cells (the firmware's
+    charge limit is 8.65 V), 3000 mAh, 25 °C, its charge the machine's `battery`
+    property (80 % unless told). It does not run down; its current is what the board
+    draws, which follows the Linux side's rail (the main expander's pin 12: the
+    PCAL6416 model now says which pins it drives high): 40 mA off, 400 mA on, both
+    assumed. The status bar shows "80%". `power show` on the CLI lists the gauge's
+    every value; its average power is in 10 mW steps, as the firmware's driver found.
+    The CLI's floating-point numbers all come out as their last digit ("0.001V"), the
+    gauge's or not: `printf` takes doubles, and the RP2350 does double arithmetic in its
+    DCP coprocessor, which is not modelled yet.

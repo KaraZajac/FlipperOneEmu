@@ -14,6 +14,7 @@
 #include "qemu/osdep.h"
 #include "qemu/error-report.h"
 #include "qapi/error.h"
+#include "qapi/visitor.h"
 #include "hw/core/boards.h"
 #include "hw/core/clock.h"
 #include "hw/core/qdev-clock.h"
@@ -41,6 +42,7 @@ struct FlipperOneState {
     I2CSlave *haptic;           /* ... DRV2605L */
     FoI2cPins main_bus;         /* the main bus: a PIO program's, GPIO22/23 */
     I2CSlave *main_expander;    /* ... its PCAL6416 */
+    FoBattery battery;
     CharFrontend log;
     char *flash;
     char *log_id;
@@ -75,6 +77,18 @@ static void flipper_one_main_int(void *opaque, int n, int level)
     FlipperOneState *s = opaque;
 
     rp2350_pin_drive(&s->mcu, 39, level ? -1 : 0);
+}
+
+/*
+ * The Linux side's rail (VCC5V0_SYS_S5, the main expander's pin 12): what
+ * the board draws from the battery, assumed: 40 mA with it off (the MCU, the
+ * screen), 400 mA with it on (about 3 W)
+ */
+static void flipper_one_host_power(void *opaque, int n, int level)
+{
+    FlipperOneState *s = opaque;
+
+    s->battery.load_ma = level ? 400 : 40;
 }
 
 /* the expanders' RESET: GPIO43 (the control bus's), GPIO38 (the main
@@ -191,13 +205,20 @@ static void flipper_one_init(MachineState *ms)
     s->mcu.pwm_opaque = s;
 
     /* the main bus (a PIO program's I2C on GPIO22/23): the main board's
-     * expander at 0x20, its INT on GPIO39 */
+     * expander at 0x20 (its INT on GPIO39; its pin 12 the Linux side's
+     * rail), the battery's gauge at 0x55 */
     fo_i2c_pins_init(&s->main_bus, &s->mcu, 22, 23, "main-i2c");
     s->mcu.ext_pullup |= (1ull << 39) | (1ull << 38) | (1ull << 43);
     s->main_expander = i2c_slave_create_simple(s->main_bus.bus, "pcal6416",
                                                0x20);
     qdev_connect_gpio_out(DEVICE(s->main_expander), 0,
                           qemu_allocate_irq(flipper_one_main_int, s, 0));
+    qdev_connect_gpio_out_named(DEVICE(s->main_expander), "pins", 12,
+                                qemu_allocate_irq(flipper_one_host_power, s,
+                                                  0));
+    s->battery.load_ma = 40;
+    bq28z620_attach(i2c_slave_create_simple(s->main_bus.bus, "bq28z620",
+                                            0x55), &s->battery);
     rp2350_pin_listen(&s->mcu, 43, flipper_one_expander_reset, s);
     rp2350_pin_listen(&s->mcu, 38, flipper_one_expander_reset, s);
 }
@@ -226,6 +247,38 @@ static void flipper_one_set_log(Object *obj, const char *value, Error **errp)
 
     g_free(s->log_id);
     s->log_id = g_strdup(value);
+}
+
+static void flipper_one_get_battery(Object *obj, Visitor *v, const char *name,
+                                    void *opaque, Error **errp)
+{
+    int32_t value = FLIPPER_ONE(obj)->battery.percent;
+
+    visit_type_int32(v, name, &value, errp);
+}
+
+static void flipper_one_set_battery(Object *obj, Visitor *v, const char *name,
+                                    void *opaque, Error **errp)
+{
+    int32_t value;
+
+    if (!visit_type_int32(v, name, &value, errp)) {
+        return;
+    }
+    if (value < 0 || value > 100) {
+        error_setg(errp, "battery: a charge from 0 to 100 (%%)");
+        return;
+    }
+    FLIPPER_ONE(obj)->battery.percent = value;
+}
+
+static void flipper_one_instance_init(Object *obj)
+{
+    FlipperOneState *s = FLIPPER_ONE(obj);
+
+    s->battery.percent = 80;
+    s->battery.design_mah = 3000;
+    s->battery.temp_dk = 2982;                  /* 25 °C */
 }
 
 static bool flipper_one_get_bootsel(Object *obj, Error **errp)
@@ -263,6 +316,10 @@ static void flipper_one_class_init(ObjectClass *oc, const void *data)
                                    flipper_one_set_bootsel);
     object_class_property_set_description(oc, "bootsel",
         "Start with the RP2350's BOOTSEL held: its boot ROM's USB mode");
+    object_class_property_add(oc, "battery", "int", flipper_one_get_battery,
+                              flipper_one_set_battery, NULL, NULL);
+    object_class_property_set_description(oc, "battery",
+        "The battery's charge, 0 to 100 (%); 80 unless told");
 }
 
 static const TypeInfo flipper_one_types[] = {
@@ -270,6 +327,7 @@ static const TypeInfo flipper_one_types[] = {
         .name = TYPE_FLIPPER_ONE,
         .parent = TYPE_MACHINE,
         .instance_size = sizeof(FlipperOneState),
+        .instance_init = flipper_one_instance_init,
         .class_init = flipper_one_class_init,
         .interfaces = aarch64_machine_interfaces,
     },

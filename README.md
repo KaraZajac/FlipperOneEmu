@@ -18,7 +18,7 @@ and takes the window's buttons (through the control bus's I2C expander) and touc
 (through its IQS7211E): its desktop, menus and touchpad test work. Its haptic driver
 buzzes (the window shakes), and its settings are kept in the flash across restarts.
 Its main bus (I2C from a PIO program) reaches the main board's expander, which powers
-the Linux side. The chips on the main bus for power, charging and USB-C, and the LEDs,
+the Linux side, and the battery's gauge: the status bar shows its charge. The chips on the main bus for power, charging and USB-C, and the LEDs,
 are next. [RESEARCH.md](RESEARCH.md) is the survey this starts from:
 the device, what Flipper Devices publishes, and what emulating it takes.
 [PLAN.md](PLAN.md) is the order of work; the MCU comes first.
@@ -59,8 +59,9 @@ A device is a folder, `devices/NAME`: the MCU's flash (made from the newest reco
 `.uf2` the first time, and written to as the firmware writes its flash), its sockets,
 QEMU's log, and `mcu.log`: what the firmware writes to its log UART (a PIO program on
 GPIO41). By hand: `-M flipper-one,flash=FILE -bios bootrom-combined.bin`;
-`bootsel=on` starts with the BOOTSEL button held; `-d unimp,guest_errors` logs every
-access to what is not modelled yet.
+`bootsel=on` starts with the BOOTSEL button held; `battery=N` sets the battery's charge
+(80 % unless told); `-d unimp,guest_errors` logs every access to what is not modelled
+yet.
 
 ## QEMU patches
 

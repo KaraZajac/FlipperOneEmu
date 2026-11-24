@@ -52,7 +52,8 @@ screen and its CLI.
       display's supply)
 - ◐ The main bus (PIO I2C, decoded from GPIO22/23's levels, 2026-11-24): PCAL6416 (rails,
       `MASKROM_EN`; the firmware powers the Linux side and shows "CPU not responding",
-      2026-11-24); BQ2579x, BQ28Z620, INA219, INA4230 ×5, FUSB302, HD3SS3220 to come
+      2026-11-24), BQ28Z620 (the gauge: a battery at 80 %, `battery=N`, 2026-11-24);
+      BQ2579x, INA219, INA4230 ×5, FUSB302, HD3SS3220 to come
 - ◐ The backlight's PWM (2026-11-23); the WS2812 LEDs (17 on three chains), the
       headset key (ADC)
 - ☑ The desktop and menus, the buttons and the touchpad from the window (2026-11-24)

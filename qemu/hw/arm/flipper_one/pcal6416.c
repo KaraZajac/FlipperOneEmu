@@ -12,7 +12,8 @@
  * it is read. Reading a port of the input register lets INT go for that
  * port. Drive strength, pull-ups and the output's configuration are kept.
  * RESET low puts every register back as it starts, and the chip does not
- * answer on the bus until it goes high again.
+ * answer on the bus until it goes high again. The "pins" outputs say which
+ * pins it drives high (an output at 1); an input, or one it drives low, 0.
  *
  * Copyright (c) 2026, Kara Zajac
  * SPDX-License-Identifier: BSD-3-Clause
@@ -46,6 +47,9 @@ struct Pcal6416State {
     uint16_t latched_level;         /* ... and the level each changed to */
     bool in_reset;                  /* RESET is low */
     qemu_irq int_out;               /* 0: asserted */
+    qemu_irq pin_out[16];           /* "pins": an output's level (1: driven
+                                       high; an input or low: 0) */
+    uint16_t driven;                /* ... as last told */
 };
 
 /* a command byte's register and port (byte), or -1 */
@@ -70,7 +74,16 @@ static uint16_t pcal_levels(Pcal6416State *s)
 
 static void pcal_int(Pcal6416State *s)
 {
+    uint16_t driven = s->r[R_OUTPUT] & ~s->r[R_CONFIG];
+    uint16_t changed = driven ^ s->driven;
+
     qemu_set_irq(s->int_out, s->r[R_INT_STATUS] ? 0 : 1);
+    s->driven = driven;
+    for (int i = 0; i < 16; i++) {
+        if ((changed >> i) & 1) {
+            qemu_set_irq(s->pin_out[i], (driven >> i) & 1);
+        }
+    }
 }
 
 /* the inputs changed (or how they are watched did) */
@@ -214,6 +227,7 @@ static void pcal_init(Object *obj)
     s->pins = 0xffff;                           /* pulled up */
     qdev_init_gpio_in(DEVICE(obj), pcal_reset_pin, 1);
     qdev_init_gpio_out(DEVICE(obj), &s->int_out, 1);
+    qdev_init_gpio_out_named(DEVICE(obj), s->pin_out, "pins", 16);
 }
 
 static void pcal_class_init(ObjectClass *klass, const void *data)

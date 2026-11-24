@@ -126,6 +126,28 @@ void pcal6416_set_pins(struct I2CSlave *dev, uint16_t levels);
  * its pressure (0 ... 255), or none */
 void iqs7211e_touch(struct I2CSlave *dev, bool touching, int x, int y, int p);
 
+/* ------------------------------------------- the battery, as it is */
+
+/*
+ * The battery as the power chips see it (battery.c): a two-cell lithium-ion
+ * pack (the firmware's charge limit is 8.65 V). Its numbers are assumed: 3000
+ * mAh, 25 °C, its charge the machine's "battery" property (80 % unless told).
+ * It does not run down: its charge stays where it is set, while its current
+ * is what the board draws.
+ */
+typedef struct FoBattery {
+    int percent;                        /* 0 ... 100 */
+    int design_mah;
+    int temp_dk;                        /* 0.1 K */
+    int load_ma;                        /* what the board draws from it */
+} FoBattery;
+
+/* its voltage at that load, mV */
+int fo_battery_mv(const FoBattery *b);
+
+/* bq28z620.c: the gauge reports @bat */
+void bq28z620_attach(struct I2CSlave *dev, FoBattery *bat);
+
 /* ---------------------------------------------- the main bus, on pins */
 
 typedef struct FoI2cPins {
