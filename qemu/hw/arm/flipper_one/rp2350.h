@@ -221,10 +221,15 @@ typedef struct RP2I2c {
     RP2Block regs;
     struct I2CBus *bus;
     qemu_irq irq;
-    uint8_t rx[16];                     /* the RX FIFO */
+    uint16_t rx[16];                    /* the RX FIFO: a byte, its flags */
     int rx_n, rx_head;
+    uint8_t tx[16];                     /* slave mode: bytes for a master */
+    int tx_n, tx_head;
     bool active, recv;                  /* a transfer is open; it reads */
     uint8_t addr;                       /* ... to this address */
+    bool first;                         /* the next byte in comes first */
+    bool addressed;                     /* slave mode: a master's at SAR */
+    bool rd_requested;                  /* ... RD_REQ raised for this byte */
     uint32_t raw;                       /* RAW_INTR_STAT's latched bits */
     uint32_t abrt;                      /* TX_ABRT_SOURCE */
 } RP2I2c;
@@ -386,6 +391,18 @@ void rp2350_hstx_attach(RP2350State *s, RP2HstxFn *fn, void *opaque);
 void rp2350_i2c_realize(RP2350State *s);
 void rp2350_i2c_reset(RP2350State *s);
 struct I2CBus *rp2350_i2c_bus(RP2350State *s, int n);
+/*
+ * ... and a master that reaches I2Cn in slave mode (the RK3576 on I2C1), a
+ * step at a time. start: whether SAR answers @addr. write: 1 the byte is
+ * taken, 0 not yet (the RX FIFO is full, SCL held: try again). read: 1 a
+ * byte, 0 not yet (the CPU has not given one: SCL held). nack: the master
+ * read its last byte.
+ */
+bool rp2350_i2c_target_start(RP2350State *s, int n, uint8_t addr, bool read);
+int rp2350_i2c_target_write(RP2350State *s, int n, uint8_t byte);
+int rp2350_i2c_target_read(RP2350State *s, int n, uint8_t *byte);
+void rp2350_i2c_target_nack(RP2350State *s, int n);
+void rp2350_i2c_target_stop(RP2350State *s, int n);
 
 /* rp2350_pwm.c: a pin's duty, 0 to 65535 (-1: the pin is not PWM's) */
 void rp2350_pwm_realize(RP2350State *s);

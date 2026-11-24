@@ -1,20 +1,31 @@
 /*
- * The RP2350's I2C0 and I2C1: Synopsys DW_apb_i2c, as masters
+ * The RP2350's I2C0 and I2C1: Synopsys DW_apb_i2c, master and slave
  *
- * Each has a QEMU I2C bus (rp2350_i2c_bus()) that the board's chips are
- * put on. A command written to DATA_CMD is done at once on it: a START
- * (or a repeated one, for RESTART or a change of direction) to TAR's
- * address, then the byte sent or a byte received into the RX FIFO, then
- * a STOP if the command asks for one. So the TX FIFO is always empty
- * (TX_EMPTY while enabled). An address or a byte that no chip ACKs is an
- * abort, as the controller does it: TX_ABRT with its source, a STOP, the
- * commands after it flushed until CLR_TX_ABRT is read.
+ * As a master (CON.MASTER_MODE), each has a QEMU I2C bus (rp2350_i2c_bus())
+ * that the board's chips are put on. A command written to DATA_CMD is done
+ * at once on it: a START (or a repeated one, for RESTART or a change of
+ * direction) to TAR's address, then the byte sent or a byte received into
+ * the RX FIFO, then a STOP if the command asks for one. So the TX FIFO is
+ * always empty (TX_EMPTY while enabled). An address or a byte that no chip
+ * ACKs is an abort, as the controller does it: TX_ABRT with its source, a
+ * STOP, the commands after it flushed until CLR_TX_ABRT is read.
  *
  * Disabling the controller does not end a transfer that has had no STOP:
  * the Pico SDK disables it, sets TAR and enables it again between a
  * register's address (written without a STOP) and the read after it,
- * which comes with RESTART. Slave mode (the CPU's link, on I2C1) is not
- * modelled yet; its registers keep what is written.
+ * which comes with RESTART.
+ *
+ * As a slave (MASTER_MODE and SLAVE_DISABLE clear), it answers SAR for a
+ * master that reaches it through rp2350_i2c_target_*() (the RK3576's link,
+ * on I2C1): START_DET at each START, RESTART_DET too at a repeated one; the
+ * bytes written to it into the RX FIFO, the first of each transfer flagged
+ * (DATA_CMD's FIRST_DATA_BYTE, bit 11, which the firmware frames its
+ * transfers by), SCL held while the FIFO is full; a read takes bytes the CPU
+ * wrote to DATA_CMD, and with none there raises RD_REQ (once a byte) and
+ * holds SCL until it writes one; the master's NACK of its last byte is RX_DONE; its STOP is
+ * STOP_DET. Bytes left over from a read are flushed when the next read
+ * starts, with TX_ABRT (ABRT_SLVFLUSH_TXFIFO). In master receive too the
+ * first byte after the address is flagged.
  *
  * Copyright (c) 2026, Kara Zajac
  * SPDX-License-Identifier: BSD-3-Clause
@@ -38,26 +49,36 @@ enum {
     R_COMP_PARAM_1 = 0xf4, R_COMP_VERSION = 0xf8, R_COMP_TYPE = 0xfc,
 };
 
+/* CON */
+#define CON_MASTER_MODE     (1u << 0)
+#define CON_SLAVE_DISABLE   (1u << 6)
+
 /* RAW_INTR_STAT */
 #define RX_UNDER        (1u << 0)
 #define RX_OVER         (1u << 1)
 #define RX_FULL         (1u << 2)
 #define TX_EMPTY        (1u << 4)
+#define RD_REQ          (1u << 5)
 #define TX_ABRT         (1u << 6)
+#define RX_DONE         (1u << 7)
 #define ACTIVITY        (1u << 8)
 #define STOP_DET        (1u << 9)
 #define START_DET       (1u << 10)
 #define RESTART_DET     (1u << 12)
+#define CLEARABLE       (RX_UNDER | RX_OVER | RD_REQ | TX_ABRT | RX_DONE | \
+                         ACTIVITY | STOP_DET | START_DET | RESTART_DET)
 
 /* TX_ABRT_SOURCE */
 #define ABRT_7B_ADDR_NOACK  (1u << 0)
 #define ABRT_TXDATA_NOACK   (1u << 3)
+#define ABRT_SLVFLUSH_TXFIFO (1u << 13)
 #define ABRT_USER_ABRT      (1u << 16)
 
 /* DATA_CMD */
 #define CMD_READ        (1u << 8)
 #define CMD_STOP        (1u << 9)
 #define CMD_RESTART     (1u << 10)
+#define FIRST_DATA_BYTE (1u << 11)
 
 #define FIFO_DEPTH      16
 
@@ -76,11 +97,21 @@ static bool enabled(RP2I2c *c)
     return reg(c, R_ENABLE) & 1;
 }
 
+static bool slave_mode(RP2I2c *c)
+{
+    return enabled(c) &&
+           !(reg(c, R_CON) & (CON_MASTER_MODE | CON_SLAVE_DISABLE));
+}
+
 static uint32_t raw_intr(RP2I2c *c)
 {
     uint32_t raw = c->raw;
 
-    if (enabled(c) || c->active) {
+    if (slave_mode(c)) {
+        if (c->tx_n <= (int)(reg(c, R_TX_TL) & 0xff)) {
+            raw |= TX_EMPTY;
+        }
+    } else if (enabled(c) || c->active) {
         raw |= TX_EMPTY;                /* its commands are done at once */
     }
     if (c->rx_n > (int)(reg(c, R_RX_TL) & 0xff)) {
@@ -93,6 +124,17 @@ static void i2c_irq(RP2I2c *c)
 {
     qemu_set_irq(c->irq, (raw_intr(c) & reg(c, R_INTR_MASK)) != 0);
 }
+
+static bool rx_push(RP2I2c *c, uint16_t v)
+{
+    if (c->rx_n == FIFO_DEPTH) {
+        return false;
+    }
+    c->rx[(c->rx_head + c->rx_n++) % FIFO_DEPTH] = v;
+    return true;
+}
+
+/* ------------------------------------------------------- as a master */
 
 static void i2c_stop(RP2I2c *c)
 {
@@ -132,16 +174,16 @@ static void i2c_command(RP2I2c *c, uint32_t v)
         c->active = true;
         c->recv = read;
         c->addr = addr;
+        c->first = true;
         c->raw |= ACTIVITY;
     }
     if (read) {
         uint8_t byte = i2c_recv(c->bus);
 
-        if (c->rx_n < FIFO_DEPTH) {
-            c->rx[(c->rx_head + c->rx_n++) % FIFO_DEPTH] = byte;
-        } else {
+        if (!rx_push(c, byte | (c->first ? FIRST_DATA_BYTE : 0))) {
             c->raw |= RX_OVER;
         }
+        c->first = false;
     } else if (i2c_send(c->bus, v & 0xff)) {
         i2c_abort(c, ABRT_TXDATA_NOACK);
         return;
@@ -153,6 +195,95 @@ static void i2c_command(RP2I2c *c, uint32_t v)
         i2c_stop(c);
     }
 }
+
+/* -------------------------------------------------------- as a slave */
+
+bool rp2350_i2c_target_start(RP2350State *s, int n, uint8_t addr, bool read)
+{
+    RP2I2c *c = &s->i2c[n];
+
+    if (!slave_mode(c) || addr != (reg(c, R_SAR) & 0x7f)) {
+        return false;                   /* no ACK */
+    }
+    c->raw |= START_DET | ACTIVITY | (c->addressed ? RESTART_DET : 0);
+    c->addressed = true;
+    c->recv = read;
+    c->first = true;
+    if (read) {
+        if (c->tx_n) {                  /* left from a read before: flushed */
+            c->tx_n = 0;
+            c->abrt |= ABRT_SLVFLUSH_TXFIFO;
+            c->raw |= TX_ABRT;
+        }
+        c->raw |= RD_REQ;
+        c->rd_requested = true;
+    }
+    i2c_irq(c);
+    return true;
+}
+
+int rp2350_i2c_target_write(RP2350State *s, int n, uint8_t byte)
+{
+    RP2I2c *c = &s->i2c[n];
+
+    if (!c->addressed || c->recv) {
+        return 1;                       /* not ours to take: let it go */
+    }
+    if (!rx_push(c, byte | (c->first ? FIRST_DATA_BYTE : 0))) {
+        return 0;                       /* full: SCL held */
+    }
+    c->first = false;
+    i2c_irq(c);
+    return 1;
+}
+
+int rp2350_i2c_target_read(RP2350State *s, int n, uint8_t *byte)
+{
+    RP2I2c *c = &s->i2c[n];
+
+    if (!c->addressed || !c->recv) {
+        *byte = 0xff;
+        return 1;
+    }
+    if (!c->tx_n) {
+        if (!c->rd_requested) {         /* once a byte: SCL held meanwhile */
+            c->raw |= RD_REQ;
+            c->rd_requested = true;
+            i2c_irq(c);
+        }
+        return 0;
+    }
+    c->rd_requested = false;
+    *byte = c->tx[c->tx_head];
+    c->tx_head = (c->tx_head + 1) % FIFO_DEPTH;
+    c->tx_n--;
+    i2c_irq(c);
+    return 1;
+}
+
+void rp2350_i2c_target_nack(RP2350State *s, int n)
+{
+    RP2I2c *c = &s->i2c[n];
+
+    if (c->addressed && c->recv) {
+        c->raw |= RX_DONE;
+        i2c_irq(c);
+    }
+}
+
+void rp2350_i2c_target_stop(RP2350State *s, int n)
+{
+    RP2I2c *c = &s->i2c[n];
+
+    if (c->addressed) {
+        c->addressed = false;
+        c->rd_requested = false;
+        c->raw |= STOP_DET;
+        i2c_irq(c);
+    }
+}
+
+/* -------------------------------------------------------- registers */
 
 static uint32_t i2c_read(RP2Block *b, hwaddr offset)
 {
@@ -176,13 +307,8 @@ static uint32_t i2c_read(RP2Block *b, hwaddr offset)
         v = raw_intr(c);
         break;
     case R_CLR_INTR:                    /* all that can be cleared */
-        v = (c->raw & (RX_UNDER | RX_OVER | TX_ABRT | ACTIVITY | STOP_DET |
-                       START_DET | RESTART_DET)) != 0;
-        c->raw &= ~(RX_UNDER | RX_OVER | TX_ABRT | STOP_DET | START_DET |
-                    RESTART_DET);
-        if (!c->active) {
-            c->raw &= ~ACTIVITY;
-        }
+        v = (c->raw & CLEARABLE) != 0;
+        c->raw &= ~CLEARABLE | (c->active || c->addressed ? ACTIVITY : 0);
         c->abrt = 0;
         break;
     case R_CLR_RX_UNDER:
@@ -193,14 +319,22 @@ static uint32_t i2c_read(RP2Block *b, hwaddr offset)
         v = !!(c->raw & RX_OVER);
         c->raw &= ~RX_OVER;
         break;
+    case R_CLR_RD_REQ:
+        v = !!(c->raw & RD_REQ);
+        c->raw &= ~RD_REQ;
+        break;
     case R_CLR_TX_ABRT:
         v = !!(c->raw & TX_ABRT);
         c->raw &= ~TX_ABRT;
         c->abrt = 0;
         break;
+    case R_CLR_RX_DONE:
+        v = !!(c->raw & RX_DONE);
+        c->raw &= ~RX_DONE;
+        break;
     case R_CLR_ACTIVITY:
         v = !!(c->raw & ACTIVITY);
-        if (!c->active) {
+        if (!c->active && !c->addressed) {
             c->raw &= ~ACTIVITY;
         }
         break;
@@ -216,15 +350,15 @@ static uint32_t i2c_read(RP2Block *b, hwaddr offset)
         v = !!(c->raw & RESTART_DET);
         c->raw &= ~RESTART_DET;
         break;
-    case R_CLR_TX_OVER: case R_CLR_RD_REQ: case R_CLR_RX_DONE:
-    case R_CLR_GEN_CALL:
+    case R_CLR_TX_OVER: case R_CLR_GEN_CALL:
         break;
     case R_STATUS:
-        v = (c->active ? 1 | (1 << 5) : 0) | (1 << 1) | (1 << 2) |
+        v = (c->active ? 1 | (1 << 5) : 0) | (c->addressed ? 1 | (1 << 6) : 0) |
+            (c->tx_n < FIFO_DEPTH ? 1 << 1 : 0) | (c->tx_n ? 0 : 1 << 2) |
             (c->rx_n ? 1 << 3 : 0) | (c->rx_n == FIFO_DEPTH ? 1 << 4 : 0);
         break;
     case R_TXFLR:
-        v = 0;
+        v = c->tx_n;
         break;
     case R_RXFLR:
         v = c->rx_n;
@@ -257,7 +391,13 @@ static void i2c_write(RP2Block *b, hwaddr offset, uint32_t value)
 
     switch (offset) {
     case R_DATA_CMD:
-        i2c_command(c, value);
+        if (slave_mode(c)) {
+            if (!(value & CMD_READ) && c->tx_n < FIFO_DEPTH) {
+                c->tx[(c->tx_head + c->tx_n++) % FIFO_DEPTH] = value;
+            }
+        } else {
+            i2c_command(c, value);
+        }
         break;
     case R_ENABLE:
         if ((value & 2) && c->active) {         /* ABORT */
@@ -266,6 +406,7 @@ static void i2c_write(RP2Block *b, hwaddr offset, uint32_t value)
         b->regs[R_ENABLE / 4] = value & 5;
         if (!(value & 1)) {
             c->rx_n = 0;                        /* the FIFOs flushed */
+            c->tx_n = 0;
         }
         break;
     case R_INTR_STAT: case R_RAW_INTR_STAT: case R_STATUS: case R_TXFLR:
@@ -320,7 +461,9 @@ void rp2350_i2c_reset(RP2350State *s)
         r[0x98 / 4] = 1;                /* ACK_GENERAL_CALL */
         r[0xa0 / 4] = 7;                /* FS_SPKLEN */
         c->rx_n = c->rx_head = 0;
-        c->active = c->recv = false;
+        c->tx_n = c->tx_head = 0;
+        c->active = c->recv = c->first = c->addressed = false;
+        c->rd_requested = false;
         c->raw = 0;
         c->abrt = 0;
         i2c_irq(c);

@@ -88,7 +88,7 @@ def cmd_run(args):
     d.mkdir(parents=True, exist_ok=True)
     if args.uf2 or not (d / "flash.bin").exists():
         make_flash(d, args.uf2)
-    for sock in ("panel.sock", "monitor.sock", "cli.sock"):
+    for sock in ("panel.sock", "monitor.sock", "cli.sock", "host.sock"):
         (d / sock).unlink(missing_ok=True)
     cmd = [str(QEMU), "-M", f"flipper-one,flash={d / 'flash.bin'},log=mculog",
            "-chardev", f"file,id=mculog,path={d / 'mcu.log'}",
@@ -98,6 +98,8 @@ def cmd_run(args):
            "-monitor", f"unix:{d / 'monitor.sock'},server=on,wait=off",
            "-chardev", f"socket,id=panel,path={d / 'panel.sock'},server=on,wait=off",
            "-global", "flipper-one-panel.link=panel",
+           "-chardev", f"socket,id=host,path={d / 'host.sock'},server=on,wait=off",
+           "-global", "flipper-one-host.link=host",
            "-name", f"flipperone-{args.name}",
            "-d", "guest_errors", "-D", str(d / "qemu.log")]
     if args.gdb:

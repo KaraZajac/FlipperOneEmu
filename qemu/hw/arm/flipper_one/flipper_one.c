@@ -44,6 +44,7 @@ struct FlipperOneState {
     I2CSlave *main_expander;    /* ... its PCAL6416 */
     FoBattery battery;
     FoLeds leds;                /* the WS2812s, GPIO29-31 */
+    FoHost *host;               /* a program in the RK3576's place */
     CharFrontend log;
     char *flash;
     char *log_id;
@@ -78,6 +79,15 @@ static void flipper_one_main_int(void *opaque, int n, int level)
     FlipperOneState *s = opaque;
 
     rp2350_pin_drive(&s->mcu, 39, level ? -1 : 0);
+}
+
+/* CPU_INT (GPIO35, open drain, the board's pull-up): to the host link */
+static void flipper_one_cpu_int(void *opaque, int pin, bool level,
+                                int64_t when_ns)
+{
+    FlipperOneState *s = opaque;
+
+    fo_host_int(s->host, level);
 }
 
 /* the LED chains' supplies: the control expander's pins 15, 14, 13 */
@@ -186,6 +196,18 @@ static void flipper_one_init(MachineState *ms)
     s->panel = FLIPPER_ONE_PANEL(qdev_new(TYPE_FLIPPER_ONE_PANEL));
     object_property_add_child(OBJECT(ms), "panel", OBJECT(s->panel));
     qdev_realize_and_unref(DEVICE(s->panel), NULL, &error_fatal);
+
+    /* the RK3576's side of its link to the MCU, for a program until it is
+     * emulated: -global flipper-one-host.link=CHARDEV (I2C1 at 0x69, CPU_INT
+     * on GPIO35) */
+    s->host = FLIPPER_ONE_HOST(qdev_new(TYPE_FLIPPER_ONE_HOST));
+    s->host->soc = &s->mcu;
+    s->host->i2c = 1;
+    s->host->addr = 0x69;
+    object_property_add_child(OBJECT(ms), "host", OBJECT(s->host));
+    qdev_realize_and_unref(DEVICE(s->host), NULL, &error_fatal);
+    s->mcu.ext_pullup |= 1ull << 35;
+    rp2350_pin_listen(&s->mcu, 35, flipper_one_cpu_int, s);
 
     /* the screen: its controller on HSTX, its backlight on GPIO6's PWM */
     fo_jd9853_init(&s->display, &s->mcu, s->panel);

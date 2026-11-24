@@ -115,6 +115,32 @@ typedef struct FoJd9853 {
 void fo_jd9853_init(FoJd9853 *d, struct RP2350State *soc,
                     FlipperOnePanelState *panel);
 
+/* ------------------------------------------------- the host link */
+
+#define TYPE_FLIPPER_ONE_HOST "flipper-one-host"
+OBJECT_DECLARE_SIMPLE_TYPE(FoHost, FLIPPER_ONE_HOST)
+
+struct HostOp;
+
+struct FoHost {
+    DeviceState parent_obj;
+
+    CharFrontend link_chr;
+    FlipperLink lk;
+    QEMUTimer *timer;
+    struct RP2350State *soc;            /* the machine's: the MCU, */
+    int i2c;                            /* ... its controller (1) */
+    uint8_t addr;                       /* ... at this address (0x69) */
+    GQueue *ops;                        /* transfers to do */
+    struct HostOp *op;                  /* the one being done */
+    int state, pos;
+    int64_t started;
+    bool int_level;                     /* CPU_INT, as last told */
+};
+
+/* host_link.c: CPU_INT's level (0: asserted) */
+void fo_host_int(FoHost *h, bool level);
+
 /* ------------------------------------------------------- the LEDs */
 
 #define FO_LED_CHAINS   3

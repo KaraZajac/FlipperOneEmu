@@ -32,8 +32,8 @@ screen and its CLI.
 - ☑ The JD9853 panel and its tearing signal: the firmware's self-check screen in the
       window and to PNG (2026-11-23)
 - ☑ The PL011 UARTs: the CLI on UART1 answers (`./flipperoneemu cli`, 2026-11-23)
-- ◐ DesignWare I2C: the master (I2C0, the control bus, 2026-11-24); the slave (the
-      CPU's link on I2C1) to come
+- ☑ DesignWare I2C: the master (I2C0, the control bus) and the slave (I2C1, the CPU's
+      link at 0x69) (2026-11-24)
 - ◐ The window, as FlipperZeroEmu's (Kara, 2026-11-23): a Flipper One of this project's
       own drawing around the emulated screen, its 13 buttons and the touchpad to click,
       the keyboard, its 17 LEDs where the device has them; a front-panel link for it and
@@ -74,7 +74,9 @@ screen and its CLI.
 - ☐ The MCU powers it: `VCC5V0_SYS_S5_EN` switches the cluster on; `MASKROM_EN`; BOOT1's
       voltage on a SARADC input
 
-## M4: the link ☐
+## M4: the link ◐
+- ◐ A program in the RK3576's place on the I2C link: the host link (docs/HOST_LINK.md,
+      `devices/NAME/host.sock`): the MCU's registers at 0x69 and CPU_INT (2026-11-24)
 - ☐ i2c0 (rk3x) with the MCU's register slave at 0x69 and its interrupt line (GPIO2_A6)
 - ☐ spi0 with the MCU's frame sampler: FlipCTL on the emulated screen
 - ☐ The console UART between the two; the CPU's state, power off, reboot; the MCU

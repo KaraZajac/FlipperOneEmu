@@ -42,7 +42,10 @@ is), with its LEDs where the device has them. Click its
 buttons, or use the keyboard: the arrows and Enter are the pad, Backspace or Esc is
 Back, F1 to F5 are the soft keys (Esc, View, Power, Edit, Run), Tab is App Switcher,
 Space is PTT; drag on the touchpad. It talks to the emulator over a front-panel link,
-[docs/PANEL_LINK.md](docs/PANEL_LINK.md), which any program can use.
+[docs/PANEL_LINK.md](docs/PANEL_LINK.md), which any program can use. Another,
+[docs/HOST_LINK.md](docs/HOST_LINK.md) (`devices/NAME/host.sock`), lets a program take
+the RK3576's place on its I2C link to the MCU: its registers (CPU state, LEDs, haptics,
+input) and its interrupt line.
 
 At its start the MCU firmware powers the Linux side, as the device does, and shows its
 screen; the RK3576 is not emulated yet, so after a few seconds that screen says "CPU not

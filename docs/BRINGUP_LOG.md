@@ -344,3 +344,22 @@ register headers.
     first decoded as pairs of LEDs with long gaps between: entry 33. Now the CLI's
     `led TYPE COLOR` (numbers: `led 4 1` is Power, green) lights the window's LEDs, at
     the half brightness the firmware sends.
+
+## The link (2026-11-24)
+
+35. **The I2C slave, and a host in the RK3576's place.** The MCU serves the RK3576 on
+    I2C1 in slave mode at 0x69 (`i2c_intercom`: 16-bit registers, the address high byte
+    first, the values low byte first; CPU_INT on GPIO35). The DesignWare model gained
+    its slave side: SAR answered, START_DET and RESTART_DET, the bytes written into the
+    RX FIFO with the first of each transfer flagged in DATA_CMD's bit 11 (the firmware
+    frames its transfers by it, not by START and STOP, which merge while its interrupts
+    are masked), a read served from the bytes the CPU writes to DATA_CMD with RD_REQ
+    raised once a byte and SCL held meanwhile, RX_DONE at the master's NACK, STOP_DET.
+    Raising RD_REQ again while one was pending made the firmware give a byte too many
+    (an "invalid access" in its log), as it would on a chip that did that. The host
+    link (`host_link.c`, docs/HOST_LINK.md, `devices/NAME/host.sock`) is the master's
+    side for a program, a transfer a line, done a byte at a time as at 1 MHz and
+    waiting while SCL is held. Writing CPU state 3 (online) to 0x0040 turns the screen
+    from "CPU not responding" to "Waiting for CPU screen…"; the LED colour registers
+    light the window's LEDs, the haptic register buzzes, and reading the system
+    interrupt register lets CPU_INT go.
