@@ -1,0 +1,141 @@
+From: FlipperOneEmu
+Subject: [PATCH] target/arm: read the generic timer's counters without the BQL
+
+TCG takes the BQL around every access to a system register marked
+ARM_CP_IO, and the generic timer's counters (CNTPCT, CNTVCT and their
+self-synchronised forms) are among them, though reading one only reads
+QEMU_CLOCK_VIRTUAL (under its seqlock) and this CPU's own offsets. Linux
+reads them all the time: sched_clock, ktime_get, and every clock_gettime
+in user space through the vDSO. With eight A-profile cores busy (the
+Flipper One's RK3576 booting Flipper OS) they wait on the BQL for one
+another, and so does the main loop, whose timers then run late: the
+RP2350 beside it lost ticks (its firmware's clock ran at half speed
+through a first boot) and the guest's own short timeouts fired early
+against interrupts that were merely late.
+
+Add ARM_CP_IO_NO_BQL: with ARM_CP_IO, the access functions are
+thread-safe, and TCG calls them without the BQL. ARM_CP_IO's other
+meaning (an I/O access for icount) is kept. Set it on the eight counter
+registers.
+
+---
+--- a/target/arm/cpregs.h	2026-11-24 15:36:15.127995127 -0500
++++ b/target/arm/cpregs.h	2026-11-24 15:36:15.182694264 -0500
+@@ -154,6 +154,13 @@
+      * ARM pseudocode function CheckFPMREnabled().
+      */
+     ARM_CP_FPMR                  = 1 << 23,
++    /*
++     * Flag: with ARM_CP_IO, the register's access functions are thread-safe
++     * (they read only the clocks and this CPU's own state), so TCG calls
++     * them without the BQL. For the generic timer's counters, which an OS
++     * reads all the time and from every CPU at once.
++     */
++    ARM_CP_IO_NO_BQL             = 1 << 24,
+ };
+ 
+ /*
+--- a/target/arm/helper.c	2026-11-24 15:36:15.128480819 -0500
++++ b/target/arm/helper.c	2026-11-24 15:36:26.117736494 -0500
+@@ -2168,23 +2168,27 @@
+     },
+     /* The counter itself */
+     { .name = "CNTPCT", .cp = 15, .crm = 14, .opc1 = 0,
+-      .access = PL0_R, .type = ARM_CP_64BIT | ARM_CP_NO_RAW | ARM_CP_IO,
++      .access = PL0_R,
++      .type = ARM_CP_64BIT | ARM_CP_NO_RAW | ARM_CP_IO | ARM_CP_IO_NO_BQL,
+       .accessfn = gt_pct_access,
+       .readfn = gt_cnt_read, .resetfn = arm_cp_reset_ignore,
+     },
+     { .name = "CNTPCT_EL0", .state = ARM_CP_STATE_AA64,
+       .opc0 = 3, .opc1 = 3, .crn = 14, .crm = 0, .opc2 = 1,
+-      .access = PL0_R, .type = ARM_CP_NO_RAW | ARM_CP_IO,
++      .access = PL0_R,
++      .type = ARM_CP_NO_RAW | ARM_CP_IO | ARM_CP_IO_NO_BQL,
+       .accessfn = gt_pct_access, .readfn = gt_cnt_read,
+     },
+     { .name = "CNTVCT", .cp = 15, .crm = 14, .opc1 = 1,
+-      .access = PL0_R, .type = ARM_CP_64BIT | ARM_CP_NO_RAW | ARM_CP_IO,
++      .access = PL0_R,
++      .type = ARM_CP_64BIT | ARM_CP_NO_RAW | ARM_CP_IO | ARM_CP_IO_NO_BQL,
+       .accessfn = gt_vct_access,
+       .readfn = gt_virt_cnt_read, .resetfn = arm_cp_reset_ignore,
+     },
+     { .name = "CNTVCT_EL0", .state = ARM_CP_STATE_AA64,
+       .opc0 = 3, .opc1 = 3, .crn = 14, .crm = 0, .opc2 = 2,
+-      .access = PL0_R, .type = ARM_CP_NO_RAW | ARM_CP_IO,
++      .access = PL0_R,
++      .type = ARM_CP_NO_RAW | ARM_CP_IO | ARM_CP_IO_NO_BQL,
+       .accessfn = gt_vct_access, .readfn = gt_virt_cnt_read,
+     },
+     /* Comparison value, indicating when the timer goes off */
+@@ -2269,23 +2273,27 @@
+  */
+ static const ARMCPRegInfo gen_timer_ecv_cp_reginfo[] = {
+     { .name = "CNTVCTSS", .cp = 15, .crm = 14, .opc1 = 9,
+-      .access = PL0_R, .type = ARM_CP_64BIT | ARM_CP_NO_RAW | ARM_CP_IO,
++      .access = PL0_R,
++      .type = ARM_CP_64BIT | ARM_CP_NO_RAW | ARM_CP_IO | ARM_CP_IO_NO_BQL,
+       .accessfn = gt_vct_access,
+       .readfn = gt_virt_cnt_read, .resetfn = arm_cp_reset_ignore,
+     },
+     { .name = "CNTVCTSS_EL0", .state = ARM_CP_STATE_AA64,
+       .opc0 = 3, .opc1 = 3, .crn = 14, .crm = 0, .opc2 = 6,
+-      .access = PL0_R, .type = ARM_CP_NO_RAW | ARM_CP_IO,
++      .access = PL0_R,
++      .type = ARM_CP_NO_RAW | ARM_CP_IO | ARM_CP_IO_NO_BQL,
+       .accessfn = gt_vct_access, .readfn = gt_virt_cnt_read,
+     },
+     { .name = "CNTPCTSS", .cp = 15, .crm = 14, .opc1 = 8,
+-      .access = PL0_R, .type = ARM_CP_64BIT | ARM_CP_NO_RAW | ARM_CP_IO,
++      .access = PL0_R,
++      .type = ARM_CP_64BIT | ARM_CP_NO_RAW | ARM_CP_IO | ARM_CP_IO_NO_BQL,
+       .accessfn = gt_pct_access,
+       .readfn = gt_cnt_read, .resetfn = arm_cp_reset_ignore,
+     },
+     { .name = "CNTPCTSS_EL0", .state = ARM_CP_STATE_AA64,
+       .opc0 = 3, .opc1 = 3, .crn = 14, .crm = 0, .opc2 = 5,
+-      .access = PL0_R, .type = ARM_CP_NO_RAW | ARM_CP_IO,
++      .access = PL0_R,
++      .type = ARM_CP_NO_RAW | ARM_CP_IO | ARM_CP_IO_NO_BQL,
+       .accessfn = gt_pct_access, .readfn = gt_cnt_read,
+     },
+ };
+--- a/target/arm/tcg/op_helper.c	2026-11-24 15:36:15.132737023 -0500
++++ b/target/arm/tcg/op_helper.c	2026-11-24 15:36:15.216584840 -0500
+@@ -1228,7 +1228,7 @@
+ {
+     const ARMCPRegInfo *ri = rip;
+ 
+-    if (ri->type & ARM_CP_IO) {
++    if ((ri->type & (ARM_CP_IO | ARM_CP_IO_NO_BQL)) == ARM_CP_IO) {
+         bql_lock();
+         ri->writefn(env, ri, value);
+         bql_unlock();
+@@ -1242,7 +1242,7 @@
+     const ARMCPRegInfo *ri = rip;
+     uint32_t res;
+ 
+-    if (ri->type & ARM_CP_IO) {
++    if ((ri->type & (ARM_CP_IO | ARM_CP_IO_NO_BQL)) == ARM_CP_IO) {
+         bql_lock();
+         res = ri->readfn(env, ri);
+         bql_unlock();
+@@ -1257,7 +1257,7 @@
+ {
+     const ARMCPRegInfo *ri = rip;
+ 
+-    if (ri->type & ARM_CP_IO) {
++    if ((ri->type & (ARM_CP_IO | ARM_CP_IO_NO_BQL)) == ARM_CP_IO) {
+         bql_lock();
+         ri->writefn(env, ri, value);
+         bql_unlock();
+@@ -1271,7 +1271,7 @@
+     const ARMCPRegInfo *ri = rip;
+     uint64_t res;
+ 
+-    if (ri->type & ARM_CP_IO) {
++    if ((ri->type & (ARM_CP_IO | ARM_CP_IO_NO_BQL)) == ARM_CP_IO) {
+         bql_lock();
+         res = ri->readfn(env, ri);
+         bql_unlock();

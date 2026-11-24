@@ -1,0 +1,288 @@
+From: FlipperOneEmu
+Subject: [PATCH] hw/sd/sd: move the card's data without a request per block
+ or a check per byte
+
+The card's data was slow two ways, both with the BQL held by the caller
+(the vCPU writing the host controller's command register), so that while
+it went on no other vCPU took an interrupt and the main loop ran no
+timers. Booting Flipper OS from an emulated microSD card, a megabyte
+read took half a second, and the RK3576's other cores and the RP2350
+beside it stalled for seconds in all.
+
+Each byte asked blk_is_inserted(), which is now a coroutine wrapper: a
+coroutine made and run, the graph lock taken and dropped, for every
+byte (sd_read_data() and sd_write_data() take one byte at a time of a
+multi-block transfer). The card now keeps the answer as of the last
+change of medium: at realize, and in the change callback.
+
+And the image was read and written a block at a time: a request to the
+block layer for each 512 bytes, each a round trip through its thread
+pool. Read ahead: a block not in the buffer reads up to SD_IO_CHUNK
+(1 MiB) from there in one request, and the blocks after it come from
+the buffer. Write behind: consecutive blocks written gather in a buffer
+of the same size, written in one request when the next block is not the
+one after, the buffer is full, a counted multi-block write (CMD23) or a
+single block ends, an erase ends, a read comes, or any command comes
+(CMD12 ends an open-ended write), and before migration and at reset.
+Blocks written are copied into what was read ahead, so that stays the
+image's content. An eject drops both.
+
+---
+--- a/hw/sd/sd.c	2026-11-24 15:52:50.140565090 -0500
++++ b/hw/sd/sd.c	2026-11-24 15:57:59.524014832 -0500
+@@ -34,6 +34,7 @@
+ 
+ #include "qemu/osdep.h"
+ #include "qemu/units.h"
++#include "qemu/memalign.h"
+ #include "qemu/cutils.h"
+ #include "qemu/bswap.h"
+ #include "hw/core/irq.h"
+@@ -196,6 +197,22 @@
+     uint32_t data_offset;
+     size_t data_size;
+     uint8_t data[512];
++    /*
++     * The image is read and written in pieces of up to SD_IO_CHUNK bytes:
++     * blocks are read ahead into io_ra, and consecutive blocks written
++     * gather in io_wb until a command, a read or the end of the transfer
++     */
++    uint8_t *io_ra;
++    uint64_t io_ra_addr;
++    uint32_t io_ra_len;
++    uint8_t *io_wb;
++    uint64_t io_wb_addr;
++    uint32_t io_wb_len;
++    /*
++     * blk_is_inserted() as of the last change of medium: asking it is a
++     * coroutine's work, and the data comes and goes a byte at a time
++     */
++    bool inserted;
+     struct {
+         uint32_t write_counter;
+         uint8_t key[RPMB_KEY_MAC_LEN];
+@@ -209,6 +226,14 @@
+ };
+ 
+ static void sd_realize(DeviceState *dev, Error **errp);
++static void sd_blk_flush(SDState *sd);
++
++/*
++ * A block at a time, a multi-block transfer was a request to the block
++ * layer for each 512 bytes, each a round trip through its thread pool
++ * with the BQL held (a megabyte took half a second)
++ */
++#define SD_IO_CHUNK     (1 * MiB)
+ 
+ static const SDProto sd_proto_spi;
+ static const SDProto sd_proto_emmc;
+@@ -919,6 +944,8 @@
+     uint64_t sect;
+ 
+     trace_sdcard_reset();
++    sd_blk_flush(sd);
++    sd->io_ra_len = 0;
+     if (sd->blk) {
+         blk_get_geometry(sd->blk, &sect);
+     } else {
+@@ -976,11 +1003,13 @@
+     bool inserted = sd_get_inserted(sd);
+     bool readonly = sd_get_readonly(sd);
+ 
++    sd->inserted = inserted;
+     if (inserted) {
+         trace_sdcard_inserted(readonly);
+         sd_reset(dev);
+     } else {
+         trace_sdcard_ejected();
++        sd->io_wb_len = sd->io_ra_len = 0;
+     }
+ 
+     sdbus = SD_BUS(qdev_get_parent_bus(dev));
+@@ -1060,6 +1089,20 @@
+     },
+ };
+ 
++static int sd_vmstate_pre_save(void *opaque)
++{
++    sd_blk_flush(opaque);
++    return 0;
++}
++
++static int sd_vmstate_post_load(void *opaque, int version_id)
++{
++    SDState *sd = opaque;
++
++    sd->io_ra_len = 0;
++    return 0;
++}
++
+ static int sd_vmstate_pre_load(void *opaque)
+ {
+     SDState *sd = opaque;
+@@ -1078,6 +1121,8 @@
+     .version_id = 2,
+     .minimum_version_id = 2,
+     .pre_load = sd_vmstate_pre_load,
++    .pre_save = sd_vmstate_pre_save,
++    .post_load = sd_vmstate_post_load,
+     .fields = (const VMStateField[]) {
+         VMSTATE_UNUSED(4),
+         VMSTATE_INT32(state, SDState),
+@@ -1113,22 +1158,74 @@
+     },
+ };
+ 
++/* the blocks written and not yet in the image: there now */
++static void sd_blk_flush(SDState *sd)
++{
++    if (!sd->io_wb_len) {
++        return;
++    }
++    if (!sd->blk || blk_pwrite(sd->blk, sd->io_wb_addr, sd->io_wb_len,
++                               sd->io_wb, 0) < 0) {
++        fprintf(stderr, "sd_blk_write: write error on host side\n");
++    }
++    sd->io_wb_len = 0;
++}
++
+ static void sd_blk_read(SDState *sd, uint64_t addr, uint32_t len)
+ {
+     trace_sdcard_read_block(addr, len);
+     addr += sd_part_offset(sd);
+-    if (!sd->blk || blk_pread(sd->blk, addr, len, sd->data, 0) < 0) {
++    if (!sd->blk) {
+         fprintf(stderr, "sd_blk_read: read error on host side\n");
++        return;
++    }
++    sd_blk_flush(sd);
++    if (addr < sd->io_ra_addr ||
++        addr + len > sd->io_ra_addr + sd->io_ra_len) {
++        int64_t end = blk_getlength(sd->blk);
++        uint64_t n = len;
++
++        if (end > 0 && (uint64_t)end > addr + len) {
++            n = MAX(len, MIN(SD_IO_CHUNK, (uint64_t)end - addr));
++        }
++        sd->io_ra_len = 0;
++        if (n > SD_IO_CHUNK ||
++            blk_pread(sd->blk, addr, n, sd->io_ra, 0) < 0) {
++            fprintf(stderr, "sd_blk_read: read error on host side\n");
++            return;
++        }
++        sd->io_ra_addr = addr;
++        sd->io_ra_len = n;
+     }
++    memcpy(sd->data, sd->io_ra + (addr - sd->io_ra_addr), len);
+ }
+ 
+ static void sd_blk_write(SDState *sd, uint64_t addr, uint32_t len)
+ {
+     trace_sdcard_write_block(addr, len);
+     addr += sd_part_offset(sd);
+-    if (!sd->blk || blk_pwrite(sd->blk, addr, len, sd->data, 0) < 0) {
++    if (!sd->blk) {
+         fprintf(stderr, "sd_blk_write: write error on host side\n");
++        return;
++    }
++    /* what was read ahead stays as the image will be */
++    if (addr < sd->io_ra_addr + sd->io_ra_len &&
++        addr + len > sd->io_ra_addr) {
++        uint64_t lo = MAX(addr, sd->io_ra_addr);
++        uint64_t hi = MIN(addr + len, sd->io_ra_addr + sd->io_ra_len);
++
++        memcpy(sd->io_ra + (lo - sd->io_ra_addr), sd->data + (lo - addr),
++               hi - lo);
++    }
++    if (sd->io_wb_len && (addr != sd->io_wb_addr + sd->io_wb_len ||
++                          sd->io_wb_len + len > SD_IO_CHUNK)) {
++        sd_blk_flush(sd);
++    }
++    if (!sd->io_wb_len) {
++        sd->io_wb_addr = addr;
+     }
++    memcpy(sd->io_wb + sd->io_wb_len, sd->data, len);
++    sd->io_wb_len += len;
+ }
+ 
+ static bool rpmb_calc_hmac(SDState *sd, const RPMBDataFrame *frame,
+@@ -1366,6 +1463,7 @@
+         }
+         sd_blk_write(sd, erase_addr, erase_len);
+     }
++    sd_blk_flush(sd);
+ }
+ 
+ static uint32_t sd_wpbits(SDState *sd, uint64_t addr)
+@@ -2493,9 +2591,10 @@
+     sd_rsp_type_t rtype;
+     int rsplen;
+ 
+-    if (!sd->blk || !blk_is_inserted(sd->blk)) {
++    if (!sd->inserted) {
+         return 0;
+     }
++    sd_blk_flush(sd);
+ 
+     if (sd->state == sd_inactive_state) {
+         rtype = sd_illegal;
+@@ -2665,7 +2764,7 @@
+     int i;
+     const uint8_t *value = buf;
+ 
+-    if (!sd->blk || !blk_is_inserted(sd->blk)) {
++    if (!sd->inserted) {
+         return length;
+     }
+ 
+@@ -2687,6 +2786,7 @@
+             /* TODO: Check CRC before committing */
+             sd->state = sd_programming_state;
+             sd_blk_write(sd, sd->data_start, sd->data_offset);
++            sd_blk_flush(sd);
+             sd->blk_written ++;
+             sd->csd[14] |= 0x40;
+             /* Bzzzzzzztt .... Operation complete.  */
+@@ -2734,6 +2834,7 @@
+             if (sd->multi_blk_cnt != 0) {
+                 if (--sd->multi_blk_cnt == 0) {
+                     /* Stop! */
++                    sd_blk_flush(sd);
+                     sd->state = sd_transfer_state;
+                     break;
+                 }
+@@ -2813,7 +2914,7 @@
+     uint32_t io_len;
+     uint8_t *value = buf;
+ 
+-    if (!sd->blk || !blk_is_inserted(sd->blk)) {
++    if (!sd->inserted) {
+         memset(buf, dummy_byte, length);
+         return length;
+     }
+@@ -3066,6 +3167,8 @@
+     sd->proto = sc->proto;
+     sd->last_cmd_name = "UNSET";
+     sd->ocr_power_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, sd_ocr_powerup, sd);
++    sd->io_ra = qemu_memalign(qemu_real_host_page_size(), SD_IO_CHUNK);
++    sd->io_wb = qemu_memalign(qemu_real_host_page_size(), SD_IO_CHUNK);
+ }
+ 
+ static void sd_instance_finalize(Object *obj)
+@@ -3073,6 +3176,8 @@
+     SDState *sd = SDMMC_COMMON(obj);
+ 
+     timer_free(sd->ocr_power_timer);
++    qemu_vfree(sd->io_ra);
++    qemu_vfree(sd->io_wb);
+ }
+ 
+ static void sd_blk_size_error(SDState *sd, int64_t blk_size,
+@@ -3152,6 +3257,7 @@
+         }
+         blk_set_dev_ops(sd->blk, &sd_block_ops, sd);
+     }
++    sd->inserted = sd_get_inserted(sd);
+     if (!QEMU_IS_ALIGNED(sd->boot_part_size, 128 * KiB) ||
+         sd->boot_part_size > 255 * 128 * KiB) {
+         g_autofree char *size_str = size_to_str(sd->boot_part_size);

@@ -725,3 +725,26 @@ register headers.
       once (its cores then use no host CPU).
     The panel link reports it (`rk3576 on`, `rk3576 off`: docs/PANEL_LINK.md), and QEMU's
     log (`devices/NAME/qemu.log`) has each change with its time.
+
+52. **The MCU's clock, and the SD card's speed.** With Linux running, the MCU's clock fell
+    behind: in a first boot its log said 204 s when 390 s had passed. The SD driver
+    also warned "Interrupt latency": its 10 ms watch on a command expired with the
+    interrupt raised but not yet taken. Both came from QEMU's global lock (the BQL).
+    The main loop runs every device's timers, the RP2350's SysTick among them, and it
+    was waiting for that lock most of the time. The firmware counts its time in
+    SysTick ticks, and a tick that comes late is lost.
+    QEMU's sync-profile (`sync-profile on`, then `info sync-profile`, in the monitor)
+    and gdb samples of the lock's holder (`bql.lock.__data.__owner`) found the holder:
+    the SD card. QEMU's card asked for every byte whether the medium was in
+    (`blk_is_inserted()`, now a coroutine's work, about 300 ns), and read and wrote its
+    image a block at a time, one round trip to the block layer's thread pool for each
+    512 bytes. A megabyte took 300 to 580 ms, all of it with the lock held by the core
+    that wrote the command register. QEMU patch 0007 keeps the medium's state from its
+    last change, reads ahead a megabyte at a time, and writes consecutive blocks in one
+    request. A megabyte now takes 12 to 18 ms, and over a minute of booting the MCU's
+    clock kept 98 % of time, against 81 % before. The generic timer's counters also took
+    the lock on every read, and Linux reads them all the time (the vDSO too). QEMU patch
+    0006 reads them without it. A boot after the first now reaches FlipCTL's first frame
+    at 135 s. The contention that remains is QEMU's own: exceptions and interrupts are
+    taken under the lock, and its GIC model rescans all 480 interrupts for each core at
+    every acknowledge and EOI.

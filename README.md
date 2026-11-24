@@ -108,6 +108,8 @@ yet.
 | 0003 | armv7m_nvic: model Lockup (FlipperZeroEmu's 0015) |
 | 0004 | hw/arm/boot: leave M-profile CPUs alone (the kernel loader, in a machine with both) |
 | 0005 | target/arm: let a machine answer the calls QEMU's PSCI takes (power off and reset of one chip) |
+| 0006 | target/arm: read the generic timer's counters without the BQL |
+| 0007 | hw/sd/sd: move the card's data without a request per block or a check per byte |
 
 ## Layout
 
