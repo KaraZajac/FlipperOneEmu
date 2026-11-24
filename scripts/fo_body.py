@@ -495,8 +495,8 @@ def _left_wing(p):
     p.drawLine(QPointF(336, 186), QPointF(462, 229))
     p.restore()
     lower = poly(LEFT_LOWER)
-    textured(p, lower, vgrad(640, 937, (0, "#605e63"), (0.85, "#646267"),
-                             (1, "#6c6a6f")))
+    textured(p, lower, vgrad(640, 937, (0, "#5b595e"), (0.85, "#5f5d62"),
+                             (1, "#6a686d")))
     p.save()
     p.setClipPath(lower)
     textured(p, poly(CREASE), QColor("#4d4b4e"))
@@ -573,8 +573,8 @@ def _plate(p):
     """The touchpad's plate: the nose hides its left end."""
     plate = rrect(PLATE, 18)
     fill(p, plate.translated(0, 4), QColor(0, 0, 0, 70))
-    fill(p, plate, vgrad(PLATE.top(), PLATE.bottom(), (0, "#2b2b2c"),
-                         (1, "#232324")))
+    fill(p, plate, vgrad(PLATE.top(), PLATE.bottom(), (0, "#303031"),
+                         (1, "#29292a")))
     edges(p, plate, 3, rgba("#5e5c61", 200), rgba("#0e0e0f", 220))
 
 
@@ -589,8 +589,8 @@ def _touchpad(p, st):
                         (1, "#f58a40" if hot else "#e9792f")),
          QPen(QColor("#141414"), 2))
     edges(p, ring, 3, rgba("#ffd2a8", 200), rgba("#9a4a14", 200))
-    fill(p, inner, vgrad(inner_r.top(), inner_r.bottom(), (0, "#262626"),
-                         (1, "#2e2e2f")))
+    fill(p, inner, vgrad(inner_r.top(), inner_r.bottom(), (0, "#2c2c2d"),
+                         (1, "#353536")))
     # the contour lines, pressed into its surface
     p.setBrush(Qt.NoBrush)
     for i in range(1, 10):
