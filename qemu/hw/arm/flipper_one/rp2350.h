@@ -304,7 +304,7 @@ struct RP2350State {
     RP2350RCP rcp;
 
     /* rp2350_sys.c */
-    RP2Block resets, rosc, trng, sha256, powman, watchdog;
+    RP2Block resets, rosc, trng, sha256, powman, watchdog, otp;
     RP2Block xosc, pll_sys, pll_usb, clocks, psm, bootram_regs, adc;
     uint16_t adc_mv[9];         /* AIN0-7 (GPIO40-47), the temperature sensor */
     RP2SHA sha;
@@ -446,6 +446,8 @@ void rp2350_i2c_target_stop(RP2350State *s, int n);
 void rp2350_usb_realize(RP2350State *s);
 void rp2350_usb_reset(RP2350State *s);
 bool rp2350_usb_pulled_up(RP2350State *s);
+/* its interrupt is up: the CPU has not yet dealt with what came */
+bool rp2350_usb_irq_pending(RP2350State *s);
 void rp2350_usb_vbus(RP2350State *s, bool vbus);
 void rp2350_usb_bus_reset(RP2350State *s);
 void rp2350_usb_suspend(RP2350State *s, bool suspended);

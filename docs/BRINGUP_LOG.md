@@ -452,3 +452,23 @@ register headers.
     `37c1:f101 "Flipper FZCO" "Flipper One MCU Debug …"`, and its CDC ACM function goes
     to `devices/NAME/usb.sock`, DTR up while a program is connected there: the CLI's
     session starts, with its banner (`./flipperoneemu cli --usb`).
+41. **BOOTSEL: the boot ROM's own USB.** Started with BOOTSEL held (`run --bootsel`) and
+    a computer plugged in, the boot ROM died at once (its `varm_dead`, a BKPT in a
+    HardFault). Three things, one after another. Before its USB boot, the boot ROM sets
+    each of the 64 OTP pages' software locks (OTP_SW_LOCKn) and reads them back under an
+    RCP check; the OTP's registers were not modelled and read 0: now the locks keep what
+    is written, ORed in. Then it chose UART boot, not USB: it looks at QSPI SD1 with
+    BOOTSEL holding CS low, and the model had the data lines pulled up; undriven, as
+    they are when the flash has no command, they read low. Then its USB boot, which runs
+    NonSecure with SAU regions for RAM only, faulted on the USB controller's registers
+    (AUVIOL): on the RP2350 the peripherals are Exempt to the IDAU and ACCESSCTRL says
+    who reaches them, which the boot ROM had set for the USB controller; the model's
+    IDAU now exempts the APB and AHB peripherals and SIO (ACCESSCTRL's filter is not
+    modelled). Then the computer's enumeration got a STALL at a status stage: it had
+    sent the next SETUP 44 µs after the last status packet, before the boot ROM's
+    interrupt handler had taken that packet, and the SETUP reset the transfer the late
+    completion then found missing ("received unexpected packet": halt). On the chip the
+    handler takes a packet within a microsecond, long before a host's next; the
+    emulated CPU on its own thread can lag the virtual bus, as FlipperZeroEmu's host
+    found too. The host now sends nothing while the controller's interrupt is up (10 ms
+    at most). The boot ROM enumerates: `2e8a:000f "Raspberry Pi" "RP2350 Boot"`.

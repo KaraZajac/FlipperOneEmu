@@ -91,7 +91,10 @@ def cmd_run(args):
     for sock in ("panel.sock", "monitor.sock", "cli.sock", "host.sock",
                  "usb.sock"):
         (d / sock).unlink(missing_ok=True)
-    cmd = [str(QEMU), "-M", f"flipper-one,flash={d / 'flash.bin'},log=mculog",
+    machine = f"flipper-one,flash={d / 'flash.bin'},log=mculog"
+    if args.bootsel:
+        machine += ",bootsel=on"
+    cmd = [str(QEMU), "-M", machine,
            "-chardev", f"file,id=mculog,path={d / 'mcu.log'}",
            "-bios", str(BOOTROM), "-display", "none",
            "-chardev", f"socket,id=cli,path={d / 'cli.sock'},server=on,wait=off",
@@ -377,6 +380,9 @@ def main():
             p.add_argument("--uf2", help="make the flash anew from this recovery .uf2")
             p.add_argument("--detach", action="store_true", help="run in the background")
             p.add_argument("--gdb", type=int, metavar="PORT", help="QEMU's gdb stub")
+            p.add_argument("--bootsel", action="store_true",
+                           help="start with BOOTSEL held: the boot ROM's USB "
+                                "boot (its drive and PICOBOOT)")
         if name in ("gui", "shot"):
             p.add_argument("--zoom", type=int)
         if name == "shot":

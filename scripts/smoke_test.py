@@ -23,7 +23,9 @@ Boots a throwaway device, devices/smoke-PID (removed at the end unless
 - a charger plugged in, then pulled out: the charger's interrupts through
   the main board's expander, `power show` charging;
 - a computer plugged in: it enumerates the MCU's USB device, and the CLI
-  answers on its USB serial port.
+  answers on its USB serial port;
+- the same device again with BOOTSEL held: the RP2350's boot ROM's own USB
+  boot, which the computer enumerates.
 
 Exit status 0 = pass. Screenshots go to --out.
 """
@@ -302,6 +304,7 @@ def main():
         sys.exit("the device did not start")
     try:
         body(check, name, d, out)
+        bootsel(check, name, d)
     finally:
         subprocess.run([sys.executable, str(LAUNCHER), "stop", "-n", name],
                        stdout=subprocess.DEVNULL)
@@ -462,6 +465,31 @@ def body(check, name, d, out):
     errors = [line for line in text.splitlines()
               if "[E]" in line and not KNOWN_ERRORS.search(line)]
     check("no error in the log", not errors, "; ".join(errors[:3]))
+
+
+def bootsel(check, name, d):
+    """the same device again, BOOTSEL held: the boot ROM's own USB boot"""
+    subprocess.run([sys.executable, str(LAUNCHER), "stop", "-n", name],
+                   stdout=subprocess.DEVNULL)
+    if subprocess.run([sys.executable, str(LAUNCHER), "run", "-n", name,
+                       "--detach", "--bootsel"],
+                      stdout=subprocess.DEVNULL).returncode:
+        check("the device starts again with BOOTSEL held", False)
+        return
+    panel = None
+    for _ in range(50):
+        try:
+            panel = Panel(d / "panel.sock")
+            break
+        except OSError:
+            time.sleep(0.1)
+    if not check("BOOTSEL: the panel link is there", panel is not None):
+        return
+    panel.s.sendall(b"usb 2\n")
+    found = until(lambda: "flipper-one: USB: 2e8a:000f" in
+                  (d / "qemu.out").read_text(errors="replace"), 15)
+    check("BOOTSEL: a computer enumerates the boot ROM's USB boot (2E8A:000F)",
+          found)
 
 
 if __name__ == "__main__":

@@ -39,8 +39,12 @@
  *                  IDAU knows no access type, so Exempt
  *   0x7e00-0x7fff  Secure, NonSecure-callable: the SG entry points (IDAU
  *                  region 2, which the ROM checks with TT at its start)
- * The USB controller's RAM is Exempt too (the ROM's nsboot), and so is the
- * PPB.  The rest is NonSecure to the IDAU: the SAU decides.
+ * The peripherals (APB 0x40000000, AHB 0x50000000, the USB controller's RAM
+ * among them) and SIO are Exempt too: on the RP2350 it is ACCESSCTRL, not
+ * the SAU, that says who reaches a peripheral (the ROM's nsboot, running
+ * NonSecure with SAU regions for RAM only, works the USB controller after
+ * ACCESSCTRL let it); ACCESSCTRL's filter is not modelled. So is the PPB.
+ * The rest is NonSecure to the IDAU: the SAU decides.
  */
 static void rp2350_idau_check(IDAUInterface *ii, uint32_t address,
                               int *iregion, bool *exempt, bool *ns, bool *nsc)
@@ -55,7 +59,8 @@ static void rp2350_idau_check(IDAUInterface *ii, uint32_t address,
         *ns = false;
         *nsc = true;
         *iregion = 2;
-    } else if ((address & 0xfffff000) == 0x50100000 ||
+    } else if ((address >= 0x40000000 && address < 0x60000000) ||
+               (address & 0xf0000000) == 0xd0000000 ||
                (address & 0xfff00000) == 0xe0000000) {
         *exempt = true;
     }

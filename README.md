@@ -56,6 +56,7 @@ and brings the MCU's own desktop.
 
 ```sh
 ./flipperoneemu run [-n NAME] [--detach] [--gdb PORT]   # a device without the window
+./flipperoneemu run --bootsel ...    # ... started with BOOTSEL held: the boot ROM's USB boot
 ./flipperoneemu log [-n NAME]        # the firmware's log, from its RTT buffer
 ./flipperoneemu cli [-n NAME] [CMD]  # the firmware's CLI (UART1); Ctrl-] leaves
 ./flipperoneemu cli --usb ...         # ... on its USB serial port (a computer plugged in)

@@ -154,6 +154,13 @@ static uint32_t usb_sie_status(RP2350State *s)
            (u->suspended ? ST_SUSPENDED : 0) | (vbus ? ST_VBUS_DETECTED : 0);
 }
 
+bool rp2350_usb_irq_pending(RP2350State *s)
+{
+    RP2Usb *u = &s->usb;
+
+    return ((usb_intr(s) & u->inte) | u->intf) != 0;
+}
+
 bool rp2350_usb_pulled_up(RP2350State *s)
 {
     RP2Usb *u = &s->usb;

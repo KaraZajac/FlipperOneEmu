@@ -15,7 +15,12 @@
  * endpoint gives to the program.
  *
  * It drives the controller (rp2350_usb.c) a transaction at a time, on a
- * timer of the virtual clock: one about every 20 µs while they are taken,
+ * timer of the virtual clock. The firmware relies on being fast next to the
+ * bus: on the chip its interrupt handler has taken a packet (and, say, a
+ * control transfer's end) long before the host sends the next; an emulated
+ * CPU, on its own thread, can be slower than the bus's time. So the host
+ * sends nothing while the controller's interrupt is still up (10 ms at
+ * most), and otherwise one about every 20 µs while they are taken,
  * a NAKed one again after 50 µs, and a bulk IN endpoint that has nothing
  * looked at less and less often, down to every 2 ms, until something comes
  * from the program or the endpoint gives something again.
@@ -38,6 +43,7 @@
 #define ATTACH_NS       100000000       /* the pull-up to the bus reset */
 #define RESET_NS        10000000
 #define SET_ADDRESS_NS  2000000         /* the device's recovery */
+#define PATIENCE_NS     10000000        /* the most it waits for the CPU */
 #define ADDRESS         1
 #define CTL_MAX         1024
 #define TO_DEV_MAX      4096
@@ -65,6 +71,10 @@ typedef struct FoUsbHost {
     uint8_t ctl_buf[CTL_MAX];
     int ctl_len, ctl_got;
     bool ctl_ok;
+    int ctl_failed, ctl_result;         /* where it ended badly, and how */
+    char trail[16][48];                 /* the last transactions, for when
+                                           the enumeration fails */
+    int trail_n;
 
     int step;                           /* enumeration */
     int ep0_size;
@@ -79,6 +89,7 @@ typedef struct FoUsbHost {
     int dtr_sent;                       /* -1: not yet */
     GByteArray *to_dev, *to_chr;
     int64_t idle_ns;                    /* how long the IN endpoint naps */
+    int64_t waiting_since;              /* for the CPU's handler, since */
     guint watch;
 } FoUsbHost;
 
@@ -92,6 +103,16 @@ static int64_t now_ns(void)
 static void host_after(FoUsbHost *h, int64_t ns)
 {
     timer_mod(h->timer, now_ns() + ns);
+}
+
+/* the transaction just done, kept for a report */
+static void trail(FoUsbHost *h, const char *what, int ep, RP2UsbResult r,
+                  int len)
+{
+    static const char *const how[] = { "ACK", "NAK", "STALL", "-" };
+
+    snprintf(h->trail[h->trail_n++ % 16], 48, "%6" PRId64 " us %s %d: %s %d",
+             (now_ns() / 1000) % 1000000, what, ep, how[r & 3], len);
 }
 
 /* ---------------------------------------------------- control transfers */
@@ -124,6 +145,7 @@ static bool ctl_step(FoUsbHost *h, int64_t *wait)
     switch (h->ctl) {
     case C_SETUP:
         r = rp2350_usb_setup(s, h->addr, h->setup);
+        trail(h, "SETUP", 0, r, 8);
         if (r != RP2_USB_ACK) {
             break;
         }
@@ -133,6 +155,7 @@ static bool ctl_step(FoUsbHost *h, int64_t *wait)
         if (in) {
             n = 0;
             r = rp2350_usb_in(s, h->addr, 0, h->ctl_buf + h->ctl_got, &n);
+            trail(h, "IN", 0, r, n);
             if (r == RP2_USB_ACK) {
                 h->ctl_got = MIN(h->ctl_got + n, h->ctl_len);
                 if (n < h->ep0_size || h->ctl_got >= h->ctl_len) {
@@ -143,6 +166,7 @@ static bool ctl_step(FoUsbHost *h, int64_t *wait)
         } else {
             n = MIN(h->ep0_size, h->ctl_len - h->ctl_got);
             r = rp2350_usb_out(s, h->addr, 0, h->ctl_buf + h->ctl_got, n);
+            trail(h, "OUT", 0, r, n);
             if (r == RP2_USB_ACK) {
                 h->ctl_got += n;
                 if (h->ctl_got >= h->ctl_len) {
@@ -159,9 +183,11 @@ static bool ctl_step(FoUsbHost *h, int64_t *wait)
     case C_STATUS:
         if (in) {
             r = rp2350_usb_out(s, h->addr, 0, NULL, 0);
+            trail(h, "status OUT", 0, r, 0);
         } else {
             n = 0;
             r = rp2350_usb_in(s, h->addr, 0, zlp, &n);
+            trail(h, "status IN", 0, r, n);
         }
         if (r == RP2_USB_NAK) {
             *wait = NAK_NS;
@@ -174,7 +200,9 @@ static bool ctl_step(FoUsbHost *h, int64_t *wait)
         h->ctl_ok = true;
         return true;
     }
-    h->ctl = C_IDLE;                    /* a stall, or nobody answered */
+    h->ctl_failed = h->ctl;             /* a stall, or nobody answered */
+    h->ctl_result = r;
+    h->ctl = C_IDLE;
     h->ctl_ok = false;
     return true;
 }
@@ -388,8 +416,18 @@ static bool enum_took(FoUsbHost *h)
 {
     if (!h->ctl_ok && h->step != E_LANG && h->step != E_LINE_CODING &&
         !(h->step >= E_STR1 && h->step <= E_STR3)) {
+        static const char *const stage[] = { "", "SETUP", "data", "status" };
+        static const char *const how[] = { "ACK", "NAK", "a STALL",
+                                           "no answer" };
+
         warn_report("flipper-one: USB: the device did not answer the "
-                    "enumeration (step %d)", h->step);
+                    "enumeration: request %02x %02x %02x%02x, at its %s "
+                    "stage, %s (step %d)", h->setup[0], h->setup[1],
+                    h->setup[3], h->setup[2], stage[h->ctl_failed & 3],
+                    how[h->ctl_result & 3], h->step);
+        for (int i = MAX(h->trail_n - 16, 0); i < h->trail_n; i++) {
+            error_printf("  %s\n", h->trail[i % 16]);
+        }
         return false;
     }
     switch (h->step) {
@@ -425,10 +463,32 @@ static bool enum_took(FoUsbHost *h)
 
 /* ------------------------------------------------------------ the host */
 
+/* the CPU has not dealt with the last transaction yet: wait for it */
+static bool host_waits(FoUsbHost *h)
+{
+    int64_t now = now_ns();
+
+    if (rp2350_usb_irq_pending(h->soc)) {
+        if (!h->waiting_since) {
+            h->waiting_since = now;
+        }
+        if (now - h->waiting_since < PATIENCE_NS) {
+            host_after(h, STEP_NS);
+            return true;
+        }
+    }
+    h->waiting_since = 0;
+    return false;
+}
+
 static void host_step(void *opaque)
 {
     FoUsbHost *h = opaque;
     int64_t wait = STEP_NS;
+
+    if ((h->state == H_ENUM || h->state == H_RUN) && host_waits(h)) {
+        return;
+    }
 
     switch (h->state) {
     case H_ATTACHING:

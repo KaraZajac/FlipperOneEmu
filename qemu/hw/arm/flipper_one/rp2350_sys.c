@@ -144,6 +144,24 @@ static uint32_t rosc_read(RP2Block *b, hwaddr reg)
     }
 }
 
+/* ------------------------------------------------------------------- OTP */
+
+/*
+ * OTP's registers: the 64 pages' software locks (SW_LOCKn: SEC in bits 1:0,
+ * NSEC in 3:2; a write is ORed in, a lock only tightens), which the boot
+ * ROM sets from the OTP's page settings and reads back before its USB boot.
+ * The rest keep what is written. The OTP itself reads as blank
+ * (otp_data, unimplemented).
+ */
+static void otp_write(RP2Block *b, hwaddr reg, uint32_t value)
+{
+    if (reg < 0x100) {
+        b->regs[reg / 4] |= value & 0xf;            /* SW_LOCK0 ... 63 */
+    } else if (reg < RP2_REGS * 4) {
+        b->regs[reg / 4] = value;
+    }
+}
+
 /* ------------------------------------------------------------------ TRNG */
 
 static uint32_t trng_read(RP2Block *b, hwaddr reg)
@@ -557,6 +575,7 @@ void rp2350_sys_realize(RP2350State *s)
                    resets_read, resets_write);
     rp2_block_init(s, &s->rosc, "rp2350.rosc", 0x400e8000, rosc_read, NULL);
     rp2_block_init(s, &s->trng, "rp2350.trng", 0x400f0000, trng_read, NULL);
+    rp2_block_init(s, &s->otp, "rp2350.otp", 0x40120000, NULL, otp_write);
     rp2_block_init(s, &s->sha256, "rp2350.sha256", 0x400f8000,
                    sha256_read, sha256_write);
     s->sha256.raw = sha256_raw;
@@ -594,6 +613,7 @@ void rp2350_sys_reset(RP2350State *s)
     memset(s->rosc.regs, 0, sizeof(s->rosc.regs));
     s->rosc.regs[0] = 0xaa0;                        /* CTRL */
     memset(s->trng.regs, 0, sizeof(s->trng.regs));
+    memset(s->otp.regs, 0, sizeof(s->otp.regs));
     memset(s->sha256.regs, 0, sizeof(s->sha256.regs));
     s->sha256.regs[0] = SHA_CSR_KEEP;               /* BSWAP, DMA_SIZE 2 */
     s->sha256.regs[0] &= ~0x0100u;

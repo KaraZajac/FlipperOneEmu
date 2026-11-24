@@ -6,7 +6,7 @@
  *                  pins 0-31 and for the rest (32-47, QSPI, USB); IN is
  *                  what SIO drives where it drives, what the board does
  *                  elsewhere.  QSPI's CS reads high (the flash's pull-up),
- *                  low with the BOOTSEL button held
+ *                  low with the BOOTSEL button held; its data lines low
  *   FIFOs          one each way between the cores, 8 words deep
  *   spinlocks      32; doorbells; PERI_NONSEC
  *
@@ -214,7 +214,11 @@ void rp2350_sio_reset(RP2350State *s)
     memset(o->doorbell, 0, sizeof(o->doorbell));
     o->spinlock = 0;
     o->peri_nonsec = 0;
-    /* the flash's CS and data lines pulled up */
+    /*
+     * the flash's CS pulled up; its data lines undriven (no command): low,
+     * SD1 too, which the boot ROM looks at with BOOTSEL held (high there
+     * would be a board that wants UART boot, not USB)
+     */
     o->ext[0] = 0;
-    o->ext[1] = SIO_HI_QSPI_CSN | SIO_HI_QSPI_SD;
+    o->ext[1] = SIO_HI_QSPI_CSN;
 }
