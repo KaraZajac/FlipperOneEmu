@@ -61,7 +61,10 @@ screen and its CLI.
 - ☐ RPC: the screen stream and input, through the CLI's `rpc`
 - ☐ USB: the CLI's CDC port (`37C1:F101`), and BOOTSEL: a UF2 copied onto the boot ROM's
       drive, over USB/IP as FlipperZeroEmu's USB is
-- ☐ Checks: boot, CLI, screen, input, update
+- ◐ Checks: `scripts/smoke_test.py` (2026-11-24): a throwaway device through its
+      sockets: the boot and each chip, the host link and a frame shown pixel for
+      pixel, the LEDs and the motor, the CLI and the firmware's unit tests, the
+      buttons and the touchpad, the Flipper OS menu and its Stop; an update to come
 
 ## M3: the RK3576 to a shell ☐
 - ☐ The cluster: 4× Cortex-A53 and 4× Cortex-A72, GIC-400, the generic timer at 24 MHz,

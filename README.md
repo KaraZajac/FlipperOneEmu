@@ -60,6 +60,7 @@ and brings the MCU's own desktop.
 ./flipperoneemu where [-n NAME]      # where each core is: its PC and function
 ./flipperoneemu shot FILE.png        # the screen as a picture
 ./flipperoneemu status | stop [-n NAME]
+scripts/smoke_test.py                # a throwaway device, checked: PASS or FAIL
 ```
 
 A device is a folder, `devices/NAME`: the MCU's flash (made from the newest recovery
