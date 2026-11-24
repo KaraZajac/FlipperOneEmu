@@ -473,6 +473,38 @@ void rk3576_gpio_in(RK3576State *s, int bank, int pin, bool level)
 
 /* ------------------------------------------------------------ the SoC */
 
+void rk3576_reset_devices(RK3576State *s)
+{
+    device_cold_reset(DEVICE(&s->gic));
+    for (int i = 0; i < 2; i++) {
+        device_cold_reset(s->uart[i]);
+    }
+    for (int d = 0; d < 3; d++) {
+        device_cold_reset(s->dmac[d]);
+    }
+    /* (I2C2's bus is the main board's: what is on it keeps its power) */
+    for (int n = 0; n < RK3576_NI2C; n++) {
+        device_cold_reset(DEVICE(&s->i2c[n]));
+    }
+    device_cold_reset(DEVICE(&s->spi0));
+    device_cold_reset(DEVICE(&s->sdmmc));       /* and its card */
+    memset(s->cru.regs, 0, CRU_SIZE);
+    memset(s->pmu.regs, 0, PMU_SIZE);
+    memset(s->rng.regs, 0, RNG_SIZE);
+    for (int b = 0; b < RK3576_NGPIO; b++) {
+        RkGpio *g = &s->gpio[b];
+
+        g->dr = g->ddr = g->en = g->mask = g->type = g->pol = g->both = 0;
+        g->raw = g->debounce = g->dbclk_en = g->dbclk_con = 0;
+        gpio_update(g);                         /* (the board's inputs stay) */
+    }
+    timer_del(s->timer0.timer);
+    s->timer0.load[0] = s->timer0.load[1] = 0;
+    s->timer0.ctrl = s->timer0.status = 0;
+    s->timer0.done = false;
+    tmr_irq(&s->timer0);
+}
+
 I2CBus *rk3576_i2c_bus(RK3576State *s, int n)
 {
     return s->i2c[n].bus;
@@ -592,10 +624,14 @@ static void rk3576_realize(DeviceState *dev, Error **errp)
     }
 
     /* the console (serial port 2) and the MCU's line (serial port 3) */
-    serial_mm_init(sysmem, UART0_BASE, 2, rk3576_spi(s, UART0_SPI),
-                   UART_BAUDBASE, serial_hd(2), DEVICE_LITTLE_ENDIAN);
-    serial_mm_init(sysmem, UART4_BASE, 2, rk3576_spi(s, UART4_SPI),
-                   UART_BAUDBASE, serial_hd(3), DEVICE_LITTLE_ENDIAN);
+    s->uart[0] = DEVICE(serial_mm_init(sysmem, UART0_BASE, 2,
+                                       rk3576_spi(s, UART0_SPI),
+                                       UART_BAUDBASE, serial_hd(2),
+                                       DEVICE_LITTLE_ENDIAN));
+    s->uart[1] = DEVICE(serial_mm_init(sysmem, UART4_BASE, 2,
+                                       rk3576_spi(s, UART4_SPI),
+                                       UART_BAUDBASE, serial_hd(3),
+                                       DEVICE_LITTLE_ENDIAN));
 
     rk_block_init(s, &s->cru, "rk3576.cru", CRU_BASE, CRU_SIZE, true);
     s->cru.read = cru_read;
@@ -660,6 +696,8 @@ static void rk3576_realize(DeviceState *dev, Error **errp)
     for (int d = 0; d < 3; d++) {
         DeviceState *dma = qdev_new("pl330");
         DeviceState *any = qdev_new(TYPE_OR_IRQ);
+
+        s->dmac[d] = dma;
 
         object_property_set_link(OBJECT(dma), "memory", OBJECT(sysmem),
                                  &error_abort);

@@ -1,0 +1,49 @@
+From: FlipperOneEmu
+Subject: [PATCH] target/arm: let a machine answer the calls QEMU's PSCI takes
+
+QEMU's PSCI stands in for a board's EL3 firmware, and with the SMC
+conduit every SMC comes to it: what it does not know answers
+NOT_SUPPORTED, and SYSTEM_OFF and SYSTEM_RESET stop or reset the whole
+machine. A machine with more than one chip (the Flipper One: an RK3576
+beside an RP2350 microcontroller, which switches the RK3576's power)
+needs SYSTEM_OFF and SYSTEM_RESET to be the one chip's, and a SoC's
+firmware answers calls that are not PSCI's (Rockchip's TF-A serves SCMI
+over SMC, which Linux uses for the CPU clocks).
+
+Add a hook to ARMCPU, asked before PSCI: if it answers a call (its
+result in x0 or r0, or the CPU stopped), PSCI does nothing more. Machines
+that set no hook are not changed.
+
+---
+--- a/target/arm/cpu.h	2026-11-24 15:01:56.107934777 -0500
++++ b/target/arm/cpu.h	2026-11-24 15:01:56.161753108 -0500
+@@ -1085,6 +1085,16 @@
+      * 0 - disabled, 1 - smc, 2 - hvc
+      */
+     uint32_t psci_conduit;
++    /*
++     * A machine's own answer to a call that comes to QEMU's PSCI (an SMC or
++     * HVC on the conduit), asked first: true, it answered (the result in
++     * x0 or r0, or the CPU stopped); false, PSCI goes on. For a machine
++     * whose firmware QEMU's PSCI stands in for, where a call means more
++     * than QEMU makes of it (SYSTEM_OFF and SYSTEM_RESET of one chip of
++     * several) or is not PSCI's (a SiP's calls).
++     */
++    bool (*psci_hook)(ARMCPU *cpu, void *opaque);
++    void *psci_hook_opaque;
+ 
+     /* For v8M, initial value of the Secure VTOR */
+     uint32_t init_svtor;
+--- a/target/arm/tcg/psci.c	2026-11-24 15:01:56.111918149 -0500
++++ b/target/arm/tcg/psci.c	2026-11-24 15:01:56.162215991 -0500
+@@ -72,6 +72,10 @@
+     int32_t ret = 0;
+     int i;
+ 
++    if (cpu->psci_hook && cpu->psci_hook(cpu, cpu->psci_hook_opaque)) {
++        return;                         /* the machine answered it */
++    }
++
+     for (i = 0; i < 4; i++) {
+         /*
+          * All PSCI functions take explicit 32-bit or native int sized

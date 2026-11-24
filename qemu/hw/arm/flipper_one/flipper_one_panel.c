@@ -123,6 +123,9 @@ static void panel_everything(FlipperOnePanelState *s)
     flipper_link_send(&s->lk, "usb %d\n", s->usb);
     flipper_link_send(&s->lk, "headset %s\n", headset_names[s->headset]);
     flipper_link_send(&s->lk, "power %s\n", s->powered ? "on" : "off");
+    if (s->rk3576 >= 0) {
+        flipper_link_send(&s->lk, "rk3576 %s\n", s->rk3576 ? "on" : "off");
+    }
 }
 
 static void panel_tick(void *opaque)
@@ -246,6 +249,14 @@ void fo_panel_power(FlipperOnePanelState *s, bool on)
     }
 }
 
+void fo_panel_rk3576(FlipperOnePanelState *s, bool on)
+{
+    if (on != s->rk3576) {
+        s->rk3576 = on;
+        flipper_link_send(&s->lk, "rk3576 %s\n", on ? "on" : "off");
+    }
+}
+
 void fo_panel_haptic(FlipperOnePanelState *s, bool on)
 {
     s->haptic = on;
@@ -258,6 +269,7 @@ static void panel_realize(DeviceState *dev, Error **errp)
 
     s->sent_running = -1;
     s->powered = true;
+    s->rk3576 = -1;
     s->tick = timer_new_ms(QEMU_CLOCK_REALTIME, panel_tick, s);
     qemu_add_vm_change_state_handler(panel_vm_change, s);
     flipper_link_init(&s->lk, &s->link_chr, "panel", panel_line,

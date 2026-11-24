@@ -697,3 +697,31 @@ register headers.
     to the MCU. Only the USB gadget's setup fails (the RK3576's USB is not modelled).
     Open: the SD driver warns "Interrupt latency" now and then (its watchdog found an
     interrupt it had not been sent yet).
+
+## The RK3576's power (2026-11-24)
+
+51. **The MCU switches Linux on and off.** On the device the MCU powers the RK3576:
+    VCC5V0_SYS_S5, the 5 V rail for the SoC and its PMIC, is the main expander's pin 12,
+    which the firmware's Host service switches on (`furi_bsp_linux_start`) and cuts by
+    resetting the expander. Until now the RK3576 started with the machine. Now its
+    cores wait, off, until that pin goes high, 270 ms into the MCU's start (its BSP
+    init). The kernel then starts as QEMU's direct boot starts it, from its images in
+    DRAM as they were loaded: saved at the first start and put back at each later one,
+    since a run writes over them. Without the rail its cores are off and its devices
+    as at power-on: the GIC, the UARTs, the DMA controllers, the I2C controllers and
+    what is on their buses, SPI0, the SD host and its card, the CRU, PMU, GPIO and
+    timer. QEMU's PSCI stood for the whole machine: SYSTEM_OFF stopped QEMU and
+    SYSTEM_RESET reset the MCU too. QEMU patch 0005 lets the machine answer a PSCI call
+    first, and those two are now the RK3576's alone. SYSTEM_OFF switches it off (on the
+    device TF-A does, and the rail stays on), and SYSTEM_RESET starts it again. All four
+    ways work with Flipper OS:
+    - `systemctl poweroff`: the kernel's driver tells the MCU 7, 8, 9 (powered off), the
+      RK3576 is off, and 300 ms later the MCU cuts the rail and stops its CPU app;
+    - the desktop's CPU app: the rail comes on, the kernel starts again, and Flipper OS
+      boots;
+    - `systemctl reboot`: 6, 8, 10 (restarting), the RK3576 starts again, and the MCU
+      leaves its power alone;
+    - closing the CPU app while Linux runs: the rail is cut, and the RK3576 is off at
+      once (its cores then use no host CPU).
+    The panel link reports it (`rk3576 on`, `rk3576 off`: docs/PANEL_LINK.md), and QEMU's
+    log (`devices/NAME/qemu.log`) has each change with its time.

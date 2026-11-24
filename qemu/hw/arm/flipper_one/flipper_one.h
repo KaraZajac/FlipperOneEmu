@@ -88,6 +88,8 @@ struct FlipperOnePanelState {
                                            when the program goes */
     int headset;                        /* in the jack: FO_HEADSET_... */
     bool powered;                       /* the board has its supply */
+    int rk3576;                         /* the RK3576 runs: 1, 0, or -1 (no
+                                           kernel for it: not told) */
 
     /* the board's input parts are told of a change */
     void (*input)(void *opaque);
@@ -107,6 +109,7 @@ void fo_panel_lcd_on(FlipperOnePanelState *s, bool on);
 void fo_panel_haptic(FlipperOnePanelState *s, bool on);
 /* the board's supply came or went: told at once */
 void fo_panel_power(FlipperOnePanelState *s, bool on);
+void fo_panel_rk3576(FlipperOnePanelState *s, bool on);
 
 /* ------------------------------------------- the display controller */
 

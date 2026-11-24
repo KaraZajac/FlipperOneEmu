@@ -170,6 +170,8 @@ struct RK3576State {
     RkGpio gpio[RK3576_NGPIO];
     RkSpiState spi0;                    /* the display link */
     DwMshcState sdmmc;                  /* the microSD slot */
+    DeviceState *uart[2];               /* UART0, UART4 */
+    DeviceState *dmac[3];
     MemoryRegion dmac_id[3];            /* the PL330s' IDs, where AMBA
                                            looks: their regions' ends */
     /* the board is told of a GPIO pin's new level */
@@ -182,6 +184,9 @@ struct RK3576State {
 
 /* an SPI of the GIC, as the device tree numbers them */
 qemu_irq rk3576_spi(RK3576State *s, int spi);
+/* its devices as at power-on (not the cores, which are the board's to
+ * start) */
+void rk3576_reset_devices(RK3576State *s);
 /* the bus of I2C@n, for what the board has on it */
 I2CBus *rk3576_i2c_bus(RK3576State *s, int n);
 /* a level from outside on GPIO@bank's @pin (0 ... 31: A0 ... D7) */

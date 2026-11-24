@@ -32,6 +32,8 @@ kernel and device tree, Debian 13 under systemd, and FlipCTL, which draws Flippe
 interface on the Flipper's screen (its frames go over the display SPI to the MCU
 firmware, which shows them) and answers its keys (which the MCU firmware passes on over
 their I2C link). The first boot takes about 8 minutes (TCG emulates eight cores). The
+MCU switches the RK3576 on and off as on the device: Flipper OS's power-off and reboot
+work, and so does the MCU's own Stop. The
 RK3576's USB, network, UFS, display outputs and more come next. [RESEARCH.md](RESEARCH.md) is the survey this
 starts from:
 the device, what Flipper Devices publishes, and what emulating it takes.
@@ -63,9 +65,10 @@ input), the interrupt line, and the screen: frames it sends go over the display'
 as Flipper OS sends them, and the MCU shows them.
 
 At its start the MCU firmware powers the Linux side, as the device does, and shows its
-screen; the RK3576 is not emulated yet, so after a few seconds that screen says "CPU not
-responding". Power opens the Flipper OS menu, and Stop there turns the Linux side off
-and brings the MCU's own desktop.
+screen. Without `--linux` nothing runs on the RK3576, so after a few seconds that screen
+says "CPU not responding". Power opens the Flipper OS menu, and Stop there turns the
+Linux side off and brings the MCU's own desktop. With `--linux` the RK3576 starts when
+the MCU switches its power on, and Flipper OS's interface replaces that screen.
 
 ```sh
 ./flipperoneemu run [-n NAME] [--detach] [--gdb PORT]   # a device without the window
@@ -104,6 +107,7 @@ yet.
 | 0002 | armv7m_nvic: MPU_RNR and MPU_RLAR keep what the Cortex-M33 keeps |
 | 0003 | armv7m_nvic: model Lockup (FlipperZeroEmu's 0015) |
 | 0004 | hw/arm/boot: leave M-profile CPUs alone (the kernel loader, in a machine with both) |
+| 0005 | target/arm: let a machine answer the calls QEMU's PSCI takes (power off and reset of one chip) |
 
 ## Layout
 

@@ -100,6 +100,17 @@ off` and the desktop's Power Off: off until a charger or a computer is plugged i
 `usb 1` or `usb 2` below). While it is off the MCU does not run, and the screen, its
 backlight and the LEDs are dark.
 
+```
+rk3576 on
+rk3576 off
+```
+
+Whether the RK3576 runs, with a kernel for it (`run --linux`; without one this is never
+sent): on connecting, and at each change. It starts when the MCU switches its rail on
+(VCC5V0_SYS_S5, the main expander's pin 12) and stops when the rail is cut, or when
+Linux powers off (PSCI SYSTEM_OFF: off until the MCU cycles the rail). Linux's reboot
+starts it again without an `off` between.
+
 ### To the emulator
 
 ```

@@ -35,6 +35,12 @@
 #include "rk3576.h"
 #include "hw/arm/boot.h"
 #include "system/address-spaces.h"
+#include "system/cpus.h"
+#include "qemu/main-loop.h"
+#include "qemu/log.h"
+#include "target/arm/internals.h"
+#include "target/arm/arm-powerctl.h"
+#include "target/arm/multiprocessing.h"
 
 #define TYPE_FLIPPER_ONE MACHINE_TYPE_NAME("flipper-one")
 OBJECT_DECLARE_SIMPLE_TYPE(FlipperOneState, FLIPPER_ONE)
@@ -45,6 +51,19 @@ struct FlipperOneState {
     RP2350State mcu;
     RK3576State rk3576;         /* the CPU: Linux's */
     RkI2cTarget link;           /* its I2C0's target: the MCU's I2C1 */
+    bool linux_boot;            /* a kernel to start on it (-kernel) */
+    bool rk_rail;               /* VCC5V0_SYS_S5: its supply, the MCU's */
+    bool rk_on;                 /* ... it runs */
+    int rk_want;                /* RK_...: to do, in rk_power_bh */
+    bool rk_lost;               /* ... and its power went, meanwhile */
+    QEMUBH *rk_power_bh;
+    struct {
+        hwaddr addr;
+        size_t len;
+        uint8_t *data;
+    } rk_images[4];             /* the boot stub, kernel, initrd, DTB, as
+                                   loaded (saved at its first start) */
+    int rk_nimages;
     FoHostSpi linux_frames;     /* its frames, as they go to the MCU */
     GByteArray *frame;          /* ... one coming in over its SPI0 */
     bool frame_active;          /* ... between "active" falling and rising */
@@ -270,6 +289,9 @@ static void flipper_one_led_power(void *opaque, int chain, int level)
  * the board draws from the battery, assumed: 40 mA with it off (the MCU, the
  * screen), 400 mA with it on (about 3 W)
  */
+static void fo_rk_power(FlipperOneState *s, int want);
+enum { RK_OFF, RK_ON, RK_RESTART };
+
 static void flipper_one_host_power(void *opaque, int n, int level)
 {
     FlipperOneState *s = opaque;
@@ -277,6 +299,11 @@ static void flipper_one_host_power(void *opaque, int n, int level)
     fo_battery_update(&s->battery);             /* up to now, as it was */
     s->battery.load_ma = s->off ? 0 : level ? 400 : 40;
     fo_battery_update(&s->battery);
+    if (s->linux_boot && level != s->rk_rail) {
+        s->rk_rail = level;
+        fo_rk_power(s, level ? RK_ON : RK_OFF);
+    }
+    s->rk_rail = level;
 }
 
 /* the expanders' RESET: GPIO43 (the control bus's), GPIO38 (the main
@@ -415,6 +442,173 @@ static void flipper_one_frame_sent(void *opaque)
     s->frames_sent++;
 }
 
+/*
+ * The RK3576 has its supply when the MCU switches VCC5V0_SYS_S5 on (the
+ * main expander's pin 12), as on the device. At the machine's start its
+ * cores are off; the kernel (-kernel, as QEMU loads it) starts when the
+ * rail comes on, from its images in DRAM as they were loaded (put back
+ * each time after the first: a run writes over them). Without its rail,
+ * or after Linux's PSCI SYSTEM_OFF, the cores are off and its devices as
+ * at power-on; SYSTEM_RESET starts the kernel again. The MCU runs on
+ * through all of it.
+ */
+static void fo_rk_save_images(FlipperOneState *s)
+{
+    AddressSpace *as = &address_space_memory;
+    MemTxAttrs attrs = MEMTXATTRS_UNSPECIFIED;
+    uint64_t ksize = 0;
+    uint32_t dtsize = 0;
+    struct {
+        hwaddr addr;
+        size_t len;
+    } r[4];
+
+    /* the kernel's Image header says its size, the DTB's its own */
+    address_space_read(as, s->binfo.entry + 16, attrs, &ksize, 8);
+    address_space_read(as, s->binfo.dtb_start + 4, attrs, &dtsize, 4);
+    r[0].addr = s->binfo.loader_start;
+    r[0].len = 0x1000;
+    r[1].addr = s->binfo.entry;
+    r[1].len = MIN(le64_to_cpu(ksize) ?: 64 * MiB, 256 * MiB);
+    r[2].addr = s->binfo.initrd_start;
+    r[2].len = s->binfo.initrd_size;
+    r[3].addr = s->binfo.dtb_start;
+    r[3].len = MIN(be32_to_cpu(dtsize), 4 * MiB);
+    for (int i = 0; i < 4; i++) {
+        if (!r[i].len) {
+            continue;
+        }
+        s->rk_images[s->rk_nimages].addr = r[i].addr;
+        s->rk_images[s->rk_nimages].len = r[i].len;
+        s->rk_images[s->rk_nimages].data = g_malloc(r[i].len);
+        address_space_read(as, r[i].addr, attrs,
+                           s->rk_images[s->rk_nimages].data, r[i].len);
+        s->rk_nimages++;
+    }
+}
+
+static void fo_rk_restore_images(FlipperOneState *s)
+{
+    for (int i = 0; i < s->rk_nimages; i++) {
+        address_space_write(&address_space_memory, s->rk_images[i].addr,
+                            MEMTXATTRS_UNSPECIFIED, s->rk_images[i].data,
+                            s->rk_images[i].len);
+    }
+}
+
+static void fo_rk_cpu_off(ARMCPU *cpu)
+{
+    arm_set_cpu_power_state(cpu, PSCI_OFF);
+    CPU(cpu)->halted = 1;
+}
+
+/* in the main loop, the cores stopped: off, on, or started again */
+static void fo_rk_power_bh(void *opaque)
+{
+    FlipperOneState *s = opaque;
+    bool running = runstate_is_running();
+    int want = s->rk_want;
+
+    if (want != RK_OFF && !s->rk_rail) {
+        want = RK_OFF;
+    }
+    if (want == RK_ON && s->rk_on && !s->rk_lost) {
+        return;                                 /* (on already) */
+    }
+    s->rk_lost = false;
+    if (running) {
+        pause_all_vcpus();
+    }
+    rk3576_reset_devices(&s->rk3576);
+    s->frame_active = false;
+    if (want != RK_OFF) {
+        if (!s->rk_nimages) {
+            fo_rk_save_images(s);               /* the first start: as loaded */
+        } else {
+            fo_rk_restore_images(s);
+        }
+    }
+    for (int i = 0; i < RK3576_NCPUS; i++) {
+        ARMCPU *cpu = &s->rk3576.cpu[i];
+        CPUState *cs = CPU(cpu);
+
+        cpu_reset(cs);                          /* (the others: off, for
+                                                   PSCI's CPU_ON) */
+        if (want != RK_OFF && i == 0) {
+            arm_emulate_firmware_reset(cs, 2);  /* as QEMU's own direct boot */
+            cpu_set_pc(cs, s->binfo.loader_start);
+            arm_rebuild_hflags(&cpu->env);
+        } else {
+            fo_rk_cpu_off(cpu);
+        }
+    }
+    s->rk_on = want != RK_OFF;
+    if (running) {
+        resume_all_vcpus();
+    }
+    qemu_log("flipper-one: %" PRId64 " ms: the RK3576 %s\n",
+             qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL),
+             want == RK_OFF ? "is off" : want == RK_ON ? "starts" :
+             "starts again");
+    fo_panel_rk3576(s->panel, s->rk_on);
+}
+
+static void fo_rk_power(FlipperOneState *s, int want)
+{
+    if (want == RK_OFF) {
+        s->rk_lost = true;              /* (on again before the BH: a restart) */
+    }
+    s->rk_want = want;
+    qemu_bh_schedule(s->rk_power_bh);
+}
+
+/* a machine reset: QEMU's direct boot has started the kernel's core; it
+ * waits for its rail (the expanders are as reset: the rail off) */
+static void flipper_one_rk3576_gate(void *opaque)
+{
+    FlipperOneState *s = opaque;
+
+    s->rk_rail = s->rk_on = s->rk_lost = false;
+    for (int i = 0; i < RK3576_NCPUS; i++) {
+        fo_rk_cpu_off(&s->rk3576.cpu[i]);
+    }
+    fo_panel_rk3576(s->panel, false);
+}
+
+/*
+ * Linux's PSCI calls that are the RK3576's alone (QEMU patch 0005): on the
+ * device TF-A turns the SoC off or resets it, and the MCU's rail stays on;
+ * here the board does, and the core that called stops, as PSCI has it
+ */
+#define PSCI_SYSTEM_OFF         0x84000008u
+#define PSCI_SYSTEM_RESET       0x84000009u
+#define PSCI_SYSTEM_RESET2      0x84000012u
+#define PSCI_64BIT              0x40000000u
+
+static bool flipper_one_psci(ARMCPU *cpu, void *opaque)
+{
+    FlipperOneState *s = opaque;
+    uint32_t fn;
+
+    if (!is_a64(&cpu->env)) {
+        return false;
+    }
+    fn = cpu->env.xregs[0];
+    switch (fn & ~PSCI_64BIT) {
+    case PSCI_SYSTEM_OFF:
+        fo_rk_power(s, RK_OFF);
+        break;
+    case PSCI_SYSTEM_RESET:
+    case PSCI_SYSTEM_RESET2:
+        fo_rk_power(s, RK_RESTART);
+        break;
+    default:
+        return false;
+    }
+    arm_set_cpu_off(arm_cpu_mp_affinity(cpu));  /* it stops now, as in PSCI */
+    return true;
+}
+
 /* the RK3576's cores, with no kernel to start: reset, and off */
 static void flipper_one_rk3576_reset(void *opaque)
 {
@@ -427,9 +621,9 @@ static void flipper_one_rk3576_reset(void *opaque)
 
 /*
  * The CPU, the RK3576, and its DRAM at 0x40000000 (-m, 4 GiB unless told).
- * A kernel (-kernel, -dtb, -initrd, -append) starts on it at once, as
- * U-Boot would start it: at EL2, PSCI from QEMU over SMC; without one its
- * cores stay off.
+ * A kernel (-kernel, -dtb, -initrd, -append) starts on it when the MCU
+ * switches its rail on, as U-Boot would start it: at EL2, PSCI from QEMU
+ * over SMC; without one its cores stay off.
  */
 static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
 {
@@ -481,6 +675,14 @@ static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
     s->binfo.board_id = -1;
     s->binfo.psci_conduit = QEMU_PSCI_CONDUIT_SMC;
     arm_load_kernel(&s->rk3576.cpu[0], ms, &s->binfo);
+    /* (after arm_load_kernel's: reset handlers run in that order) */
+    s->linux_boot = true;
+    s->rk_power_bh = qemu_bh_new(fo_rk_power_bh, s);
+    qemu_register_reset(flipper_one_rk3576_gate, s);
+    for (int i = 0; i < RK3576_NCPUS; i++) {
+        s->rk3576.cpu[i].psci_hook = flipper_one_psci;
+        s->rk3576.cpu[i].psci_hook_opaque = s;
+    }
 }
 
 static void flipper_one_init(MachineState *ms)

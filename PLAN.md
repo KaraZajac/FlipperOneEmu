@@ -97,8 +97,9 @@ screen and its CLI.
 - ◐ Storage: microSD (dw-mshc, QEMU's SD card) with the published image: Flipper OS
       boots to its login (2026-11-24); UFS; then U-Boot from the image (SPL, TF-A BL31,
       U-Boot proper, a BLS entry)
-- ☐ The MCU powers it: `VCC5V0_SYS_S5_EN` switches the cluster on; `MASKROM_EN`; BOOT1's
-      voltage on a SARADC input
+- ◐ The MCU powers it: `VCC5V0_SYS_S5_EN` (the main expander's pin 12) switches it on
+      and off, and Linux's PSCI SYSTEM_OFF and SYSTEM_RESET are its own (QEMU patch
+      0005) (2026-11-24); `MASKROM_EN`; BOOT1's voltage on a SARADC input
 
 ## M4: the link ◐
 - ◐ A program in the RK3576's place on the link: the host link (docs/HOST_LINK.md,
@@ -109,8 +110,9 @@ screen and its CLI.
       Flipper OS's `flipper-one-mcu` driver and the MCU firmware talk (2026-11-24)
 - ☑ spi0 with the MCU's frame sampler: FlipCTL on the emulated screen, the Flipper's
       keys reaching it through the MCU (2026-11-24)
-- ☐ The console UART between the two; the CPU's state, power off, reboot; the MCU
-      update over I2C
+- ◐ The CPU's state, power off, reboot: Linux's states reach the MCU's Host service,
+      which cuts the rail after a power-off; its CPU app powers Linux on again
+      (2026-11-24); the console UART between the two; the MCU update over I2C
 
 ## M5: Flipper OS's hardware ☐
 - ☐ Ethernet (GMAC, dwmac 4.20a, RTL8211F) to the host's network
