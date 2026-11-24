@@ -13,9 +13,10 @@ does the same for the Flipper Zero.
 **Status (2026-11-23): the MCU runs.** The RP2350's own boot ROM verifies the flash's
 partition table and starts the MCU firmware on the emulated chip. The firmware starts
 FreeRTOS, logs through its PIO UART, draws its self-check screen in the window (over
-HSTX and DMA to the emulated JD9853 panel), lights the backlight, and answers on its
-CLI. The chips on its I2C buses (the buttons' expander, the touchpad, the power chips)
-are next: the self-check finds none of them yet. [RESEARCH.md](RESEARCH.md) is the survey this starts from:
+HSTX and DMA to the emulated JD9853 panel), lights the backlight, answers on its CLI,
+and takes the window's buttons (through the control bus's I2C expander): its desktop
+and menus work. The touchpad, the LEDs and the chips on the main bus (power, charging)
+are next. [RESEARCH.md](RESEARCH.md) is the survey this starts from:
 the device, what Flipper Devices publishes, and what emulating it takes.
 [PLAN.md](PLAN.md) is the order of work; the MCU comes first.
 [docs/BRINGUP_LOG.md](docs/BRINGUP_LOG.md) is what was found on the way.

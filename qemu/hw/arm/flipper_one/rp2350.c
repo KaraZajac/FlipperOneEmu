@@ -343,6 +343,7 @@ static void rp2350_realize(DeviceState *dev, Error **errp)
     rp2350_dma_realize(s);
     rp2350_hstx_realize(s);
     rp2350_pwm_realize(s);
+    rp2350_i2c_realize(s);
 }
 
 qemu_irq rp2350_irq(RP2350State *s, int n)
@@ -362,6 +363,7 @@ static void rp2350_reset_hold(Object *obj, ResetType type)
     rp2350_dma_reset(RP2350(obj));
     rp2350_hstx_reset(RP2350(obj));
     rp2350_pwm_reset(RP2350(obj));
+    rp2350_i2c_reset(RP2350(obj));
     rp2350_gpio_reset(RP2350(obj));
 }
 

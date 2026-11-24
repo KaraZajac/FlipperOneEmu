@@ -19,6 +19,8 @@
 #include "hw/core/qdev-clock.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
+#include "hw/core/irq.h"
+#include "hw/i2c/i2c.h"
 #include "hw/arm/machines-qom.h"
 #include "chardev/char.h"
 #include "flipper_one.h"
@@ -34,11 +36,28 @@ struct FlipperOneState {
     Clock *mcu_clk;
     FlipperOnePanelState *panel;
     FoJd9853 display;
+    I2CSlave *buttons;          /* the control bus's PCAL6416 */
     CharFrontend log;
     char *flash;
     char *log_id;
     bool bootsel;
 };
+
+/* the buttons: the panel's keys on the expander's pins, pressed low */
+static void flipper_one_keys(void *opaque)
+{
+    FlipperOneState *s = opaque;
+
+    pcal6416_set_pins(s->buttons, ~s->panel->keys & 0xffff);
+}
+
+/* the expander's INT, open drain with a pull-up: on GPIO46 */
+static void flipper_one_buttons_int(void *opaque, int n, int level)
+{
+    FlipperOneState *s = opaque;
+
+    rp2350_pin_drive(&s->mcu, 46, level ? 1 : 0);
+}
 
 /* the screen's backlight: GPIO6's PWM (or its level, as a plain pin) */
 static void flipper_one_backlight(void *opaque)
@@ -96,6 +115,15 @@ static void flipper_one_init(MachineState *ms)
     /* the screen: its controller on HSTX, its backlight on GPIO6's PWM */
     fo_jd9853_init(&s->display, &s->mcu, s->panel);
     s->mcu.pwm_fn = flipper_one_backlight;
+
+    /* the control bus (I2C0, GPIO20/21): the buttons' expander at 0x20 */
+    s->buttons = i2c_slave_create_simple(rp2350_i2c_bus(&s->mcu, 0),
+                                         "pcal6416", 0x20);
+    qdev_connect_gpio_out(DEVICE(s->buttons), 0,
+                          qemu_allocate_irq(flipper_one_buttons_int, s, 0));
+    s->panel->input = flipper_one_keys;
+    s->panel->input_opaque = s;
+    rp2350_pin_drive(&s->mcu, 46, 1);
     s->mcu.pwm_opaque = s;
 }
 

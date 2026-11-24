@@ -213,6 +213,19 @@ typedef struct RP2Dma {
 typedef void RP2HstxFn(void *opaque, const uint8_t *cycles, int n,
                        uint8_t mask);
 
+/* I2C0, I2C1 (rp2350_i2c.c) */
+typedef struct RP2I2c {
+    RP2Block regs;
+    struct I2CBus *bus;
+    qemu_irq irq;
+    uint8_t rx[16];                     /* the RX FIFO */
+    int rx_n, rx_head;
+    bool active, recv;                  /* a transfer is open; it reads */
+    uint8_t addr;                       /* ... to this address */
+    uint32_t raw;                       /* RAW_INTR_STAT's latched bits */
+    uint32_t abrt;                      /* TX_ABRT_SOURCE */
+} RP2I2c;
+
 /* SHA-256 accelerator */
 typedef struct RP2SHA {
     uint32_t h[8];
@@ -287,6 +300,9 @@ struct RP2350State {
     void (*pwm_fn)(void *opaque);
     void *pwm_opaque;
 
+    /* rp2350_i2c.c */
+    RP2I2c i2c[2];
+
     /* UART0, UART1: QEMU's PL011, behind the aliases */
     DeviceState *uart[2];
     RP2Wrap uart_wrap[2];
@@ -346,6 +362,11 @@ void rp2350_dma_kick(RP2350State *s);
 void rp2350_hstx_realize(RP2350State *s);
 void rp2350_hstx_reset(RP2350State *s);
 void rp2350_hstx_attach(RP2350State *s, RP2HstxFn *fn, void *opaque);
+
+/* rp2350_i2c.c: the board puts its chips on rp2350_i2c_bus(s, 0 or 1) */
+void rp2350_i2c_realize(RP2350State *s);
+void rp2350_i2c_reset(RP2350State *s);
+struct I2CBus *rp2350_i2c_bus(RP2350State *s, int n);
 
 /* rp2350_pwm.c: a pin's duty, 0 to 65535 (-1: the pin is not PWM's) */
 void rp2350_pwm_realize(RP2350State *s);

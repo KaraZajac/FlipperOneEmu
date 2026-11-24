@@ -110,4 +110,10 @@ typedef struct FoJd9853 {
 void fo_jd9853_init(FoJd9853 *d, struct RP2350State *soc,
                     FlipperOnePanelState *panel);
 
+/* ------------------------------------------------- the control bus */
+
+/* pcal6416.c: the levels outside drives its pins to (1: high) */
+struct I2CSlave;
+void pcal6416_set_pins(struct I2CSlave *dev, uint16_t levels);
+
 #endif

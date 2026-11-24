@@ -174,3 +174,29 @@ register headers.
     draws it by lightness (CIE L\*): at 10 % duty an LED looks about 38 % as bright as at
     full. The buttons come through the control bus's PCAL6416, so after those 10 s the
     screen stays dark until the I2C models are in.
+
+## The buttons (2026-11-24)
+
+23. **The control bus.** The touchpad, the haptics, the display's supply and the
+    buttons' expander are on I2C0 (GPIO20/21, 400 kHz), the RP2350's Synopsys
+    DW_apb_i2c, which the firmware drives through the Pico SDK's polling calls: a
+    command to DATA_CMD (RESTART and STOP flags with each byte), TX_EMPTY waited for,
+    TX_ABRT_SOURCE read, STOP_DET waited for. `rp2350_i2c.c` does each command at
+    once on a QEMU I2C bus, so TX_EMPTY holds while enabled; an address or byte that
+    nothing ACKs aborts as the controller does (TX_ABRT, its source, a STOP, the
+    commands after it flushed until CLR_TX_ABRT is read). The SDK disables the
+    controller, sets TAR and enables it again between a register's address (written
+    without a STOP) and the read after it: the transfer stays open, and the read's
+    RESTART is a repeated start. With chips that answer or NACK at once, the
+    firmware's start now takes 0.5 s instead of 4.4 s of timeouts.
+
+24. **The buttons.** A PCAL6416A at 0x20 on that bus (`pcal6416.c`): its registers in
+    pairs, a port each, the command byte toggling between them; the input port
+    through the polarity inversion; an unmasked input that changes pulls INT low and
+    sets its interrupt status; a latched input keeps the level it changed to until
+    the port is read, which lets INT go. The 13 buttons are on its pins, pressed low,
+    in the firmware's `InputKey` order (the panel's key order was chosen to match);
+    INT is GPIO46, where the input service waits for a falling edge. The self-check
+    now says "Expander control: ok", and the window's buttons reach the firmware: OK
+    leaves the self-check for the desktop, the Settings soft key opens its menu, the
+    pad moves through it, Back returns, and a key wakes the backlight.

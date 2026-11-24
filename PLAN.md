@@ -30,26 +30,28 @@ screen and its CLI.
 - ☑ The JD9853 panel and its tearing signal: the firmware's self-check screen in the
       window and to PNG (2026-11-23)
 - ☑ The PL011 UARTs: the CLI on UART1 answers (`./flipperoneemu cli`, 2026-11-23)
-- ☐ DesignWare I2C (master and slave)
+- ◐ DesignWare I2C: the master (I2C0, the control bus, 2026-11-24); the slave (the
+      CPU's link on I2C1) to come
 - ◐ The window, as FlipperZeroEmu's (Kara, 2026-11-23): a Flipper One of this project's
       own drawing around the emulated screen, its 13 buttons and the touchpad to click,
       the keyboard, its 17 LEDs where the device has them; a front-panel link for it and
       any program (docs/PANEL_LINK.md). Drawn and connected, and the screen and its
       backlight are live (2026-11-23); drawn again part by part from measurements of the
-      device's renders (scripts/fo_body.py, 2026-11-24); its LEDs and buttons come alive with the models
-      behind them (the WS2812s, the control bus's expander, the IQS7211E)
+      device's renders (scripts/fo_body.py, 2026-11-24); its buttons work (2026-11-24);
+      its LEDs and the touchpad come alive with the models behind them (the WS2812s,
+      the IQS7211E)
 - ◐ A launcher: run, the window, stop, status, the firmware's log (RTT), its CLI, a
       picture of the screen, where the cores are; a folder per emulated Flipper One.
       gdb's symbols to come
 
 ## M2: the MCU's board ☐
-- ☐ The control bus: PCAL6416 (buttons), IQS7211E (touchpad), DRV2605L (haptics),
-      TPS62868x (the display's supply)
+- ◐ The control bus: PCAL6416 (the buttons, 2026-11-24); IQS7211E (touchpad),
+      DRV2605L (haptics), TPS62868x (the display's supply) to come
 - ☐ The main bus (PIO I2C): PCAL6416 (rails, `MASKROM_EN`), BQ2579x, BQ28Z620, INA219,
       INA4230 ×5, FUSB302, HD3SS3220
 - ◐ The backlight's PWM (2026-11-23); the WS2812 LEDs (17 on three chains), the
       headset key (ADC)
-- ☐ The desktop and menus; buttons and touch from the window and the launcher
+- ◐ The desktop and menus, the buttons from the window (2026-11-24); touch to come
 - ☐ RPC: the screen stream and input, through the CLI's `rpc`
 - ☐ USB: the CLI's CDC port (`37C1:F101`), and BOOTSEL: a UF2 copied onto the boot ROM's
       drive, over USB/IP as FlipperZeroEmu's USB is

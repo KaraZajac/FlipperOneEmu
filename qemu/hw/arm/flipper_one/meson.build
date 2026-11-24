@@ -18,4 +18,6 @@ arm_common_ss.add(when: 'CONFIG_FLIPPER_ONE', if_true: files(
   'rp2350_hstx.c',
   'rp2350_pwm.c',
   'jd9853.c',
+  'rp2350_i2c.c',
+  'pcal6416.c',
 ))
