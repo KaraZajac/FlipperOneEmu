@@ -23,4 +23,5 @@ arm_common_ss.add(when: 'CONFIG_FLIPPER_ONE', if_true: files(
   'iqs7211e.c',
   'drv2605l.c',
   'tps62868x.c',
+  'i2c_pins.c',
 ))

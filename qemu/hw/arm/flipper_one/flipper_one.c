@@ -39,6 +39,8 @@ struct FlipperOneState {
     I2CSlave *buttons;          /* the control bus's PCAL6416 */
     I2CSlave *touchpad;         /* ... IQS7211E */
     I2CSlave *haptic;           /* ... DRV2605L */
+    FoI2cPins main_bus;         /* the main bus: a PIO program's, GPIO22/23 */
+    I2CSlave *main_expander;    /* ... its PCAL6416 */
     CharFrontend log;
     char *flash;
     char *log_id;
@@ -59,13 +61,31 @@ static void flipper_one_input(void *opaque)
                    p->touch_p);
 }
 
-/* the expander's INT and the touchpad's RDY: open drain, the board's
- * pull-ups on GPIO46 and GPIO9 */
+/* the expanders' INT and the touchpad's RDY: open drain, the board's
+ * pull-ups on GPIO46, GPIO39 and GPIO9 */
 static void flipper_one_buttons_int(void *opaque, int n, int level)
 {
     FlipperOneState *s = opaque;
 
     rp2350_pin_drive(&s->mcu, 46, level ? -1 : 0);
+}
+
+static void flipper_one_main_int(void *opaque, int n, int level)
+{
+    FlipperOneState *s = opaque;
+
+    rp2350_pin_drive(&s->mcu, 39, level ? -1 : 0);
+}
+
+/* the expanders' RESET: GPIO43 (the control bus's), GPIO38 (the main
+ * board's), open drain with the board's pull-ups */
+static void flipper_one_expander_reset(void *opaque, int pin, bool level,
+                                       int64_t when_ns)
+{
+    FlipperOneState *s = opaque;
+    I2CSlave *dev = pin == 43 ? s->buttons : s->main_expander;
+
+    qemu_set_irq(qdev_get_gpio_in(DEVICE(dev), 0), level);
 }
 
 static void flipper_one_touch_rdy(void *opaque, int n, int level)
@@ -169,6 +189,17 @@ static void flipper_one_init(MachineState *ms)
     s->panel->input = flipper_one_input;
     s->panel->input_opaque = s;
     s->mcu.pwm_opaque = s;
+
+    /* the main bus (a PIO program's I2C on GPIO22/23): the main board's
+     * expander at 0x20, its INT on GPIO39 */
+    fo_i2c_pins_init(&s->main_bus, &s->mcu, 22, 23, "main-i2c");
+    s->mcu.ext_pullup |= (1ull << 39) | (1ull << 38) | (1ull << 43);
+    s->main_expander = i2c_slave_create_simple(s->main_bus.bus, "pcal6416",
+                                               0x20);
+    qdev_connect_gpio_out(DEVICE(s->main_expander), 0,
+                          qemu_allocate_irq(flipper_one_main_int, s, 0));
+    rp2350_pin_listen(&s->mcu, 43, flipper_one_expander_reset, s);
+    rp2350_pin_listen(&s->mcu, 38, flipper_one_expander_reset, s);
 }
 
 static char *flipper_one_get_flash(Object *obj, Error **errp)

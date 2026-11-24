@@ -11,6 +11,8 @@
  * its input latch set, the input port keeps the level it changed to until
  * it is read. Reading a port of the input register lets INT go for that
  * port. Drive strength, pull-ups and the output's configuration are kept.
+ * RESET low puts every register back as it starts, and the chip does not
+ * answer on the bus until it goes high again.
  *
  * Copyright (c) 2026, Kara Zajac
  * SPDX-License-Identifier: BSD-3-Clause
@@ -42,6 +44,7 @@ struct Pcal6416State {
     uint16_t seen;                  /* the inputs' levels when last read */
     uint16_t latched;               /* latched inputs changed since read */
     uint16_t latched_level;         /* ... and the level each changed to */
+    bool in_reset;                  /* RESET is low */
     qemu_irq int_out;               /* 0: asserted */
 };
 
@@ -160,6 +163,9 @@ static int pcal_event(I2CSlave *i2c, enum i2c_event event)
     Pcal6416State *s = PCAL6416(i2c);
 
     if (event == I2C_START_SEND || event == I2C_START_RECV) {
+        if (s->in_reset) {
+            return -1;                          /* no ACK */
+        }
         s->have_command = false;
     }
     return 0;
@@ -191,11 +197,22 @@ static void pcal_reset(DeviceState *dev)
     pcal_int(s);
 }
 
+static void pcal_reset_pin(void *opaque, int n, int level)
+{
+    Pcal6416State *s = opaque;
+
+    s->in_reset = !level;
+    if (s->in_reset) {
+        pcal_reset(DEVICE(s));
+    }
+}
+
 static void pcal_init(Object *obj)
 {
     Pcal6416State *s = PCAL6416(obj);
 
     s->pins = 0xffff;                           /* pulled up */
+    qdev_init_gpio_in(DEVICE(obj), pcal_reset_pin, 1);
     qdev_init_gpio_out(DEVICE(obj), &s->int_out, 1);
 }
 

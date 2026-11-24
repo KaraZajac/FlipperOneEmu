@@ -248,3 +248,23 @@ register headers.
     meanwhile, as FlipperZeroEmu's does for the Zero's vibration motor. The display's
     VCI supply, a TPS62868x at 0x47 (`tps62868x.c`), takes its voltage and forced PWM.
     The self-check now says "Haptic: ok"; every chip on the control bus answers.
+
+## The main bus (2026-11-24)
+
+28. **I2C from a PIO program.** The main board's chips are on GPIO22 (SDA) and GPIO23
+    (SCL), driven by the Pico SDK's `pio_i2c` program: open drain, its pindirs pulling
+    the lines low (OE inverted in IO_BANK0), the pad pull-ups letting them up, START and
+    STOP made by instructions the CPU pushes for it to EXEC. `i2c_pins.c` reads every
+    change of the two pins as the master leaves them (`rp2350_pin_own()`: the chip's own
+    drive and the pulls, not what the board drives) and gives it to QEMU's bit-banged I2C
+    decoder, which runs the transfers on a QEMU I2C bus; what the chip there puts on SDA
+    the board drives on GPIO22. The decoder gives a read bit at SCL's rise; the program
+    samples in the middle of the high time, so it reads it. On that bus, the main board's
+    PCAL6416 at 0x20: INT on GPIO39, RESET on GPIO38 (the main board's reset, which the
+    firmware pulses to cut the Linux side's power), both open drain with the board's
+    pull-ups; the control bus's expander got its RESET too (GPIO43). With the expander
+    there, the firmware does what the device does after power-on: the expander's outputs
+    start high, so the Linux side's rails (VCC5V0_SYS_S5, USB2 select) are on, and the
+    firmware takes the host as running, stops the self-check and shows the host's screen.
+    No RK3576 answers, so after 5 s it says "CPU not responding". Power opens its
+    Flipper OS menu; Stop pulses the main reset, the rails go off, the desktop comes.

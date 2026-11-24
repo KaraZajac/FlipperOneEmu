@@ -8,3 +8,4 @@ config FLIPPER_ONE
     select UNIMP
     select PL011
     select I2C
+    select BITBANG_I2C

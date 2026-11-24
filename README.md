@@ -17,7 +17,9 @@ HSTX and DMA to the emulated JD9853 panel), lights the backlight, answers on its
 and takes the window's buttons (through the control bus's I2C expander) and touchpad
 (through its IQS7211E): its desktop, menus and touchpad test work. Its haptic driver
 buzzes (the window shakes), and its settings are kept in the flash across restarts.
-The LEDs and the chips on the main bus (power, charging) are next. [RESEARCH.md](RESEARCH.md) is the survey this starts from:
+Its main bus (I2C from a PIO program) reaches the main board's expander, which powers
+the Linux side. The chips on the main bus for power, charging and USB-C, and the LEDs,
+are next. [RESEARCH.md](RESEARCH.md) is the survey this starts from:
 the device, what Flipper Devices publishes, and what emulating it takes.
 [PLAN.md](PLAN.md) is the order of work; the MCU comes first.
 [docs/BRINGUP_LOG.md](docs/BRINGUP_LOG.md) is what was found on the way.
@@ -38,6 +40,11 @@ buttons, or use the keyboard: the arrows and Enter are the pad, Backspace or Esc
 Back, F1 to F5 are the soft keys (Esc, View, Power, Edit, Run), Tab is App Switcher,
 Space is PTT; drag on the touchpad. It talks to the emulator over a front-panel link,
 [docs/PANEL_LINK.md](docs/PANEL_LINK.md), which any program can use.
+
+At its start the MCU firmware powers the Linux side, as the device does, and shows its
+screen; the RK3576 is not emulated yet, so after a few seconds that screen says "CPU not
+responding". Power opens the Flipper OS menu, and Stop there turns the Linux side off
+and brings the MCU's own desktop.
 
 ```sh
 ./flipperoneemu run [-n NAME] [--detach] [--gdb PORT]   # a device without the window

@@ -351,6 +351,9 @@ void rp2350_pins_update(RP2350State *s, int64_t when_ns);
 /* the board drives @pin: 0 low, 1 high, -1 lets go */
 void rp2350_pin_drive(RP2350State *s, int pin, int level);
 void rp2350_pin_listen(RP2350State *s, int pin, RP2PinFn *fn, void *opaque);
+/* the level @pin has from the chip and the pulls alone, whatever the board
+ * drives: what an open-drain master on it lets the line do */
+int rp2350_pin_own(RP2350State *s, int pin);
 /* decode @pin's changes as a UART at @baud, to @chr */
 void rp2350_pin_uart(RP2350State *s, int pin, uint32_t baud,
                      CharFrontend *chr);

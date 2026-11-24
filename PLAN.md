@@ -50,8 +50,9 @@ screen and its CLI.
 - ☑ The control bus (2026-11-24): PCAL6416 (the buttons), IQS7211E (the touchpad),
       DRV2605L (haptics: the window shakes while its motor runs), TPS62868x (the
       display's supply)
-- ☐ The main bus (PIO I2C): PCAL6416 (rails, `MASKROM_EN`), BQ2579x, BQ28Z620, INA219,
-      INA4230 ×5, FUSB302, HD3SS3220
+- ◐ The main bus (PIO I2C, decoded from GPIO22/23's levels, 2026-11-24): PCAL6416 (rails,
+      `MASKROM_EN`; the firmware powers the Linux side and shows "CPU not responding",
+      2026-11-24); BQ2579x, BQ28Z620, INA219, INA4230 ×5, FUSB302, HD3SS3220 to come
 - ◐ The backlight's PWM (2026-11-23); the WS2812 LEDs (17 on three chains), the
       headset key (ADC)
 - ☑ The desktop and menus, the buttons and the touchpad from the window (2026-11-24)

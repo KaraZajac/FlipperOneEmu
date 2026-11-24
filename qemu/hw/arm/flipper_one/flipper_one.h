@@ -9,6 +9,7 @@
 
 #include "chardev/char-fe.h"
 #include "hw/core/qdev.h"
+#include "hw/i2c/bitbang_i2c.h"
 #include "qemu/timer.h"
 #include "qom/object.h"
 
@@ -116,12 +117,27 @@ void fo_jd9853_init(FoJd9853 *d, struct RP2350State *soc,
 
 /* ------------------------------------------------- the control bus */
 
-/* pcal6416.c: the levels outside drives its pins to (1: high) */
+/* pcal6416.c: the levels outside drives its pins to (1: high); its RESET is
+ * GPIO input 0 (low: held in reset), its INT GPIO output 0 */
 struct I2CSlave;
 void pcal6416_set_pins(struct I2CSlave *dev, uint16_t levels);
 
 /* iqs7211e.c: the finger on the touchpad (0 ... 1000 across and down) and
  * its pressure (0 ... 255), or none */
 void iqs7211e_touch(struct I2CSlave *dev, bool touching, int x, int y, int p);
+
+/* ---------------------------------------------- the main bus, on pins */
+
+typedef struct FoI2cPins {
+    struct RP2350State *soc;
+    int sda, scl;
+    I2CBus *bus;
+    bitbang_i2c_interface bb;
+    bool sda_low;                       /* a chip pulls SDA low */
+} FoI2cPins;
+
+/* i2c_pins.c: a QEMU I2C bus behind a master that bit-bangs @sda, @scl */
+I2CBus *fo_i2c_pins_init(FoI2cPins *b, struct RP2350State *soc, int sda,
+                         int scl, const char *name);
 
 #endif

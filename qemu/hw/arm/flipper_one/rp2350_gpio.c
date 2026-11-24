@@ -167,6 +167,17 @@ void rp2350_pin_drive(RP2350State *s, int pin, int level)
     rp2350_pins_update(s, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
 }
 
+int rp2350_pin_own(RP2350State *s, int pin)
+{
+    bool out, oe;
+
+    pin_function(s, pin, &out, &oe);
+    if (oe) {
+        return out;
+    }
+    return ((s->ext_pullup >> pin) & 1) || (PAD(s, pin) & PAD_PUE);
+}
+
 void rp2350_pin_listen(RP2350State *s, int pin, RP2PinFn *fn, void *opaque)
 {
     for (int i = 0; i < 2; i++) {
