@@ -599,6 +599,7 @@ static void fo_rk_power_bh(void *opaque)
         } else {
             fo_rk_restore_images(s);
         }
+        rk_scmi_reset(&s->rk3576.scmi);         /* (TF-A's start) */
     }
     for (int i = 0; i < RK3576_NCPUS; i++) {
         ARMCPU *cpu = &s->rk3576.cpu[i];
@@ -650,12 +651,16 @@ static void flipper_one_rk3576_gate(void *opaque)
 /*
  * Linux's PSCI calls that are the RK3576's alone (QEMU patch 0005): on the
  * device TF-A turns the SoC off or resets it, and the MCU's rail stays on;
- * here the board does, and the core that called stops, as PSCI has it
+ * here the board does, and the core that called stops, as PSCI has it. And
+ * the SMC that TF-A answers besides PSCI: SCMI (rk3576_scmi.c).
  */
 #define PSCI_SYSTEM_OFF         0x84000008u
 #define PSCI_SYSTEM_RESET       0x84000009u
 #define PSCI_SYSTEM_RESET2      0x84000012u
 #define PSCI_64BIT              0x40000000u
+#define PSCI_FEATURES           0x8400000au
+#define SMCCC_VERSION           0x80000000u
+#define SMCCC_ARCH_FEATURES     0x80000001u
 
 static bool flipper_one_psci(ARMCPU *cpu, void *opaque)
 {
@@ -666,6 +671,26 @@ static bool flipper_one_psci(ARMCPU *cpu, void *opaque)
         return false;
     }
     fn = cpu->env.xregs[0];
+    /* SMCCC 1.1, as TF-A has it (QEMU's PSCI does not): Linux calls its
+     * firmware's other services through it, SCMI among them; no
+     * ARCH_WORKAROUND (each would be an SMC at every exception entry) */
+    if (fn == PSCI_FEATURES && cpu->env.xregs[1] == SMCCC_VERSION) {
+        cpu->env.xregs[0] = 0;
+        return true;
+    }
+    if (fn == SMCCC_VERSION) {
+        cpu->env.xregs[0] = 0x10001;
+        return true;
+    }
+    if (fn == SMCCC_ARCH_FEATURES) {
+        cpu->env.xregs[0] = (uint64_t)-1;       /* NOT_SUPPORTED */
+        return true;
+    }
+    if (fn == RK3576_SCMI_SMC) {                /* TF-A's SCMI server */
+        rk_scmi_call(&s->rk3576.scmi);
+        cpu->env.xregs[0] = 0;                  /* SMCCC: done */
+        return true;
+    }
     switch (fn & ~PSCI_64BIT) {
     case PSCI_SYSTEM_OFF:
         fo_rk_power(s, RK_OFF);
@@ -743,8 +768,10 @@ static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
         qemu_register_reset(flipper_one_rk3576_reset, &s->rk3576);
         return;
     }
-    s->binfo.ram_size = ms->ram_size;
-    s->binfo.loader_start = RK3576_DRAM_BASE;
+    /* the kernel's memory after the 2 MiB that are TF-A's (its SCMI shared
+     * memory among them), as the loader gives it */
+    s->binfo.ram_size = ms->ram_size - RK3576_TFA_SIZE;
+    s->binfo.loader_start = RK3576_DRAM_BASE + RK3576_TFA_SIZE;
     s->binfo.board_id = -1;
     s->binfo.psci_conduit = QEMU_PSCI_CONDUIT_SMC;
     arm_load_kernel(&s->rk3576.cpu[0], ms, &s->binfo);

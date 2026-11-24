@@ -160,6 +160,23 @@ struct DwMshcState {
 
 SDBus *dw_mshc_bus(DwMshcState *s);
 
+/*
+ * rk3576_scmi.c: the SCMI server that TF-A is (the CPU and GPU clocks), on
+ * SMC 0x82000010, its shared memory in DRAM's first 2 MiB, which are
+ * TF-A's: the kernel's memory starts after them
+ */
+#define RK3576_SCMI_SMC         0x82000010u
+#define RK3576_SCMI_SHMEM       0x4010f000
+#define RK3576_TFA_SIZE         0x200000
+typedef struct RkScmi {
+    uint64_t clk_hz[3];
+    bool clk_on[3];
+} RkScmi;
+/* at the RK3576's start: the channel free, the clocks as TF-A leaves them */
+void rk_scmi_reset(RkScmi *s);
+/* SMC 0x82000010: the message in the shared memory, answered there */
+void rk_scmi_call(RkScmi *s);
+
 #define RK3576_NCPUS        8
 #define RK3576_NI2C         9           /* I2C0 ... I2C8 */
 #define RK3576_NGPIO        5           /* GPIO0 ... GPIO4 */           /* 4 Cortex-A53, then 4 Cortex-A72 */
@@ -180,6 +197,7 @@ struct RK3576State {
     RkGpio gpio[RK3576_NGPIO];
     RkSpiState spi0;                    /* the display link */
     DwMshcState sdmmc;                  /* the microSD slot */
+    RkScmi scmi;                        /* TF-A's SCMI server */
     DeviceState *uart[2];               /* UART0, UART4 */
     DeviceState *dmac[3];
     MemoryRegion dmac_id[3];            /* the PL330s' IDs, where AMBA

@@ -373,8 +373,13 @@ def linux_args(d, build):
             "-initrd", str(ROOT / info["initrd"]),
             # rw: the boot entries leave it out (Debian's initramfs then
             # mounts the root read-only), and a first boot writes
-            # /etc/machine-id
-            "-append", info["options"] + " rw console=ttyS0,1500000n8",
+            # /etc/machine-id. The performance governor: the emulated
+            # cores run as fast as the host lets them, whatever their
+            # clock, and schedutil's changes of it (an SMC to the SCMI
+            # server, a write to the PMIC over I2C, dozens a second) made
+            # Flipper OS a third slower for nothing
+            "-append", info["options"] + " rw console=ttyS0,1500000n8"
+            " cpufreq.default_governor=performance",
             "-drive", f"if=sd,format=raw,file={card}"]
 
 

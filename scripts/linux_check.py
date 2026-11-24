@@ -16,6 +16,8 @@ Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
   a key pressed on the panel reaches it, through the MCU and the I2C link;
 - Linux reads the main board's chips over the bus it shares with the MCU:
   the INA219 on VSYS, the five INA4230s; its root is the microSD card;
+  the CPU clusters' clocks come from TF-A's SCMI server, and cpufreq has
+  both clusters;
 - `systemctl reboot` starts the RK3576 again, and the kernel with it;
   `systemctl poweroff` switches it off (PSCI), after which the MCU cuts
   its rail; the MCU's CPU app switches it on again, and the kernel starts;
@@ -194,6 +196,12 @@ def checks(check, d, out, first_boot, off):
     root = con.run("findmnt -no SOURCE /")
     check("its root is the microSD card",
           bool(root) and "mmcblk0" in root[-1], str(root))
+    freq = con.run("cat /sys/devices/system/cpu/cpufreq/policy0/"
+                   "scaling_cur_freq /sys/devices/system/cpu/cpufreq/"
+                   "policy4/scaling_cur_freq")
+    check("the clusters' clocks over SCMI: cpufreq has both",
+          bool(freq) and len(freq) == 2 and
+          all(f.strip().isdigit() for f in freq), str(freq))
 
     qmark = len(text_of(qlog))
     lmark = len(text_of(linux))
@@ -218,10 +226,14 @@ def checks(check, d, out, first_boot, off):
 
     qmark = len(text_of(qlog))
     lmark = len(text_of(linux))
-    st.cli(d, "desktop start_app cpu_app_start", None, 2)
+    started = False
+    for _ in range(6):                  # (the old CPU app may still be on
+        st.cli(d, "desktop start_app cpu_app_start", None, 2)  # its way out)
+        if wait_text(qlog, r"the RK3576 starts", 10, qmark):
+            started = True
+            break
     check("the MCU's CPU app switches it on again",
-          wait_text(qlog, r"the RK3576 starts", 30, qmark) and
-          st.until(lambda: panel.rk3576[-1:] == [True], 10))
+          started and st.until(lambda: panel.rk3576[-1:] == [True], 10))
     check("... and the kernel starts",
           wait_text(linux, r"Booting Linux", 60, lmark))
     return con

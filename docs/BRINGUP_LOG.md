@@ -831,11 +831,12 @@ register headers.
     patches 0006 and 0007, a first boot (Flipper OS setting itself up on a new card)
     reaches its login 107 to 200 s after the start; before them, about five minutes
     (FlipCTL's first frame at 321 s). The MCU's clock keeps time through it: 239.2 s of
-    its own against 246.8 s of virtual time (97 %), where it was at half speed. Every
-    reboot and power-off waits 90 s. BlueZ's `mpris-proxy`, a user service, ignores
-    SIGTERM and is killed at the stop timeout; it waits for a Bluetooth adapter. The
-    Flipper One's adapter is in its Wi-Fi chip, which is on USB, not modelled yet. That
-    is Debian's behaviour and none of the MCU firmware's.
+    its own against 246.8 s of virtual time (97 %), where it was at half speed. Now and
+    then a reboot or power-off waits 90 s (one shutdown in five here): BlueZ's
+    `mpris-proxy`, a user service, ignored SIGTERM and was killed at the stop timeout.
+    It has no Bluetooth adapter to talk to: the Flipper One's is in its Wi-Fi chip,
+    which is on USB, not modelled yet. That is Debian's behaviour and none of the MCU
+    firmware's.
 
     `scripts/linux_check.py` checks the whole device, as `smoke_test.py` checks the MCU,
     on a throwaway device:
@@ -854,3 +855,34 @@ register headers.
     getty and the shell throw away what was typed before they were up, so the check
     waits for a shell that answers; and a terminal escape split across two reads must
     be stripped from the text whole, not per read.
+
+56. **SCMI: the CPU clusters' clocks, from the TF-A that the board stands in for.** Linux
+    gets the A53s', the A72s' and the GPU's clocks from TF-A, over SCMI: a message in
+    shared memory at 0x4010f000, then SMC 0x82000010. Three things were missing:
+    - **The shared memory.** It lies in the first 2 MiB of DRAM, which TF-A keeps. The
+      bootloader hands the kernel its memory after them, but QEMU's direct boot gave
+      all of it from 0x40000000, so `ioremap` of that page warned and SCMI failed. The
+      kernel's memory now starts at 0x40200000.
+    - **SMCCC 1.1.** QEMU's PSCI does not know SMCCC_VERSION. Linux therefore took the
+      firmware for SMCCC 1.0, and `arm_smccc_1_1_invoke()`, which SCMI's transport
+      calls, did nothing: no SMC ever came. The board's PSCI hook (QEMU patch 0005) now
+      answers as TF-A does: SMCCC_VERSION is 1.1, PSCI_FEATURES lists it, and
+      SMCCC_ARCH_FEATURES has nothing. No ARCH_WORKAROUND is offered, since each would
+      be an SMC at every exception entry; Linux reports Spectre-v2 as unmitigated.
+    - **The server** (`rk3576_scmi.c`). Base protocol 2.0 lists the clock protocol;
+      clock protocol 1.0 has 457 clocks as the device tree numbers them, of which
+      SCMI_ARMCLK_L (10), SCMI_ARMCLK_B (11) and SCMI_CLK_GPU (456) are there. Each
+      takes any rate from 24 MHz to 2.4 GHz in 1 MHz steps. Its names start with
+      `scmi_`, since the CRU's own clocks are `armclk_l` and so on, and Linux would not
+      register a second clock of the same name.
+    Linux now reports "SCMI Protocol v2.0 'FlipperOneEmu:TF-A'", and cpufreq has both
+    clusters (408 MHz to 2.016 and 2.208 GHz).
+
+    That cost something, though. schedutil changed the clusters' rates dozens of times a
+    second (27 rate sets a second in a benchmark), each with an SMC and, for its
+    voltage, a write to the PMIC over I2C (87 transfers a second on I2C1). Flipper OS
+    became a third slower (200 `date`s: 34 to 35 s against 26.5 to 29), for nothing:
+    the emulated cores run as fast as the host lets them, whatever their clock. So the
+    launcher boots with `cpufreq.default_governor=performance`, and the benchmark is
+    back at 24 to 27 s. The clocks are still there to set: a governor can be chosen as
+    on the device. The Linux check confirms both clusters' cpufreq (21 checks).

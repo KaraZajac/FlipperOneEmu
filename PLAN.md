@@ -95,7 +95,8 @@ screen and its CLI.
       main bus: HD3SS3220, INA219, INA4230 ×5, the expander, the charger and gauge),
       the HYM8563 RTC (i2c8); the GPIO banks (v2, interrupts); the main bus's
       two masters take turns, as on a busy bus (2026-11-24)
-- ☐ SCMI (TF-A's clocks): its shared memory reserved as U-Boot does, and an answer
+- ☑ SCMI (TF-A's clocks): the kernel's memory after TF-A's 2 MiB, SMCCC 1.1, the base and
+      clock protocols: cpufreq on both clusters (2026-11-24)
 - ◐ Storage: microSD (dw-mshc, QEMU's SD card) with the published image: Flipper OS
       boots to its login (2026-11-24); UFS; then U-Boot from the image (SPL, TF-A BL31,
       U-Boot proper, a BLS entry)
