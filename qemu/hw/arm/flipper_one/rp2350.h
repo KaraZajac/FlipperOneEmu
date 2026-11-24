@@ -122,6 +122,9 @@ typedef struct RP2Timer {
 typedef struct RP2Wrap {
     MemoryRegion mr;
     MemoryRegion *target;
+    /* a register the device cannot read (the PL011's ICR), read as 0 here as
+     * on the chip: the Pico SDK reads it to clear its bits through XOR */
+    hwaddr write_only;
 } RP2Wrap;
 
 /* the pins (rp2350_gpio.c): a listener is told of a pin's every change */

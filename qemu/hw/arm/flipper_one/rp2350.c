@@ -160,9 +160,11 @@ static uint64_t wrap_read(void *opaque, hwaddr addr, unsigned size)
     RP2Wrap *w = opaque;
     uint64_t v = 0;
 
-    memory_region_dispatch_read(w->target, addr & 0xfff, &v,
-                                size_memop(size) | MO_LE,
-                                MEMTXATTRS_UNSPECIFIED);
+    if ((addr & 0xffc) != w->write_only) {
+        memory_region_dispatch_read(w->target, addr & 0xfff, &v,
+                                    size_memop(size) | MO_LE,
+                                    MEMTXATTRS_UNSPECIFIED);
+    }
     return v;
 }
 
@@ -175,8 +177,10 @@ static void wrap_write(void *opaque, hwaddr addr, uint64_t value,
     MemOp op = size_memop(size) | MO_LE;
 
     if (addr >> 12) {
-        memory_region_dispatch_read(w->target, reg, &old, op,
-                                    MEMTXATTRS_UNSPECIFIED);
+        if ((reg & ~3) != w->write_only) {
+            memory_region_dispatch_read(w->target, reg, &old, op,
+                                        MEMTXATTRS_UNSPECIFIED);
+        }
         switch (addr >> 12) {
         case 1: value ^= old; break;
         case 2: value |= old; break;
@@ -196,9 +200,10 @@ static const MemoryRegionOps wrap_ops = {
 };
 
 static void rp2350_wrap(RP2350State *s, RP2Wrap *w, const char *name,
-                        hwaddr base, MemoryRegion *target)
+                        hwaddr base, MemoryRegion *target, hwaddr write_only)
 {
     w->target = target;
+    w->write_only = write_only;
     memory_region_init_io(&w->mr, OBJECT(s), &wrap_ops, w, name, 0x4000);
     w->mr.disable_reentrancy_guard = true;         /* (the DMA, as blocks) */
     memory_region_add_subregion(&s->bus, base, &w->mr);
@@ -217,7 +222,8 @@ static void rp2350_uarts_realize(RP2350State *s)
         sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, rp2350_irq(s, 33 + i));
         s->uart[i] = dev;
         rp2350_wrap(s, &s->uart_wrap[i], name, 0x40070000 + i * 0x8000,
-                    sysbus_mmio_get_region(SYS_BUS_DEVICE(dev), 0));
+                    sysbus_mmio_get_region(SYS_BUS_DEVICE(dev), 0),
+                    0x44 /* UARTICR */);
     }
 }
 
