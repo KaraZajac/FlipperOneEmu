@@ -1,0 +1,9 @@
+# regenerable / large
+build/
+third_party/
+firmware/
+devices/
+
+# python
+__pycache__/
+*.pyc
