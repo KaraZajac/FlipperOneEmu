@@ -21,7 +21,9 @@ Boots a throwaway device, devices/smoke-PID (removed at the end unless
   the front-panel link;
 - Power's Flipper OS menu over the frame, and Stop there: the MCU's desktop;
 - a charger plugged in, then pulled out: the charger's interrupts through
-  the main board's expander, `power show` charging.
+  the main board's expander, `power show` charging;
+- a computer plugged in: it enumerates the MCU's USB device, and the CLI
+  answers on its USB serial port.
 
 Exit status 0 = pass. Screenshots go to --out.
 """
@@ -218,16 +220,19 @@ class Host:
         return until(lambda: self.sent > before, timeout)
 
 
-def cli(d, command, done, timeout, ctrl_c=False):
+def cli(d, command, done, timeout, ctrl_c=False, usb=False):
     """a CLI command's output, up to @done (a regex) or @timeout; a command
-    that goes on until stopped (`power show`) is stopped with Ctrl-C"""
+    that goes on until stopped (`power show`) is stopped with Ctrl-C; @usb:
+    on the MCU's USB serial port, not its UART"""
     def plain(raw):
         return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "",
                       raw.decode("utf-8", "replace"))
 
     s = socket.socket(socket.AF_UNIX)
-    s.connect(str(d / "cli.sock"))
+    s.connect(str(d / ("usb.sock" if usb else "cli.sock")))
     s.settimeout(0.2)
+    if usb:
+        time.sleep(0.5)                 # DTR up: the session's banner first
     s.sendall(command.encode() + b"\r")
     out, end = b"", time.time() + timeout
     while time.time() < end:
@@ -439,6 +444,16 @@ def body(check, name, d, out):
     panel.s.sendall(b"usb 0\n")
     check("pulled out: the firmware hears that too",
           wait_log(d, r"IRQ0:\s+0x0B\s+VBUS_PRESENT", 3))
+
+    # ------------------- a computer: the MCU's USB (the Linux side is off)
+    panel.s.sendall(b"usb 2\n")
+    found = until(lambda: "flipper-one: USB: 37c1:f101" in
+                  (d / "qemu.out").read_text(errors="replace"), 10)
+    check("a computer plugged in enumerates the MCU's USB (37C1:F101)", found)
+    text = cli(d, "help", r"Available commands:(.|\n)*gpio", 10, usb=True)
+    check("the CLI answers on its USB serial port",
+          "Available commands" in text, text[-200:])
+    panel.s.sendall(b"usb 0\n")
 
     # ---------------------------------------------- the log, at the end
     text = log_text(d)

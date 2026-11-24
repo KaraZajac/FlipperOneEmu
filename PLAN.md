@@ -60,8 +60,10 @@ screen and its CLI.
       supplies on the control expander, 2026-11-24); the headset key (ADC) to come
 - ☑ The desktop and menus, the buttons and the touchpad from the window (2026-11-24)
 - ☐ RPC: the screen stream and input, through the CLI's `rpc`
-- ☐ USB: the CLI's CDC port (`37C1:F101`), and BOOTSEL: a UF2 copied onto the boot ROM's
-      drive, over USB/IP as FlipperZeroEmu's USB is
+- ◐ USB: the RP2350's controller as a device, and a computer at the cable's end that
+      enumerates it: the firmware's CDC port (`37C1:F101`) on `devices/NAME/usb.sock`
+      (2026-11-24); USB/IP, as FlipperZeroEmu's USB is, and BOOTSEL (a UF2 copied onto
+      the boot ROM's drive) to come
 - ◐ Checks: `scripts/smoke_test.py` (2026-11-24): a throwaway device through its
       sockets: the boot and each chip, the host link and a frame shown pixel for
       pixel, the LEDs and the motor, the CLI and the firmware's unit tests, the

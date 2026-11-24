@@ -433,3 +433,22 @@ register headers.
     charger's interrupts as they come: VBUS_PRESENT and AC1_PRESENT, PG, then IINDPM,
     BC1.2_DONE, VBUS and CHG, DPDM_DONE; and `power show` has "USB DCP (3.25A)" and
     "Fast charge (CC mode)".
+
+## USB (2026-11-24)
+
+40. **The MCU's USB, and a computer at the other end.** The RP2350's USB controller as a
+    device (`rp2350_usb.c`): its registers (the write-clear ones, BUFF_STATUS,
+    SIE_STATUS, EP_ABORT_DONE, take the written mask by whichever atomic alias it comes,
+    as TinyUSB clears them through the clear alias) and its 4 KiB DPRAM: the SETUP
+    packet, each endpoint's control and buffer control (two halves, the selector
+    between them put back to buffer 0 by the SEL bit TinyUSB sets at each arming, taken
+    at the endpoint's next transaction since the CPU writes the DPRAM as memory), EP0's
+    buffer at 0x100. A computer (`usb_host.c`, the panel link's `usb 2`) plugs in: 5 V
+    and 500 mA (the charger sees a standard port), and its data lines, which reach the
+    MCU while the main board's USB mux (USB20_SEL, the expander's pin 8, which the
+    firmware raises with the Linux side's rail) leaves them on it. When the device pulls
+    D+ up, the computer resets the bus and enumerates it as a PC would, a transaction at
+    a time on the virtual clock: the firmware's TinyUSB stack answers as
+    `37c1:f101 "Flipper FZCO" "Flipper One MCU Debug …"`, and its CDC ACM function goes
+    to `devices/NAME/usb.sock`, DTR up while a program is connected there: the CLI's
+    session starts, with its banner (`./flipperoneemu cli --usb`).

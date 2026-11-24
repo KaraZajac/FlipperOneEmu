@@ -41,8 +41,8 @@ has them: this project's own vector drawing, measured from the device's publishe
 is), with its LEDs where the device has them. Click its buttons, or use the keyboard:
 the arrows and Enter are the pad, Backspace or Esc is Back, F1 to F5 are the soft keys
 (Esc, View, Power, Edit, Run), Tab is App Switcher, Space is PTT; drag on the touchpad;
-Ctrl+U plugs a USB charger in, or pulls it out. It talks to the emulator over a
-front-panel link, [docs/PANEL_LINK.md](docs/PANEL_LINK.md), which any program can use.
+Ctrl+U plugs a charger into the USB-C port, Ctrl+Shift+U a computer. It talks to the
+emulator over a front-panel link, [docs/PANEL_LINK.md](docs/PANEL_LINK.md), which any program can use.
 Another,
 [docs/HOST_LINK.md](docs/HOST_LINK.md) (`devices/NAME/host.sock`), lets a program take
 the RK3576's place on its link to the MCU: the I2C registers (CPU state, LEDs, haptics,
@@ -58,6 +58,7 @@ and brings the MCU's own desktop.
 ./flipperoneemu run [-n NAME] [--detach] [--gdb PORT]   # a device without the window
 ./flipperoneemu log [-n NAME]        # the firmware's log, from its RTT buffer
 ./flipperoneemu cli [-n NAME] [CMD]  # the firmware's CLI (UART1); Ctrl-] leaves
+./flipperoneemu cli --usb ...         # ... on its USB serial port (a computer plugged in)
 ./flipperoneemu where [-n NAME]      # where each core is: its PC and function
 ./flipperoneemu shot FILE.png        # the screen as a picture
 ./flipperoneemu status | stop [-n NAME]

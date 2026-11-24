@@ -46,7 +46,10 @@ struct FlipperOneState {
     I2CSlave *charger;          /* ... the BQ25792 */
     I2CSlave *usb_pd;           /* ... the USB-C port's FUSB302 */
     I2CSlave *usb_mux;          /* ... and its HD3SS3220 */
-    bool usb;                   /* a charger is plugged in */
+    int usb;                    /* in the port: 0 nothing, 1 a charger, 2 a
+                                   computer */
+    bool usb20_sel;             /* the USB mux: the RK3576's, not the MCU's */
+    DeviceState *usb_host;      /* the computer, for the MCU's USB */
     FoBattery battery;
     FoLeds leds;                /* the WS2812s, GPIO29-31 */
     FoHost *host;               /* a program in the RK3576's place */
@@ -60,7 +63,7 @@ struct FlipperOneState {
  * The front panel's buttons, on the expander's pins (pressed: low), and its
  * finger, on the touchpad
  */
-static void flipper_one_usb(FlipperOneState *s, bool plugged);
+static void flipper_one_usb(FlipperOneState *s, int what);
 
 static void flipper_one_input(void *opaque)
 {
@@ -75,20 +78,39 @@ static void flipper_one_input(void *opaque)
     }
 }
 
-/*
- * The USB-C port: a charger plugged in, or pulled out. It is a USB-C
- * charger of 5 V that offers 3 A (its Rp) and shorts D+ to D- (a dedicated
- * charging port); the firmware negotiates no more (its PD is not written
- * yet), so 5 V is what there is.
- */
-static void flipper_one_usb(FlipperOneState *s, bool plugged)
+/* the MCU's USB reaches the computer: one is plugged in, and the USB mux
+ * (USB20_SEL, the main expander's pin 8, low) has it on the MCU */
+static void flipper_one_usb_data(FlipperOneState *s)
 {
-    int rp_ma = plugged ? 3000 : 0;
+    fo_usb_host_cable(s->usb_host, s->usb == 2 && !s->usb20_sel);
+}
 
-    s->usb = plugged;
-    bq2579x_input(s->charger, plugged ? 5000 : 0, rp_ma);
+/*
+ * The USB-C port: nothing, a charger, or a computer. The charger is a USB-C
+ * one of 5 V that offers 3 A (its Rp) and shorts D+ to D- (a dedicated
+ * charging port); the computer's port gives 5 V and 500 mA (the default
+ * Rp, a standard port), and its data lines. The firmware negotiates no more
+ * (its PD is not written yet), so 5 V is what there is.
+ */
+static void flipper_one_usb(FlipperOneState *s, int what)
+{
+    int rp_ma = what == 1 ? 3000 : what == 2 ? 900 : 0;
+
+    s->usb = what;
+    bq2579x_input(s->charger, what ? 5000 : 0, what == 1 ? 3000 : 500,
+                  what == 1);
     fusb302_attach(s->usb_pd, rp_ma);
     hd3ss3220_attach(s->usb_mux, rp_ma);
+    rp2350_usb_vbus(&s->mcu, what != 0);
+    flipper_one_usb_data(s);
+}
+
+static void flipper_one_usb20_sel(void *opaque, int n, int level)
+{
+    FlipperOneState *s = opaque;
+
+    s->usb20_sel = level;
+    flipper_one_usb_data(s);
 }
 
 /* an input of the main board's expander: the charger's INT (pin 2) and the
@@ -307,6 +329,17 @@ static void flipper_one_init(MachineState *ms)
                           qemu_allocate_irq(flipper_one_main_input, s, 3));
     s->usb_mux = i2c_slave_create_simple(s->main_bus.bus, "hd3ss3220", 0x47);
     fo_battery_start(&s->battery);
+
+    /* the MCU's USB: the mux (the main expander's pin 8), and the computer
+     * at the cable's end: -global flipper-one-usb-host.cdc=CHARDEV for the
+     * CDC serial port it finds */
+    qdev_connect_gpio_out_named(DEVICE(s->main_expander), "pins", 8,
+                                qemu_allocate_irq(flipper_one_usb20_sel, s,
+                                                  0));
+    s->usb_host = qdev_new(TYPE_FO_USB_HOST);
+    object_property_add_child(OBJECT(ms), "usb-host", OBJECT(s->usb_host));
+    qdev_realize_and_unref(s->usb_host, NULL, &error_fatal);
+    fo_usb_host_attach(s->usb_host, &s->mcu);
     rp2350_pin_listen(&s->mcu, 43, flipper_one_expander_reset, s);
     rp2350_pin_listen(&s->mcu, 38, flipper_one_expander_reset, s);
 }

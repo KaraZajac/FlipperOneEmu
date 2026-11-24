@@ -80,8 +80,8 @@ window shakes its drawing while it runs.
 usb 1
 ```
 
-Whether a charger is in the USB-C port: on connecting, and when a program plugs one in
-or pulls it out.
+What is in the USB-C port (0 nothing, 1 a charger, 2 a computer): on connecting, and
+when a program plugs something in or pulls it out.
 
 ### To the emulator
 
@@ -106,14 +106,18 @@ a pressure from 0 to 255; and the finger lifted.
 
 ```
 usb 1
+usb 2
 usb 0
 ```
 
-A charger plugged into the USB-C port, and pulled out: a USB-C charger of 5 V that
-offers 3 A (its Rp) and shorts D+ to D- (a dedicated charging port; the firmware's PD
-does not ask for more). The charger chip sees it (and takes 300 ms to know what it is),
-the battery charges, the USB-C chips see their partner. It stays when the program goes.
-The window's Device menu has it (Ctrl+U).
+Into the USB-C port: a charger, a computer, or nothing. The charger is a USB-C one of
+5 V that offers 3 A (its Rp) and shorts D+ to D- (a dedicated charging port; the
+firmware's PD does not ask for more); the computer's port gives 5 V and 500 mA (a
+standard port), and its data lines: while the board's USB mux has them on the MCU (the
+Linux side off), the computer enumerates the MCU's USB device, and its CDC serial port
+is `devices/NAME/usb.sock`. The charger chip sees either (and takes 300 ms to know which
+it is), the battery charges, the USB-C chips see their partner. What is plugged in
+stays when the program goes. The window's Device menu has them (Ctrl+U, Ctrl+Shift+U).
 
 ```
 refresh

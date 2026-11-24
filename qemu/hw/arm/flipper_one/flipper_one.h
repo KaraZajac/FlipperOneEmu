@@ -83,8 +83,9 @@ struct FlipperOnePanelState {
     bool touching;
     uint16_t touch_x, touch_y;          /* 0 ... 1000 across the pad */
     uint8_t touch_p;
-    bool usb;                           /* a charger in the USB-C port; it
-                                           stays when the program goes */
+    int usb;                            /* in the USB-C port: 0 nothing, 1 a
+                                           charger, 2 a computer; it stays
+                                           when the program goes */
 
     /* the board's input parts are told of a change */
     void (*input)(void *opaque);
@@ -199,6 +200,12 @@ void fo_leds_power(FoLeds *l, int chain, bool on);
 struct I2CSlave;
 void pcal6416_set_pins(struct I2CSlave *dev, uint16_t levels);
 
+/* usb_host.c: the computer at the other end of the MCU's USB: whether
+ * its data lines reach the MCU's */
+#define TYPE_FO_USB_HOST "flipper-one-usb-host"
+void fo_usb_host_attach(DeviceState *dev, struct RP2350State *soc);
+void fo_usb_host_cable(DeviceState *dev, bool data);
+
 /* iqs7211e.c: the finger on the touchpad (0 ... 1000 across and down) and
  * its pressure (0 ... 255), or none */
 void iqs7211e_touch(struct I2CSlave *dev, bool touching, int x, int y, int p);
@@ -243,8 +250,9 @@ void bq28z620_attach(struct I2CSlave *dev, FoBattery *bat);
 void bq2579x_attach(struct I2CSlave *dev, FoBattery *bat);
 void ina219_attach(struct I2CSlave *dev, FoBattery *bat);
 
-/* bq2579x.c: a source on VBUS (@mv, giving up to @ma), or none (0) */
-void bq2579x_input(struct I2CSlave *dev, int mv, int ma);
+/* bq2579x.c: a source on VBUS (@mv, giving up to @ma; @dcp: a dedicated
+ * charger, else a computer's port), or none (0) */
+void bq2579x_input(struct I2CSlave *dev, int mv, int ma, bool dcp);
 /* usb_c.c: a source on the USB-C port, offering @rp_ma (its Rp), or none */
 void fusb302_attach(struct I2CSlave *dev, int rp_ma);
 void hd3ss3220_attach(struct I2CSlave *dev, int rp_ma);

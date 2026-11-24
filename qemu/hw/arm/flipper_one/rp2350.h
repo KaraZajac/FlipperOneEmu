@@ -60,6 +60,26 @@ struct RP2Block {
     RP2RawFn *raw;
 };
 
+/* the USB controller (rp2350_usb.c) */
+typedef struct RP2Usb {
+    MemoryRegion mr;
+    qemu_irq irq;
+    uint32_t addr, main_ctrl, sie_ctrl, sie_status, buff_status;
+    uint32_t ep_abort, ep_abort_done, ep_stall_arm, nak_poll;
+    uint32_t ep_status_stall_nak, muxing, pwr, inte, intf, sof;
+    bool connected, suspended, vbus;    /* what the bus and the cable do */
+    bool conn_changed, susp_changed, vbus_changed;      /* latched */
+    bool nak_int_ep0;
+    bool pulled_up;                     /* as the host was last told */
+    uint8_t next_buf[32];               /* each endpoint's buffer selector */
+    void (*pullup_fn)(void *opaque, bool on);
+    void *pullup_opaque;
+} RP2Usb;
+
+typedef enum {
+    RP2_USB_ACK, RP2_USB_NAK, RP2_USB_STALL, RP2_USB_TIMEOUT,
+} RP2UsbResult;
+
 /* SIO: as each core sees it (CPUID, its FIFO) */
 #define RP2_FIFO_DEPTH 8
 typedef struct RP2SIO {
@@ -329,6 +349,7 @@ struct RP2350State {
     /* rp2350_sio.c */
     RP2SIO sio;
     MemoryRegion usb_dpram;     /* the USB controller's RAM, 4 KiB */
+    RP2Usb usb;
     bool bootsel;               /* the BOOTSEL button: QSPI CS held low */
 
     char *bootrom;              /* the boot ROM's image, 32 KiB */
@@ -414,6 +435,27 @@ int rp2350_i2c_target_write(RP2350State *s, int n, uint8_t byte);
 int rp2350_i2c_target_read(RP2350State *s, int n, uint8_t *byte);
 void rp2350_i2c_target_nack(RP2350State *s, int n);
 void rp2350_i2c_target_stop(RP2350State *s, int n);
+
+/*
+ * rp2350_usb.c: the USB controller as a device; and for a host on the
+ * other end of the cable: whether the device pulls D+ up (pullup_fn tells
+ * when it changes), VBUS, a bus reset, suspend and resume, a detach; a
+ * SETUP, OUT or IN transaction to an endpoint at an address (IN: up to 64
+ * bytes into @data, *@len of them)
+ */
+void rp2350_usb_realize(RP2350State *s);
+void rp2350_usb_reset(RP2350State *s);
+bool rp2350_usb_pulled_up(RP2350State *s);
+void rp2350_usb_vbus(RP2350State *s, bool vbus);
+void rp2350_usb_bus_reset(RP2350State *s);
+void rp2350_usb_suspend(RP2350State *s, bool suspended);
+void rp2350_usb_detach(RP2350State *s);
+RP2UsbResult rp2350_usb_setup(RP2350State *s, uint8_t addr,
+                              const uint8_t pkt[8]);
+RP2UsbResult rp2350_usb_out(RP2350State *s, uint8_t addr, int ep,
+                            const uint8_t *data, int len);
+RP2UsbResult rp2350_usb_in(RP2350State *s, uint8_t addr, int ep,
+                           uint8_t *data, int *len);
 
 /* rp2350_pwm.c: a pin's duty, 0 to 65535 (-1: the pin is not PWM's) */
 void rp2350_pwm_realize(RP2350State *s);

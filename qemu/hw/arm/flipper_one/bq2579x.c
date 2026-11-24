@@ -12,8 +12,9 @@
  * Its input is VBUS (VAC1 tied to it, no ACFET): a source plugged in
  * (bq2579x_input()) is present at once, good 30 ms later, when its D+/D-
  * detection starts, and known 300 ms after that: a dedicated charger (DCP,
- * D+ and D- shorted). The input current limit is the register's, as the
- * firmware writes it (the detection's own setting is not modelled).
+ * D+ and D- shorted), or a computer's port (SDP). The input current limit
+ * is the register's, as the firmware writes it, and the source's (the
+ * detection's own setting is not modelled).
  *
  * The power flow (the battery's "flow", battery.c): with no input, the
  * battery feeds the system. With one, the converter (90 % efficient, as
@@ -68,6 +69,7 @@ enum {
 #define S0_PG           0x08
 #define S0_IINDPM       0x80
 #define S1_BC12_DONE    0x01
+#define S1_VBUS_SDP     (1 << 1)
 #define S1_VBUS_DCP     (3 << 1)
 #define S2_VBAT_PRESENT 0x01
 #define S2_DPDM         0x02
@@ -105,6 +107,7 @@ struct Bq2579xState {
     bool have_ptr;
 
     int vbus_mv, src_ma;            /* the source on VBUS: none, 0 */
+    bool dcp;                       /* ... a dedicated charger, or a PC's */
     int input;                      /* IN_...: how far it is known */
     int chg;                        /* CHG_...: the charge cycle */
     bool iindpm;                    /* the input current is the limit */
@@ -145,7 +148,8 @@ static void bq_status(Bq2579xState *s, uint8_t st[5])
             (s->input >= IN_DETECTING ? S0_PG : 0) |
             (s->iindpm ? S0_IINDPM : 0);
     st[1] = s->chg << 5 |
-            (s->input == IN_DONE ? S1_VBUS_DCP | S1_BC12_DONE : 0);
+            (s->input == IN_DONE ? (s->dcp ? S1_VBUS_DCP : S1_VBUS_SDP) |
+                                   S1_BC12_DONE : 0);
     st[2] = S2_VBAT_PRESENT | (s->input == IN_DETECTING ? S2_DPDM : 0);
     st[3] = present && vbat < (s->r[R_VSYSMIN] & 0x3f) * 250 + 2500 ?
             S3_VSYS : 0;
@@ -258,7 +262,7 @@ static void bq_input_step(void *opaque)
     }
 }
 
-void bq2579x_input(I2CSlave *dev, int mv, int ma)
+void bq2579x_input(I2CSlave *dev, int mv, int ma, bool dcp)
 {
     Bq2579xState *s = BQ2579X(dev);
 
@@ -267,6 +271,7 @@ void bq2579x_input(I2CSlave *dev, int mv, int ma)
     }
     s->vbus_mv = mv;
     s->src_ma = ma;
+    s->dcp = dcp;
     timer_del(s->input_timer);
     if (mv > 0) {
         s->input = IN_PRESENT;

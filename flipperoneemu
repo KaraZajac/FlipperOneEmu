@@ -88,7 +88,8 @@ def cmd_run(args):
     d.mkdir(parents=True, exist_ok=True)
     if args.uf2 or not (d / "flash.bin").exists():
         make_flash(d, args.uf2)
-    for sock in ("panel.sock", "monitor.sock", "cli.sock", "host.sock"):
+    for sock in ("panel.sock", "monitor.sock", "cli.sock", "host.sock",
+                 "usb.sock"):
         (d / sock).unlink(missing_ok=True)
     cmd = [str(QEMU), "-M", f"flipper-one,flash={d / 'flash.bin'},log=mculog",
            "-chardev", f"file,id=mculog,path={d / 'mcu.log'}",
@@ -99,6 +100,8 @@ def cmd_run(args):
            "-chardev", f"socket,id=panel,path={d / 'panel.sock'},server=on,wait=off",
            "-global", "flipper-one-panel.link=panel",
            "-chardev", f"socket,id=host,path={d / 'host.sock'},server=on,wait=off",
+           "-chardev", f"socket,id=usbcdc,path={d / 'usb.sock'},server=on,wait=off",
+           "-global", "flipper-one-usb-host.cdc=usbcdc",
            "-global", "flipper-one-host.link=host",
            "-name", f"flipperone-{args.name}",
            "-d", "guest_errors", "-D", str(d / "qemu.log")]
@@ -249,7 +252,7 @@ def cmd_cli(args):
     d = device_dir(args.name)
     s = socket.socket(socket.AF_UNIX)
     try:
-        s.connect(str(d / "cli.sock"))
+        s.connect(str(d / ("usb.sock" if args.usb else "cli.sock")))
     except OSError:
         die(f"{args.name} is not running")
     if args.command:
@@ -382,6 +385,9 @@ def main():
             p.add_argument("command", nargs="*", help="one command, then quit")
             p.add_argument("--wait", type=float, default=1.5,
                            help="seconds of quiet that end a command's answer")
+            p.add_argument("--usb", action="store_true",
+                           help="the CLI on the MCU's USB serial port (a "
+                                "computer plugged in), not its UART")
     args = ap.parse_args()
     return globals()["cmd_" + args.cmd](args)
 
