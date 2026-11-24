@@ -219,3 +219,17 @@ register headers.
     them; a touch wakes the backlight. RDY and the expander's INT are open drain with
     the board's pull-ups, which the RP2350's reset does not undo (it forgets what the
     board drives, and the chips' resets come before it).
+
+## The settings (2026-11-24)
+
+26. **The flash's program and erase.** Every setting the firmware saved failed with the
+    key-value store's "invalid data detected" (the LEDs' brightness and timeout at its
+    start, the haptic driver's calibration), and the NVM partition (0xF02000, 1004 KiB)
+    stayed erased. The firmware programs through the Pico SDK's `flash_range_program`,
+    which calls the boot ROM's; the ROM queues a page program's command and address as
+    two 16-bit QMI entries with the command in the low byte, and the RP2350 sends a
+    16-bit entry's low byte first. The model sent the high byte first, so the flash got
+    F0h and so on as commands, ignored them, and nothing was programmed or erased.
+    Booting only reads, so it never showed. Low byte first, the store works: the settings
+    are saved, `nvm list` lists them, and a restart finds them ("Loaded haptic
+    calibration data from NVM").

@@ -8,9 +8,11 @@
  * untranslated.  A read is the flash's bytes; QMI's read formats (M0_RFMT,
  * M0_RCMD) are kept, not acted out.  CS1 has nothing on it.
  *
- * Direct mode: each TX entry is 8 or 16 bits on 1, 2 or 4 lanes; the flash
- * takes the bytes the host drives and gives back what it drives itself,
- * which goes to the RX FIFO unless NOPUSH.  CS0 is asserted by ASSERT_CS0N,
+ * Direct mode: each TX entry is 8 or 16 bits on 1, 2 or 4 lanes (of 16, the
+ * low byte first: the boot ROM queues a program's or erase's command in the
+ * low byte, its address after); the flash takes the bytes the host drives
+ * and gives back what it drives itself, which goes to the RX FIFO unless
+ * NOPUSH.  CS0 is asserted by ASSERT_CS0N,
  * or by AUTO_CS0N for as long as the host keeps writing TX (until it next
  * looks at the CSR or RX).
  *
@@ -331,11 +333,11 @@ static void qmi_pump(RP2350State *s)
             q->auto_open = true;
             flash_select(s);
         }
-        for (int i = bits - 8; i >= 0; i -= 8) {
+        for (int i = 0; i < bits; i += 8) {         /* the low byte first */
             uint8_t b = (v >> i) & 0xff;
 
-            in = in << 8 |
-                 (q->flash.selected ? flash_byte(s, b, lanes) : 0xff);
+            in |= (uint32_t)(q->flash.selected ? flash_byte(s, b, lanes)
+                                               : 0xff) << i;
         }
         if (!(v & TX_NOPUSH)) {
             qmi_rx_push(q, in);

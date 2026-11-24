@@ -21,6 +21,9 @@ screen and its CLI.
 - ◐ Boot: the boot ROM verifies the partition table and starts the firmware from
       partition A (QMI direct mode, the flash, ATRANS, SHA-256); OTP reads as blank,
       try-before-you-buy images and the watchdog's reboots to come
+- ☑ The firmware's settings (its key-value store in the flash's NVM partition):
+      written through the boot ROM's program and erase, kept across restarts
+      (2026-11-24)
 - ◐ Clocks, resets, PSM, XOSC, PLLs, ROSC, TRNG, SHA-256, POWMAN, watchdog, SIO
       (GPIO, FIFOs, spinlocks, doorbells), BOOTRAM's locks, TIMER0/1, the ADC, DWT's
       cycle counter answer; PADS keeps what is written; TICKS to come
