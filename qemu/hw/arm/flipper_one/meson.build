@@ -27,4 +27,6 @@ arm_common_ss.add(when: 'CONFIG_FLIPPER_ONE', if_true: files(
   'i2c_pins.c',
   'battery.c',
   'bq28z620.c',
+  'bq2579x.c',
+  'ina219.c',
 ))

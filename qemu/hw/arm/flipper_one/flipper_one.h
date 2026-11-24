@@ -145,8 +145,11 @@ typedef struct FoBattery {
 /* its voltage at that load, mV */
 int fo_battery_mv(const FoBattery *b);
 
-/* bq28z620.c: the gauge reports @bat */
+/* bq28z620.c, bq2579x.c, ina219.c: the gauge, the charger and the system
+ * rail's monitor measure @bat */
 void bq28z620_attach(struct I2CSlave *dev, FoBattery *bat);
+void bq2579x_attach(struct I2CSlave *dev, FoBattery *bat);
+void ina219_attach(struct I2CSlave *dev, FoBattery *bat);
 
 /* ---------------------------------------------- the main bus, on pins */
 

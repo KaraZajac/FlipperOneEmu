@@ -299,3 +299,14 @@ register headers.
     Two DCPs a core, as the chip has: CP4 the present security state's, CP5 the
     Non-secure one. `power show` now prints 7.960 V and 25.05 °C, and the firmware's
     unit tests pass (`unit_tests`: buffers, NVM, the UI's layout).
+
+31. **The charger and the current meter.** A BQ25792 at 0x6B (`bq2579x.c`): its byte
+    map, the 16-bit registers most significant byte first, the settings as the
+    datasheet starts them for two cells (the firmware resets them, then sets 8.65 V,
+    3 A in and out, the ADC on, ICO), the status, flags (cleared on reading) and ADC
+    read-only. No USB input yet: VBUS absent, nothing charging; the ADC reads the
+    battery's side, and its TS the NTC through the board's divider as the firmware
+    works it back out (25.06 °C). An INA219 at 0x45 on VSYS with a 4 mΩ shunt
+    (`ina219.c`): shunt and bus voltages, and the current and power registers from
+    CALIBRATION as its datasheet defines them (400 mA, 7.96 V, 3.18 W). The self-check
+    now finds every chip but the USB-C pair: "Current meter: ok", "Charger: ok".

@@ -206,7 +206,8 @@ static void flipper_one_init(MachineState *ms)
 
     /* the main bus (a PIO program's I2C on GPIO22/23): the main board's
      * expander at 0x20 (its INT on GPIO39; its pin 12 the Linux side's
-     * rail), the battery's gauge at 0x55 */
+     * rail), the system rail's monitor at 0x45, the battery's gauge at
+     * 0x55, its charger at 0x6B */
     fo_i2c_pins_init(&s->main_bus, &s->mcu, 22, 23, "main-i2c");
     s->mcu.ext_pullup |= (1ull << 39) | (1ull << 38) | (1ull << 43);
     s->main_expander = i2c_slave_create_simple(s->main_bus.bus, "pcal6416",
@@ -219,6 +220,10 @@ static void flipper_one_init(MachineState *ms)
     s->battery.load_ma = 40;
     bq28z620_attach(i2c_slave_create_simple(s->main_bus.bus, "bq28z620",
                                             0x55), &s->battery);
+    bq2579x_attach(i2c_slave_create_simple(s->main_bus.bus, "bq2579x", 0x6b),
+                   &s->battery);
+    ina219_attach(i2c_slave_create_simple(s->main_bus.bus, "ina219", 0x45),
+                  &s->battery);
     rp2350_pin_listen(&s->mcu, 43, flipper_one_expander_reset, s);
     rp2350_pin_listen(&s->mcu, 38, flipper_one_expander_reset, s);
 }
