@@ -8,19 +8,20 @@ RESEARCH.md §8.
 ## M1: the MCU boots ☐
 The RP2350B and the published MCU firmware (target `f1`, `dev` builds) to its self-check
 screen and its CLI.
-- ☐ QEMU 11.1.3 built for aarch64 (`qemu-system-aarch64` has the M-profile CPUs too),
-      with the overlay `qemu/hw/arm/flipper_one`
-- ☐ The RP2350's memory map: boot ROM (Raspberry Pi's release A4), 520 KiB of SRAM,
-      16 MiB of XIP flash, every peripheral block, and the atomic aliases (+0x1000 XOR,
-      +0x2000 set, +0x3000 clear)
-- ☐ Cortex-M33 core 0 (Secure, FPU, DSP); core 1 as far as the boot ROM's launch
-      handshake through the SIO FIFO
-- ☐ The coprocessors: GPIO (CP0), double-precision (CP4), redundancy (CP7, the boot
-      ROM's). QEMU has none: a patch for M-profile coprocessor hooks
+- ☑ QEMU 11.1.3 built for aarch64 (`qemu-system-aarch64` has the M-profile CPUs too),
+      with the overlay `qemu/hw/arm/flipper_one` (2026-11-23)
+- ◐ The RP2350's memory map: boot ROM (Raspberry Pi's release A4), 520 KiB of SRAM,
+      16 MiB of XIP flash, the USB controller's RAM, every peripheral block (what is not
+      modelled logs), and the atomic aliases (+0x1000 XOR, +0x2000 set, +0x3000 clear)
+- ◐ Cortex-M33 core 0 (Secure, FPU, DSP, 8 MPU and 8 SAU regions) with the RP2350's
+      IDAU; core 1 as far as the boot ROM's launch handshake through the SIO FIFO
+- ◐ The coprocessors: GPIO (CP0), double-precision (CP4), redundancy (CP7, the boot
+      ROM's). QEMU patch 0001 lets a machine have them; the RCP is modelled
 - ☐ Boot: OTP, QMI and the XIP translation of partitions, the boot ROM's flash
       functions, watchdog and POWMAN scratch, try-before-you-buy images
-- ☐ Clocks, resets, PSM, XOSC, PLLs, TICKS, TIMER0/1, watchdog, SIO (FIFOs, spinlocks),
-      IO_BANK0, PADS
+- ◐ Clocks, resets, PSM, XOSC, PLLs, ROSC, TRNG, SHA-256, POWMAN, watchdog, SIO
+      (GPIO, FIFOs, spinlocks, doorbells) answer as the boot ROM needs; TICKS,
+      TIMER0/1, IO_BANK0, PADS to come
 - ☐ PIO (three blocks, the RP2350's instructions), DMA, HSTX
 - ☐ The JD9853 panel and its tearing signal: the screen to a window and to PNG
 - ☐ DesignWare I2C (master and slave); the PL011 UARTs (the CLI on UART1)

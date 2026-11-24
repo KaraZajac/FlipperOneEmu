@@ -1,0 +1,53 @@
+From: FlipperOneEmu
+Subject: [PATCH] armv7m_nvic: MPU_RNR and MPU_RLAR keep what the Cortex-M33 keeps
+
+The RP2350's boot ROM sets up the MPU of its Cortex-M33 (8 regions in each
+security state) and reads every register back, panicking on a difference:
+
+- It writes MPU_RNR with 0x02ce0700 for region 0 (a constant that its SAU
+  check needs anyway: "RNR is only 3 bits, so this value is 0 for that
+  purpose"), and with 0xf0 to 0xf3 for regions 0 to 3.  QEMU ignores a
+  write of a region number that is not there (CONSTRAINED UNPREDICTABLE),
+  and the ROM goes on with the region before.
+
+- It writes MPU_RLAR with bit 4 set, and expects it back clear.  Bit 4 is
+  PXN from v8.1M on and RES0 before; QEMU keeps it (and only uses it as
+  PXN on v8.1M).
+
+Keep REGION's low bits when the number of regions is a power of two (the
+Cortex-M33 holds that many), and clear RLAR's bit 4 on v8.0M.  A number
+of regions that is not a power of two keeps the old behaviour.
+
+Signed-off-by: FlipperOneEmu
+---
+diff -ruN a/hw/intc/armv7m_nvic.c b/hw/intc/armv7m_nvic.c
+--- a/hw/intc/armv7m_nvic.c	2026-11-23 22:43:05.662710481 -0500
++++ b/hw/intc/armv7m_nvic.c	2026-11-23 22:43:05.665931593 -0500
+@@ -1900,6 +1900,16 @@
+         tlb_flush(CPU(cpu));
+         break;
+     case 0xd98: /* MPU_RNR */
++        /*
++         * A number of regions that is a power of two takes that many bits
++         * of REGION, and the rest are not kept, as on the Cortex-M33 (the
++         * RP2350's boot ROM writes 0x02ce0700 for region 0, and 0xf0 to
++         * 0xf3 for regions 0 to 3).  Otherwise a region that is not there
++         * is CONSTRAINED UNPREDICTABLE, and we ignore the write.
++         */
++        if (is_power_of_2(cpu->pmsav7_dregion)) {
++            value &= cpu->pmsav7_dregion - 1;
++        }
+         if (value >= cpu->pmsav7_dregion) {
+             qemu_log_mask(LOG_GUEST_ERROR, "MPU region out of range %"
+                           PRIu32 "/%" PRIu32 "\n",
+@@ -1980,6 +1990,10 @@
+             if (region >= cpu->pmsav7_dregion) {
+                 return;
+             }
++            if (!arm_feature(&cpu->env, ARM_FEATURE_V8_1M)) {
++                /* bit 4 is PXN from v8.1M on, RES0 before */
++                value &= ~(1u << 4);
++            }
+             cpu->env.pmsav8.rlar[attrs.secure][region] = value;
+             tlb_flush(CPU(cpu));
+             return;

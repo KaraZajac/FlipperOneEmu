@@ -1,0 +1,457 @@
+From: FlipperOneEmu
+Subject: [PATCH] target/arm: an M-profile chip's own coprocessors
+
+Arm's M-profile cores have a coprocessor port, and coprocessor numbers 0
+to 7 are the chip's to use: ARMv8-M decodes MCR, MRC, MCRR, MRRC and CDP
+(and their "2" forms) to them, with CPACR and NSACR giving access to each.
+QEMU takes every such instruction for a NOCP UsageFault, and CPACR and
+NSACR keep only the Floating Point extension's bits.
+
+The RP2350 (Raspberry Pi) puts three coprocessors there, on each of its
+two Cortex-M33 cores: GPIO (CP0, a fast way to the SIO's GPIO registers),
+double-precision arithmetic (CP4) and redundancy (CP7: salted stack
+canaries, checked booleans, a sequence counter).  Its boot ROM uses the
+last from its first instructions on (about 540 of them), and the Pico
+SDK's code uses the first two (a firmware built with it saves CP4's state
+at every switch of thread).
+
+Let a machine give a CPU a function for each of its own coprocessors,
+arm_m_set_coproc(cpu, cp, fn, opaque, io), before the CPU runs.  An
+instruction to such a coprocessor is translated to a call of a helper,
+which raises NOCP when NSACR (to Secure) or CPACR forbids the access, as
+for CP10, and otherwise calls the function with the instruction's fields
+and its register's value; MRC and MRRC write back what it returns, MRC
+with Rt = 15 to APSR.NZCV.  The function may ask for a UsageFault
+(UNDEFINSTR) at the instruction, or for the core to stop there (the
+RP2350's redundancy coprocessor stalls the core when its check fails).
+With @io, it is called with the big lock held.  CPACR and NSACR keep the
+bits of the coprocessors that have a function.
+
+An instruction to a coprocessor without one is a NOCP UsageFault, as
+before, and a machine that sets none sees no change.
+
+Signed-off-by: FlipperOneEmu
+---
+diff -ruN a/hw/intc/armv7m_nvic.c b/hw/intc/armv7m_nvic.c
+--- a/hw/intc/armv7m_nvic.c	2026-11-23 22:32:31.988596976 -0500
++++ b/hw/intc/armv7m_nvic.c	2026-11-23 22:32:31.991701504 -0500
+@@ -1365,12 +1365,13 @@
+     case 0xd84: /* CSSELR */
+         return cpu->env.v7m.csselr[attrs.secure];
+     case 0xd88: /* CPACR */
+-        if (!cpu_isar_feature(aa32_vfp_simd, cpu)) {
++        if (!cpu_isar_feature(aa32_vfp_simd, cpu) && !cpu->m_coproc_mask) {
+             return 0;
+         }
+         return cpu->env.v7m.cpacr[attrs.secure];
+     case 0xd8c: /* NSACR */
+-        if (!attrs.secure || !cpu_isar_feature(aa32_vfp_simd, cpu)) {
++        if (!attrs.secure ||
++            (!cpu_isar_feature(aa32_vfp_simd, cpu) && !cpu->m_coproc_mask)) {
+             return 0;
+         }
+         return cpu->env.v7m.nsacr;
+@@ -1857,15 +1858,30 @@
+         }
+         break;
+     case 0xd88: /* CPACR */
+-        if (cpu_isar_feature(aa32_vfp_simd, cpu)) {
+-            /* We implement only the Floating Point extension's CP10/CP11 */
+-            cpu->env.v7m.cpacr[attrs.secure] = value & (0xf << 20);
++    {
++        /*
++         * We implement the Floating Point extension's CP10/CP11, and the
++         * chip's own coprocessors 0..7 (arm_m_set_coproc())
++         */
++        uint32_t mask = cpu_isar_feature(aa32_vfp_simd, cpu) ? 0xf << 20 : 0;
++
++        for (int cp = 0; cp < 8; cp++) {
++            if (cpu->m_coproc_mask & (1 << cp)) {
++                mask |= 3 << (cp * 2);
++            }
+         }
++        cpu->env.v7m.cpacr[attrs.secure] = value & mask;
+         break;
++    }
+     case 0xd8c: /* NSACR */
+-        if (attrs.secure && cpu_isar_feature(aa32_vfp_simd, cpu)) {
+-            /* We implement only the Floating Point extension's CP10/CP11 */
+-            cpu->env.v7m.nsacr = value & (3 << 10);
++        if (attrs.secure) {
++            /* as CPACR: CP10/CP11, and the chip's own coprocessors */
++            uint32_t mask = cpu->m_coproc_mask;
++
++            if (cpu_isar_feature(aa32_vfp_simd, cpu)) {
++                mask |= 3 << 10;
++            }
++            cpu->env.v7m.nsacr = value & mask;
+         }
+         break;
+     case 0xd90: /* MPU_TYPE */
+diff -ruN a/target/arm/cpu.c b/target/arm/cpu.c
+--- a/target/arm/cpu.c	2026-11-23 22:32:31.864778939 -0500
++++ b/target/arm/cpu.c	2026-11-23 22:32:31.867898358 -0500
+@@ -198,6 +198,17 @@
+     QLIST_INSERT_HEAD(&cpu->el_change_hooks, entry, node);
+ }
+ 
++void arm_m_set_coproc(ARMCPU *cpu, int cp, ARMMCoprocFn *fn, void *opaque,
++                      bool io)
++{
++    /* code is translated with the set of coprocessors there is */
++    assert(arm_feature(&cpu->env, ARM_FEATURE_M) && cp >= 0 && cp < 8);
++    cpu->m_coproc[cp] = fn;
++    cpu->m_coproc_opaque[cp] = opaque;
++    cpu->m_coproc_mask = deposit32(cpu->m_coproc_mask, cp, 1, fn != NULL);
++    cpu->m_coproc_io = deposit32(cpu->m_coproc_io, cp, 1, fn && io);
++}
++
+ static ARMCPRegMigTolerance *find_mig_tolerance(ARMCPU *cpu, uint64_t kvmidx)
+ {
+     ARMCPRegMigTolerance *t;
+diff -ruN a/target/arm/cpu.h b/target/arm/cpu.h
+--- a/target/arm/cpu.h	2026-11-23 22:32:31.878675850 -0500
++++ b/target/arm/cpu.h	2026-11-23 22:32:31.882003103 -0500
+@@ -849,6 +849,55 @@
+     QLIST_ENTRY(ARMELChangeHook) node;
+ };
+ 
++/*
++ * An M-profile chip's own coprocessors, numbers 0 to 7: Arm's cores have
++ * none, a chip may put its own on the core's coprocessor port (the
++ * RP2350 has three).  A machine gives each one a function with
++ * arm_m_set_coproc(); its MCR, MRC, MCRR, MRRC and CDP instructions (and
++ * their "2" forms) then call it, after the access checks of CPACR and
++ * NSACR, which keep that coprocessor's bits.  Without one, an instruction
++ * to it is a NOCP UsageFault, as before.
++ */
++typedef enum ARMMCoprocKind {
++    ARM_MCOPROC_MCR,
++    ARM_MCOPROC_MRC,
++    ARM_MCOPROC_MCRR,
++    ARM_MCOPROC_MRRC,
++    ARM_MCOPROC_CDP,
++} ARMMCoprocKind;
++
++typedef enum ARMMCoprocFault {
++    ARM_MCOPROC_OK,
++    ARM_MCOPROC_UNDEF,          /* a UsageFault (UNDEFINSTR) at the insn */
++    ARM_MCOPROC_HALT,           /* the core stops at the insn */
++} ARMMCoprocFault;
++
++typedef struct ARMMCoprocInsn {
++    ARMMCoprocKind kind;
++    bool two;                   /* MCR2, MRC2, MCRR2, MRRC2, CDP2 */
++    uint8_t cp, opc1, opc2, crn, crm, crd;
++    /*
++     * In: MCR's Rt; MCRR's Rt | Rt2 << 32.  Out: what MRC reads (its low
++     * 32 bits; with Rt = 15 their top four go to APSR.NZCV) or MRRC
++     * (Rt | Rt2 << 32).
++     */
++    uint64_t value;
++    ARMMCoprocFault fault;      /* out */
++} ARMMCoprocInsn;
++
++typedef void ARMMCoprocFn(void *opaque, ARMCPU *cpu, ARMMCoprocInsn *insn);
++
++/**
++ * arm_m_set_coproc:
++ * @cpu: an M-profile CPU, before it runs
++ * @cp: the coprocessor's number, 0 to 7
++ * @fn: its function
++ * @opaque: passed to @fn
++ * @io: @fn reaches devices, and is called with the BQL held
++ */
++void arm_m_set_coproc(ARMCPU *cpu, int cp, ARMMCoprocFn *fn, void *opaque,
++                      bool io);
++
+ /* These values map onto the return values for
+  * QEMU_PSCI_0_2_FN_AFFINITY_INFO */
+ typedef enum ARMPSCIState {
+@@ -1026,6 +1075,12 @@
+     /* v8M SAU number of supported regions */
+     uint32_t sau_sregion;
+ 
++    /* M-profile: the chip's own coprocessors 0..7 (arm_m_set_coproc) */
++    ARMMCoprocFn *m_coproc[8];
++    void *m_coproc_opaque[8];
++    uint8_t m_coproc_mask;      /* bit n: coprocessor n has a function */
++    uint8_t m_coproc_io;        /* bit n: and it is called with the BQL */
++
+     /* PSCI conduit used to invoke PSCI methods
+      * 0 - disabled, 1 - smc, 2 - hvc
+      */
+diff -ruN a/target/arm/internals.h b/target/arm/internals.h
+--- a/target/arm/internals.h	2026-11-23 22:32:31.892864256 -0500
++++ b/target/arm/internals.h	2026-11-23 22:32:31.896075194 -0500
+@@ -1230,6 +1230,34 @@
+ }
+ 
+ /**
++ * v7m_coproc_cpacr_pass:
++ * As v7m_cpacr_pass(), for one of the chip's own coprocessors 0..7
++ * (arm_m_set_coproc()).
++ */
++static inline bool v7m_coproc_cpacr_pass(CPUARMState *env, int cp,
++                                         bool is_secure, bool is_priv)
++{
++    switch (extract32(env->v7m.cpacr[is_secure], cp * 2, 2)) {
++    case 3:
++        return true;
++    case 1:
++        return is_priv;
++    default: /* 0, and 2 (UNPREDICTABLE), which we treat like 0 */
++        return false;
++    }
++}
++
++/* An instruction to such a coprocessor, as the translator passes it on */
++FIELD(MCOPROC, CP, 0, 3)
++FIELD(MCOPROC, KIND, 3, 3)
++FIELD(MCOPROC, TWO, 6, 1)
++FIELD(MCOPROC, OPC1, 7, 4)
++FIELD(MCOPROC, OPC2, 11, 3)
++FIELD(MCOPROC, CRN, 14, 4)
++FIELD(MCOPROC, CRM, 18, 4)
++FIELD(MCOPROC, CRD, 22, 4)
++
++/**
+  * aarch32_mode_name(): Return name of the AArch32 CPU mode
+  * @psr: Program Status Register indicating CPU mode
+  *
+diff -ruN a/target/arm/tcg/helper-defs.h b/target/arm/tcg/helper-defs.h
+--- a/target/arm/tcg/helper-defs.h	2026-11-23 22:32:31.934620749 -0500
++++ b/target/arm/tcg/helper-defs.h	2026-11-23 22:32:31.937886095 -0500
+@@ -80,6 +80,8 @@
+ DEF_HELPER_2(v7m_vlstm, void, env, i32)
+ DEF_HELPER_2(v7m_vlldm, void, env, i32)
+ 
++DEF_HELPER_4(v7m_coproc, i64, env, i32, i32, i32)
++
+ DEF_HELPER_2(v8m_stackcheck, void, env, i32)
+ 
+ DEF_HELPER_FLAGS_2(check_bxj_trap, TCG_CALL_NO_WG, void, env, i32)
+diff -ruN a/target/arm/tcg/m_helper.c b/target/arm/tcg/m_helper.c
+--- a/target/arm/tcg/m_helper.c	2026-11-23 22:32:31.906227607 -0500
++++ b/target/arm/tcg/m_helper.c	2026-11-23 22:32:31.909482732 -0500
+@@ -18,6 +18,7 @@
+ #include "exec/page-protection.h"
+ #ifdef CONFIG_TCG
+ #include "accel/tcg/cpu-ldst-common.h"
++#include "accel/tcg/cpu-loop.h"
+ #include "semihosting/common-semi.h"
+ #endif
+ #if !defined(CONFIG_USER_ONLY)
+@@ -133,6 +134,13 @@
+     g_assert_not_reached();
+ }
+ 
++uint64_t HELPER(v7m_coproc)(CPUARMState *env, uint32_t desc, uint32_t lo,
++                            uint32_t hi)
++{
++    /* no machine, so no coprocessors: translate.c never generates these */
++    g_assert_not_reached();
++}
++
+ uint32_t HELPER(v7m_tt)(CPUARMState *env, uint32_t addr, uint32_t op)
+ {
+     /*
+@@ -1183,6 +1191,59 @@
+     env->v7m.control[M_REG_S] |= R_V7M_CONTROL_FPCA_MASK;
+ }
+ 
++/*
++ * An instruction to one of the chip's own coprocessors (arm_m_set_coproc()),
++ * which the translator only passes on for a coprocessor that has one.
++ */
++uint64_t HELPER(v7m_coproc)(CPUARMState *env, uint32_t desc, uint32_t lo,
++                            uint32_t hi)
++{
++    ARMCPU *cpu = env_archcpu(env);
++    CPUState *cs = env_cpu(env);
++    ARMMCoprocInsn insn = {
++        .kind = FIELD_EX32(desc, MCOPROC, KIND),
++        .two = FIELD_EX32(desc, MCOPROC, TWO),
++        .cp = FIELD_EX32(desc, MCOPROC, CP),
++        .opc1 = FIELD_EX32(desc, MCOPROC, OPC1),
++        .opc2 = FIELD_EX32(desc, MCOPROC, OPC2),
++        .crn = FIELD_EX32(desc, MCOPROC, CRN),
++        .crm = FIELD_EX32(desc, MCOPROC, CRM),
++        .crd = FIELD_EX32(desc, MCOPROC, CRD),
++        .value = deposit64(lo, 32, 32, hi),
++    };
++    bool io = cpu->m_coproc_io & (1 << insn.cp);
++    bool take = io && !bql_locked();
++
++    /* Non-secure code reaches it only if NSACR lets it: else NOCP to S */
++    if (!env->v7m.secure && !(env->v7m.nsacr & (1 << insn.cp))) {
++        raise_exception_ra(env, EXCP_NOCP, 0, 3, GETPC());
++    }
++    if (!v7m_coproc_cpacr_pass(env, insn.cp, env->v7m.secure,
++                               arm_current_el(env) != 0)) {
++        raise_exception_ra(env, EXCP_NOCP, 0, 1, GETPC());
++    }
++    if (take) {
++        bql_lock();
++    }
++    cpu->m_coproc[insn.cp](cpu->m_coproc_opaque[insn.cp], cpu, &insn);
++    if (take) {
++        bql_unlock();
++    }
++    switch (insn.fault) {
++    case ARM_MCOPROC_OK:
++        break;
++    case ARM_MCOPROC_UNDEF:
++        raise_exception_ra(env, EXCP_UDEF, syn_uncategorized(),
++                           exception_target_el(env), GETPC());
++    case ARM_MCOPROC_HALT:
++        /* the translator left the PC at this insn: it stays there */
++        cs->exception_index = EXCP_HLT;
++        cs->halted = 1;
++        cpu_loop_exit(cs);
++    }
++    return insn.value;
++}
++
+ static bool v7m_push_stack(ARMCPU *cpu)
+ {
+     /*
+diff -ruN a/target/arm/tcg/m-nocp.decode b/target/arm/tcg/m-nocp.decode
+--- a/target/arm/tcg/m-nocp.decode	2026-11-23 22:32:31.975457064 -0500
++++ b/target/arm/tcg/m-nocp.decode	2026-11-23 22:32:31.978462328 -0500
+@@ -65,6 +65,13 @@
+   VSTR_sysreg  ---- 110 1 . . w:1 0 .... ... 0 111 11 ....... @vldr_sysreg p=1
+   VSTR_sysreg  ---- 110 0 . . 1   0 .... ... 0 111 11 ....... @vldr_sysreg p=0 w=1
+ 
++  # A chip's own coprocessors 0..7 (arm_m_set_coproc()): their insns go
++  # to the machine; for any other coprocessor these fall through to NOCP
++  MCOPROC_MCR  111 two:1 1110 opc1:3 0 crn:4 rt:4 cp:4 opc2:3 1 crm:4
++  MCOPROC_MRC  111 two:1 1110 opc1:3 1 crn:4 rt:4 cp:4 opc2:3 1 crm:4
++  MCOPROC_CDP  111 two:1 1110 opc1:4 crn:4 crd:4 cp:4 opc2:3 0 crm:4
++  MCOPROC_MCRR 111 two:1 1100 0100 rt2:4 rt:4 cp:4 opc1:4 crm:4
++  MCOPROC_MRRC 111 two:1 1100 0101 rt2:4 rt:4 cp:4 opc1:4 crm:4
+   NOCP         111- 1110 ---- ---- ---- cp:4 ---- ---- &nocp
+   NOCP         111- 110- ---- ---- ---- cp:4 ---- ---- &nocp
+   # From v8.1M onwards this range will also NOCP:
+diff -ruN a/target/arm/tcg/translate.c b/target/arm/tcg/translate.c
+--- a/target/arm/tcg/translate.c	2026-11-23 22:32:31.962064856 -0500
++++ b/target/arm/tcg/translate.c	2026-11-23 22:32:31.965442158 -0500
+@@ -6425,6 +6425,7 @@
+         dc->v7m_handler_mode = EX_TBFLAG_M32(tb_flags, HANDLER);
+         dc->v8m_secure = EX_TBFLAG_M32(tb_flags, SECURE);
+         dc->v8m_stackcheck = EX_TBFLAG_M32(tb_flags, STACKCHECK);
++        dc->m_coproc_mask = cpu->m_coproc_mask;
+         dc->v8m_fpccr_s_wrong = EX_TBFLAG_M32(tb_flags, FPCCR_S_WRONG);
+         dc->v7m_new_fp_ctxt_needed =
+             EX_TBFLAG_M32(tb_flags, NEW_FP_CTXT_NEEDED);
+diff -ruN a/target/arm/tcg/translate.h b/target/arm/tcg/translate.h
+--- a/target/arm/tcg/translate.h	2026-11-23 22:32:31.919381416 -0500
++++ b/target/arm/tcg/translate.h	2026-11-23 22:32:31.923450329 -0500
+@@ -98,6 +98,8 @@
+     bool v7m_handler_mode;
+     bool v8m_secure; /* true if v8M and we're in Secure mode */
+     bool v8m_stackcheck; /* true if we need to perform v8M stack limit checks */
++    /* M-profile: bit n set if the chip has its own coprocessor n (0..7) */
++    uint8_t m_coproc_mask;
+     bool v8m_fpccr_s_wrong; /* true if v8M FPCCR.S != v8m_secure */
+     bool v7m_new_fp_ctxt_needed; /* ASPEN set but no active FP context */
+     bool v7m_lspact; /* FPCCR.LSPACT set */
+diff -ruN a/target/arm/tcg/translate-m-nocp.c b/target/arm/tcg/translate-m-nocp.c
+--- a/target/arm/tcg/translate-m-nocp.c	2026-11-23 22:32:31.948795811 -0500
++++ b/target/arm/tcg/translate-m-nocp.c	2026-11-23 22:32:31.951784847 -0500
+@@ -723,6 +723,95 @@
+     return gen_M_fp_sysreg_read(s, a->reg, fp_sysreg_to_memory, a);
+ }
+ 
++/*
++ * An instruction to one of the chip's own coprocessors (arm_m_set_coproc()):
++ * the helper checks CPACR and NSACR and calls the machine's function.
++ * Returning false leaves the insn to the NOCP patterns after these.
++ */
++static bool do_mcoproc(DisasContext *s, ARMMCoprocKind kind, int two, int cp,
++                       int opc1, int opc2, int crn, int crm, int crd,
++                       int rt, int rt2)
++{
++    TCGv_i32 lo, hi, t;
++    TCGv_i64 res;
++    uint32_t desc = 0;
++
++    if (cp >= 8 || !(s->m_coproc_mask & (1 << cp))) {
++        return false;
++    }
++    /* UNPREDICTABLE register choices: we UNDEF */
++    if ((kind == ARM_MCOPROC_MCR && rt == 15) ||
++        ((kind == ARM_MCOPROC_MCRR || kind == ARM_MCOPROC_MRRC) &&
++         (rt == 15 || rt2 == 15)) ||
++        (kind == ARM_MCOPROC_MRRC && rt == rt2)) {
++        unallocated_encoding(s);
++        return true;
++    }
++    desc = FIELD_DP32(desc, MCOPROC, CP, cp);
++    desc = FIELD_DP32(desc, MCOPROC, KIND, kind);
++    desc = FIELD_DP32(desc, MCOPROC, TWO, two);
++    desc = FIELD_DP32(desc, MCOPROC, OPC1, opc1);
++    desc = FIELD_DP32(desc, MCOPROC, OPC2, opc2);
++    desc = FIELD_DP32(desc, MCOPROC, CRN, crn);
++    desc = FIELD_DP32(desc, MCOPROC, CRM, crm);
++    desc = FIELD_DP32(desc, MCOPROC, CRD, crd);
++    lo = (kind == ARM_MCOPROC_MCR || kind == ARM_MCOPROC_MCRR)
++        ? load_reg(s, rt) : tcg_constant_i32(0);
++    hi = kind == ARM_MCOPROC_MCRR ? load_reg(s, rt2) : tcg_constant_i32(0);
++    /* it may fault, or stop the core, at this insn */
++    gen_set_condexec(s);
++    gen_update_pc(s, 0);
++    res = tcg_temp_new_i64();
++    gen_helper_v7m_coproc(res, tcg_env, tcg_constant_i32(desc), lo, hi);
++    if (kind == ARM_MCOPROC_MRC || kind == ARM_MCOPROC_MRRC) {
++        t = tcg_temp_new_i32();
++        tcg_gen_extrl_i64_i32(t, res);
++        if (kind == ARM_MCOPROC_MRC && rt == 15) {
++            /* APSR_nzcv: the value's top four bits are the flags */
++            tcg_gen_andi_i32(t, t, CPSR_NZCV);
++            gen_set_nzcv(t);
++        } else {
++            store_reg(s, rt, t);
++        }
++        if (kind == ARM_MCOPROC_MRRC) {
++            t = tcg_temp_new_i32();
++            tcg_gen_extrh_i64_i32(t, res);
++            store_reg(s, rt2, t);
++        }
++    }
++    return true;
++}
++
++static bool trans_MCOPROC_MCR(DisasContext *s, arg_MCOPROC_MCR *a)
++{
++    return do_mcoproc(s, ARM_MCOPROC_MCR, a->two, a->cp, a->opc1, a->opc2,
++                      a->crn, a->crm, 0, a->rt, 0);
++}
++
++static bool trans_MCOPROC_MRC(DisasContext *s, arg_MCOPROC_MRC *a)
++{
++    return do_mcoproc(s, ARM_MCOPROC_MRC, a->two, a->cp, a->opc1, a->opc2,
++                      a->crn, a->crm, 0, a->rt, 0);
++}
++
++static bool trans_MCOPROC_CDP(DisasContext *s, arg_MCOPROC_CDP *a)
++{
++    return do_mcoproc(s, ARM_MCOPROC_CDP, a->two, a->cp, a->opc1, a->opc2,
++                      a->crn, a->crm, a->crd, 0, 0);
++}
++
++static bool trans_MCOPROC_MCRR(DisasContext *s, arg_MCOPROC_MCRR *a)
++{
++    return do_mcoproc(s, ARM_MCOPROC_MCRR, a->two, a->cp, a->opc1, 0,
++                      0, a->crm, 0, a->rt, a->rt2);
++}
++
++static bool trans_MCOPROC_MRRC(DisasContext *s, arg_MCOPROC_MRRC *a)
++{
++    return do_mcoproc(s, ARM_MCOPROC_MRRC, a->two, a->cp, a->opc1, 0,
++                      0, a->crm, 0, a->rt, a->rt2);
++}
++
+ static bool trans_NOCP(DisasContext *s, arg_nocp *a)
+ {
+     /*

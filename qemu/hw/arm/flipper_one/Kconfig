@@ -1,0 +1,8 @@
+# Copyright (c) 2026, Kara Zajac
+# SPDX-License-Identifier: BSD-3-Clause
+config FLIPPER_ONE
+    bool
+    default y
+    depends on TCG && AARCH64
+    select ARM_V7M
+    select UNIMP
