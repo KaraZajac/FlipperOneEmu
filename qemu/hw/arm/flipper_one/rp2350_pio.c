@@ -549,6 +549,13 @@ static void pio_run(RP2350State *s, RP2Pio *p)
         } else {
             tried[best] = true;
         }
+        if (fifo_moved) {
+            /* a DREQ: the DMA answers at once, as on the chip, so that a
+             * FIFO it feeds (or drains) does not run dry (or fill) here */
+            fifo_moved = false;
+            rp2350_dma_kick(s);
+            memset(tried, 0, sizeof(tried));
+        }
     }
     for (int i = 0; i < 4; i++) {
         RP2PioSM *sm = &p->sm[i];
@@ -683,6 +690,23 @@ static void pio_write(RP2Block *b, hwaddr reg, uint32_t value)
     int64_t now_ps = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) * 1000;
     int n;
 
+    if (s->dma.running && reg >= 0x010 && reg <= 0x01c) {
+        /*
+         * The DMA filling a TX FIFO: on the chip it fills it far faster than
+         * a state machine empties it, so it is not run word by word here
+         * (emulating its pins costs more than the time it takes); the block
+         * looks at it next.
+         */
+        n = (reg - 0x10) / 4;
+        if (!tx_push(&p->sm[n], value)) {
+            p->fdebug |= 1u << (16 + n);            /* TXOVER */
+        }
+        pio_irqs(p);
+        if (!p->running) {
+            timer_mod_anticipate(p->timer, now_ps / 1000);
+        }
+        return;
+    }
     pio_run(s, p);
     switch (reg) {
     case 0x000: {                                   /* CTRL */

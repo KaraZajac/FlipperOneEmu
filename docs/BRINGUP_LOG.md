@@ -320,3 +320,13 @@ register headers.
     Their interrupts reach the MCU through the main expander and stay quiet. The
     self-check's every line now says "ok", and the start's log has no errors left but
     the blank OTP's.
+
+33. **A DMA that keeps a PIO's FIFO full.** Writing a PIO's TX FIFO ran its state
+    machines up to the present first, which is right for the CPU but not for the DMA:
+    emulating a state machine's pin changes costs more host time than they take on the
+    chip (a WS2812 bit is a few of them), and virtual time follows host time, so each
+    word the DMA pushed was shifted out before the next arrived, the FIFO ran dry, and
+    the line went quiet for hundreds of microseconds between words. Now a DMA write to a
+    TX FIFO only fills it, and the block looks at it next; and when a state machine
+    takes a word from a FIFO it feeds (or puts one in a FIFO it drains), the DMA answers
+    at once, inside the PIO's run, as its DREQ does on the chip.
