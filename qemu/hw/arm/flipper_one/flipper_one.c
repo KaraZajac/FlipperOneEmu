@@ -20,6 +20,7 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
 #include "hw/arm/machines-qom.h"
+#include "flipper_one.h"
 #include "rp2350.h"
 
 #define TYPE_FLIPPER_ONE MACHINE_TYPE_NAME("flipper-one")
@@ -30,6 +31,7 @@ struct FlipperOneState {
 
     RP2350State mcu;
     Clock *mcu_clk;
+    FlipperOnePanelState *panel;
     char *flash;
     bool bootsel;
 };
@@ -57,6 +59,11 @@ static void flipper_one_init(MachineState *ms)
     qdev_prop_set_bit(mcu, "bootsel", s->bootsel);
     qdev_connect_clock_in(mcu, "sysclk", s->mcu_clk);
     sysbus_realize(SYS_BUS_DEVICE(mcu), &error_fatal);
+
+    /* the front panel: -global flipper-one-panel.link=CHARDEV for a window */
+    s->panel = FLIPPER_ONE_PANEL(qdev_new(TYPE_FLIPPER_ONE_PANEL));
+    object_property_add_child(OBJECT(ms), "panel", OBJECT(s->panel));
+    qdev_realize_and_unref(DEVICE(s->panel), NULL, &error_fatal);
 }
 
 static char *flipper_one_get_flash(Object *obj, Error **errp)

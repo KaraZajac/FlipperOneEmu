@@ -23,15 +23,28 @@ the device, what Flipper Devices publishes, and what emulating it takes.
 ```sh
 scripts/setup_qemu.sh        # QEMU 11.1.3, its patches and this machine (about 6 minutes)
 scripts/fetch_firmware.py    # the MCU firmware's newest build, and the RP2350 boot ROM
-scripts/uf2.py build/flash.bin firmware/mcu/*/flipper-one-mcu-f1-recovery-*.uf2
-build/qemu/qemu-system-aarch64 -M flipper-one,flash=build/flash.bin \
-    -bios firmware/bootrom/A4/bootrom-combined.bin -display none \
-    -d unimp,guest_errors        # every access to what is not modelled yet
+./flipperoneemu gui          # the window: it starts a device, devices/one
 ```
 
-`-M flipper-one,bootsel=on` starts with the BOOTSEL button held. The firmware's log,
-before its UART works: add `-monitor unix:build/mon.sock,server,nowait` and run
-`scripts/rtt.py build/mon.sock firmware/mcu/*/flipper-one-mcu-f1-firmware-*.elf`.
+The window draws a Flipper One of this project's own around the emulated screen (it is
+not Flipper Devices' artwork), with its LEDs where the device has them. Click its
+buttons, or use the keyboard: the arrows and Enter are the pad, Backspace or Esc is
+Back, F1 to F5 are the soft keys (Esc, View, Power, Edit, Run), Tab is App Switcher,
+Space is PTT; drag on the touchpad. It talks to the emulator over a front-panel link,
+[docs/PANEL_LINK.md](docs/PANEL_LINK.md), which any program can use.
+
+```sh
+./flipperoneemu run [-n NAME] [--detach] [--gdb PORT]   # a device without the window
+./flipperoneemu log [-n NAME]        # the firmware's log, from its RTT buffer
+./flipperoneemu shot FILE.png        # the screen as a picture
+./flipperoneemu status | stop [-n NAME]
+```
+
+A device is a folder, `devices/NAME`: the MCU's flash (made from the newest recovery
+`.uf2` the first time, and written to as the firmware writes its flash), its sockets,
+QEMU's log. By hand: `-M flipper-one,flash=FILE -bios bootrom-combined.bin`;
+`bootsel=on` starts with the BOOTSEL button held; `-d unimp,guest_errors` logs every
+access to what is not modelled yet.
 
 ## QEMU patches
 
@@ -47,7 +60,8 @@ before its UART works: add `-monitor unix:build/mon.sock,server,nowait` and run
 |---|---|
 | `qemu/hw/arm/flipper_one/` | The machine and its devices, linked into QEMU's source tree |
 | `qemu/patches/` | Changes to QEMU itself |
-| `scripts/` | Setting up QEMU, fetching the firmware, the launcher's parts, checks |
+| `flipperoneemu` | The launcher: run, the window, stop, status, log, shot |
+| `scripts/` | Setting up QEMU, fetching the firmware, the window (`fo_gui.py`, `fo_view.py`, `fo_link.py`), the launcher's parts, checks |
 | `docs/BRINGUP_LOG.md` | What was found on the way, in order |
 
 ## License
