@@ -31,7 +31,9 @@
  *             169: Rockchip's v2 banks (VER_ID 0x010219c8; each register in
  *             two halves with write masks): outputs, inputs from the board
  *             (pulled up unless it says otherwise), interrupts by level or
- *             edge (either, with BOTHEDGE), masked, cleared by EOI
+ *             edge (both edges with BOTHEDGE, whatever INT_TYPE says: a
+ *             level there was an interrupt for ever from a card-detect pin
+ *             held low), masked, cleared by EOI
  *   DMAC0-2   0x2ab90000, 0x2abb0000, 0x2abd0000: ARM PL330s (QEMU's), their
  *             event and abort interrupts on the first of their two SPIs
  *             (32, 34, 36); peripherals never hold them back. AMBA reads a
@@ -39,6 +41,7 @@
  *             4 KiB of registers are there, and their IDs again at 0x3fe0
  *   SPI0      rk_spi.c, 0x2acf0000, SPI 116: the display link (the board
  *             takes what it sends)
+ *   SDMMC     dw_mshc.c, 0x2a310000, SPI 251: the microSD slot's host
  *   I2C0-8    rk3x_i2c.c: I2C0 at 0x27300000, I2C1-8 from 0x2ac40000 a
  *             0x10000 apart; SPIs 88-96
  *   UART0, UART4  DesignWare APB UARTs, 16550s with 32-bit registers
@@ -386,9 +389,11 @@ static void gpio_update(RkGpio *g)
     uint32_t rose = level & ~g->level, fell = ~level & g->level;
     uint32_t edges = (rose & (g->pol | g->both)) | (fell & (~g->pol | g->both));
     uint32_t levels = ~(level ^ g->pol);        /* at its active level */
+    uint32_t edge = g->type | g->both;          /* BOTHEDGE: edges, whatever
+                                                   INT_TYPE says */
 
     g->level = level;
-    g->raw = (g->raw & g->type) | (edges & g->type) | (levels & ~g->type);
+    g->raw = (g->raw & edge) | (edges & edge) | (levels & ~edge);
     g->raw &= g->en;
     qemu_set_irq(g->irq, (g->raw & ~g->mask) != 0);
     for (int pin = 0; changed && g->soc && g->soc->gpio_out; pin++) {
@@ -508,6 +513,7 @@ static void rk3576_init(Object *obj)
     }
     object_initialize_child(obj, "gic", &s->gic, TYPE_ARM_GIC);
     object_initialize_child(obj, "spi0", &s->spi0, TYPE_RK_SPI);
+    object_initialize_child(obj, "sdmmc", &s->sdmmc, TYPE_DW_MSHC);
     for (int n = 0; n < RK3576_NI2C; n++) {
         g_autofree char *name = g_strdup_printf("i2c%d", n);
 
@@ -642,6 +648,14 @@ static void rk3576_realize(DeviceState *dev, Error **errp)
                                 sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->spi0),
                                                        0));
     sysbus_connect_irq(SYS_BUS_DEVICE(&s->spi0), 0, rk3576_spi(s, 116));
+
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->sdmmc), errp)) {
+        return;
+    }
+    memory_region_add_subregion(sysmem, 0x2a310000,
+                                sysbus_mmio_get_region(
+                                    SYS_BUS_DEVICE(&s->sdmmc), 0));
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->sdmmc), 0, rk3576_spi(s, 251));
 
     for (int d = 0; d < 3; d++) {
         DeviceState *dma = qdev_new("pl330");

@@ -10,8 +10,8 @@ RP2350's own boot ROM, and the Flipper OS image.
 It is the sibling of [FlipperZeroEmu](https://github.com/KaraZajac/FlipperZeroEmu), which
 does the same for the Flipper Zero.
 
-**Status (2026-11-24): the MCU and its board run, and the CPU boots Flipper OS's kernel
-to a shell.** The RP2350's own boot ROM verifies
+**Status (2026-11-24): the whole Flipper One runs: its MCU firmware and Flipper OS,
+with FlipCTL on the screen.** The RP2350's own boot ROM verifies
 the flash's partition table and starts the MCU firmware on the emulated chip. The
 firmware starts FreeRTOS, logs through its PIO UART, draws on the screen in the window
 (over HSTX and DMA to the emulated JD9853 panel), lights the backlight, answers on its
@@ -26,13 +26,13 @@ into its USB-C port, and the battery charges; a computer plugged in gets its USB
 port, also as a real USB device on this PC (USB/IP), and the firmware can be updated as
 picotool updates it, through the RP2350's boot ROM. Its `power reboot` power-cycles the
 board through the charger, and its power off (ship mode) turns it off until a charger
-is plugged in. The RK3576 (four Cortex-A53s and four A72s) starts Flipper OS's own
-kernel and device tree from a published build, which boots to its initramfs's shell on
-the debug port's UART, and whose own driver for the MCU talks to the MCU firmware over
-their I2C link: the kernel gets the Flipper's buttons, touchpad and headset as input
-devices, the MCU learns the CPU's state, and the frames of Linux's display driver reach
-the MCU's screen over their SPI link. Storage (for the whole of Flipper OS) and more of
-the RK3576's devices come next. [RESEARCH.md](RESEARCH.md) is the survey this
+is plugged in. The RK3576 (four Cortex-A53s and four A72s) boots a published
+Flipper OS build from its image on an emulated microSD card, to its login: its own
+kernel and device tree, Debian 13 under systemd, and FlipCTL, which draws Flipper OS's
+interface on the Flipper's screen (its frames go over the display SPI to the MCU
+firmware, which shows them) and answers its keys (which the MCU firmware passes on over
+their I2C link). The first boot takes about 8 minutes (TCG emulates eight cores). The
+RK3576's USB, network, UFS, display outputs and more come next. [RESEARCH.md](RESEARCH.md) is the survey this
 starts from:
 the device, what Flipper Devices publishes, and what emulating it takes.
 [PLAN.md](PLAN.md) is the order of work; the MCU comes first.
@@ -70,7 +70,8 @@ and brings the MCU's own desktop.
 ./flipperoneemu run --bootsel ...    # ... started with BOOTSEL held: the boot ROM's USB boot
 ./flipperoneemu run --usbip 3240 ... # ... its USB given to this PC: sudo scripts/usbip_attach.py
 scripts/fetch_os.py                  # a Flipper OS build: its kernel, initrd and device trees
-./flipperoneemu run --linux ...      # ... started on the RK3576, beside the MCU
+./flipperoneemu run --linux ...      # ... Flipper OS on the RK3576, from the build's
+                                     # image on the device's microSD (devices/NAME/sd.img)
 ./flipperoneemu console [-n NAME] [CMD]  # Linux's console (the RK3576's UART0); Ctrl-] leaves
 scripts/fo_picoboot.py --port 3240 load FIRMWARE.uf2 --reboot
                                      # an update, as picotool makes one: after the

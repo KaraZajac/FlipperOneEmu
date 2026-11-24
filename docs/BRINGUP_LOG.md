@@ -670,3 +670,30 @@ register headers.
     switches the display on) shows what was in the framebuffer on the MCU's screen,
     and each blank and unblank again; plain writes to /dev/fb0 commit nothing in this
     kernel. FlipCTL, which draws with DRM, needs the root filesystem.
+50. **Storage: Flipper OS boots, and FlipCTL is on the screen.** The microSD slot's
+    host is a DesignWare MSHC, which QEMU does not have: modelled in front of QEMU's
+    SD card as Linux's dw_mmc drives it (commands to the card at once, responses,
+    RINTSTS; data through the internal DMA's descriptor chain, or the FIFO for the
+    driver's few bytes; DATA_OVER, the automatic CMD12; VERID 0x270a, a 32-bit FIFO).
+    QEMU's SD cards are a power of 2 in size: the device's card is the build's image
+    made 8 GiB (sparse), `devices/NAME/sd.img`, made by `run --linux` the first time.
+    QEMU's card offers no 1.8 V signalling, so the kernel keeps it at 3.3 V high speed
+    (no UHS tuning). The first try stopped at the card's first command: CPU 0 took
+    interrupts and nothing else, the SD host's among those it never got to. The
+    card-detect pin (GPIO0_A7, low with a card in) had BOTHEDGE set by the kernel, which
+    makes a pin edge-triggered whatever INT_TYPE says; the GPIO model took it as a
+    level, active low, pending for as long as the card was in. With that right: "mmc0:
+    new high speed SDHC card", `mmcblk0` with its three partitions, the initramfs
+    mounts the btrfs root, and systemd starts ("Welcome to Debian GNU/Linux 13
+    (trixie)!"). The boot entries leave out `rw`, and Debian's initramfs mounts the root
+    read-only then, where a first boot must write /etc/machine-id: `run --linux` adds
+    `rw`. The first boot takes about 8 minutes (ldconfig alone 3.5), then
+    `flipperone-8a726c login: user (automatic login)`. `flipctl.service` ("flipctl on the
+    Flipper One panel") runs, and its interface is on the Flipper's screen in the
+    window (Temperature, Power flow, Profile: Minimal, the hostname, Menu and Desktop);
+    the View key opens its menu (Desktop Computer, Apps, Files, Network): the key goes
+    through the MCU firmware and the I2C link to the kernel's input device, and the
+    new frame back over the display SPI. `flipper-one-online.service` reports the boot
+    to the MCU. Only the USB gadget's setup fails (the RK3576's USB is not modelled).
+    Open: the SD driver warns "Interrupt latency" now and then (its watchdog found an
+    interrupt it had not been sent yet).

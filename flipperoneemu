@@ -356,9 +356,25 @@ def linux_args(d, build):
     dtb = ROOT / info["dtbs"] / "rockchip" / f"rk3576-flipper-one-{rev}.dtb"
     if not dtb.exists():
         die(f"no {dtb.relative_to(ROOT)}")
+    # its microSD card: the build's image, the first time (QEMU's SD cards
+    # are a power of 2 in size: 8 GiB, sparse); the device's from then on
+    card = d / "sd.img"
+    if not card.exists():
+        zst = OS_DIR / str(info["build"]) / \
+            f"debian-512-flipper-one-{info['build']}.img.zst"
+        if not zst.exists():
+            die(f"no {zst.relative_to(ROOT)}: run scripts/fetch_os.py")
+        print(f"{d.name}: its microSD card, from build {info['build']}")
+        subprocess.run(["zstd", "-q", "-d", "--sparse", "-o", str(card),
+                        str(zst)], check=True)
+        os.truncate(card, 8 << 30)
     return ["-kernel", str(ROOT / info["kernel"]), "-dtb", str(dtb),
             "-initrd", str(ROOT / info["initrd"]),
-            "-append", info["options"] + " console=ttyS0,1500000n8"]
+            # rw: the boot entries leave it out (Debian's initramfs then
+            # mounts the root read-only), and a first boot writes
+            # /etc/machine-id
+            "-append", info["options"] + " rw console=ttyS0,1500000n8",
+            "-drive", f"if=sd,format=raw,file={card}"]
 
 
 def png(path, width, height, rgb):

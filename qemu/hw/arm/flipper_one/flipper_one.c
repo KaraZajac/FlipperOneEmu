@@ -27,6 +27,9 @@
 #include "chardev/char.h"
 #include "system/runstate.h"
 #include "system/reset.h"
+#include "system/blockdev.h"
+#include "system/block-backend.h"
+#include "hw/core/qdev-properties-system.h"
 #include "flipper_one.h"
 #include "rp2350.h"
 #include "rk3576.h"
@@ -446,6 +449,21 @@ static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
         .stop = flipper_one_link_stop, .opaque = s,
     };
     rk3576_i2c_target(&s->rk3576, 0, &s->link);
+    /* a microSD card (-drive if=sd): its detect switch, GPIO0_A7, low */
+    {
+        DriveInfo *di = drive_get(IF_SD, 0, 0);
+
+        if (di) {
+            DeviceState *card = qdev_new(TYPE_SD_CARD);
+
+            qdev_prop_set_drive_err(card, "drive", blk_by_legacy_dinfo(di),
+                                    &error_fatal);
+            qdev_realize_and_unref(card,
+                                   BUS(dw_mshc_bus(&s->rk3576.sdmmc)),
+                                   &error_fatal);
+            rk3576_gpio_in(&s->rk3576, 0, 7, false);
+        }
+    }
     /* the display link: SPI0's frames to the MCU */
     s->frame = g_byte_array_sized_new(FO_LCD_H * (FO_LCD_W + 2));
     fo_host_spi_init(&s->linux_frames, &s->mcu, flipper_one_frame_sent, s);

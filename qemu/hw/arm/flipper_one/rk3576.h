@@ -11,6 +11,7 @@
 #include "hw/cpu/cluster.h"
 #include "hw/intc/arm_gic.h"
 #include "hw/i2c/i2c.h"
+#include "hw/sd/sd.h"
 #include "target/arm/cpu.h"
 
 #define TYPE_RK3576 "rk3576"
@@ -128,6 +129,27 @@ void rk_spi_set_out(RkSpiState *s,
                     void (*out)(void *opaque, int cs, const uint8_t *data,
                                 int len), void *opaque);
 
+/* dw_mshc.c: a DesignWare SD host, with an SD bus for a card */
+#define TYPE_DW_MSHC "dw-mshc"
+OBJECT_DECLARE_SIMPLE_TYPE(DwMshcState, DW_MSHC)
+
+struct DwMshcState {
+    SysBusDevice parent_obj;
+    MemoryRegion mr;
+    qemu_irq irq;
+    SDBus sdbus;
+    uint32_t ctrl, pwren, clkdiv, clksrc, clkena, tmout, ctype, blksiz;
+    uint32_t bytcnt, intmask, cmdarg, cmd, resp[4], rintsts, fifoth, usrid;
+    uint32_t uhs, bmod, dbaddr, idsts, idinten, dscaddr, bufaddr;
+    uint32_t tcbcnt, tbbcnt;
+    uint32_t other[128];                /* the rest, kept (timing, phases) */
+    uint8_t fifo[4096];                 /* the driver's few bytes */
+    uint32_t fifo_len, fifo_pos;
+    uint32_t writing;                   /* ... a write's, to come */
+};
+
+SDBus *dw_mshc_bus(DwMshcState *s);
+
 #define RK3576_NCPUS        8
 #define RK3576_NI2C         9           /* I2C0 ... I2C8 */
 #define RK3576_NGPIO        5           /* GPIO0 ... GPIO4 */           /* 4 Cortex-A53, then 4 Cortex-A72 */
@@ -147,6 +169,7 @@ struct RK3576State {
     RkI2cState i2c[RK3576_NI2C];
     RkGpio gpio[RK3576_NGPIO];
     RkSpiState spi0;                    /* the display link */
+    DwMshcState sdmmc;                  /* the microSD slot */
     MemoryRegion dmac_id[3];            /* the PL330s' IDs, where AMBA
                                            looks: their regions' ends */
     /* the board is told of a GPIO pin's new level */
