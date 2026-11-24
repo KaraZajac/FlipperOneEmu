@@ -79,12 +79,16 @@ SOFT_X = (724.5, 860.5, 996.5, 1132.5, 1268.5)
 SOFT_TOP, SOFT_W, SOFT_H = 752.0, 120.0, 59.0
 POWER_LED = 4
 
-# the power meter, along its slot: from its first LED, how far, and what
-METER_FROM = QPointF(1675, 265)
-METER_ANGLE = math.degrees(math.atan2(0.830, 0.558))
-METER = ((0, 10), (28, 9), (57, 8), (85, 7), (130, "battery"), (176, 12),
-         (205, 13), (234, 14), (263, 15), (302, 11))
+# the power meter, down its panel's middle (measured across and along the
+# render's panel): from where, at what angle, then how far and what
+METER_FROM = QPointF(1669.2, 268.9)
+METER_ANGLE = 54.86
+METER = ((-6, 10), (23.5, 9), (53, 8), (82.5, 7), (125, "battery"),
+         (174.5, 12), (204, 13), (232.5, 14), (260.5, 15), (304, 11))
 BATTERY_OUTLINE, BATTERY_CENTRE = (5, 6), 16
+METER_MARK = "#5b5a5f"                  # a meter mark whose light is off
+METER_PANEL = ((1635, 244, 9), (1680, 246, 6), (1880, 530, 6), (1880, 545, 4),
+               (1834, 545, 6), (1636, 265, 6))
 
 # ----------------------------------------------------------------- colours
 
@@ -681,16 +685,21 @@ def _bumpers(p):
 
 
 def _meter_slot(p):
-    p.save()
-    p.translate(METER_FROM)
-    p.rotate(METER_ANGLE)
-    slot = rrect(QRectF(-30, -21, 362, 42), 20)
-    fill(p, slot, QColor("#1f1f21"))
-    edges(p, slot, 5, rgba("#000000", 220), rgba("#68666b", 170), True)
-    p.restore()
+    """The power meter's panel: a shallow inset along the chamfer, its ends
+    cut square to the bumper's top and side."""
+    panel = poly(METER_PANEL)
+    p.setPen(QPen(QColor(0, 0, 0, 70), 7))
+    p.setBrush(Qt.NoBrush)
+    p.drawPath(panel.translated(1.2, -1.0))         # its rim's shadow
+    fill(p, panel, QColor("#2c2c2e"), QPen(QColor("#0f0f10"), 3.4))
+    edges(p, panel, 4, rgba("#000000", 120), rgba("#5a585e", 110), True)
 
 
 def _meter(p, st):
+    """The meter's lights, in the panel's frame: along it from the top, the
+    battery's four watt bars, the battery, the USB's four chevrons (pointing
+    to the battery: charging), the plug. A light that is off is a dark slit
+    (a bar) or a mark printed in grey (the rest)."""
     p.save()
     p.translate(METER_FROM)
     p.rotate(METER_ANGLE)
@@ -703,32 +712,33 @@ def _meter(p, st):
         on = lit(led)
         if on:
             glow(p, c, led, 26)
-        colour = bright(led) if on else QColor("#47464b")
-        if what == 11:                                  # the plug
-            colour = bright(led) if on else QColor("#8a888e")
+        colour = bright(led) if on else QColor(METER_MARK)
+        if what == 11:                  # the plug, its prongs to the battery
             p.setPen(Qt.NoPen)
             p.setBrush(colour)
-            p.drawRoundedRect(QRectF(c.x() - 10, -9, 14, 18), 4, 4)
-            p.setPen(QPen(colour, 3.2, Qt.SolidLine, Qt.FlatCap))
-            for dy in (-4.5, 4.5):
-                p.drawLine(c + QPointF(4, dy), c + QPointF(12, dy))
-            p.drawLine(c + QPointF(-10, 0), c + QPointF(-19, 0))
-        elif what in (12, 13, 14, 15):                  # chevrons, to the top
-            colour = bright(led) if on else QColor("#56555a")
-            p.setPen(QPen(colour, 6, Qt.SolidLine, Qt.FlatCap, Qt.MiterJoin))
+            plug = rrect(QRectF(c.x() - 11, -11, 21, 22), 6).united(
+                poly(((c.x() + 8, -7.5), (c.x() + 15, -2.8),
+                      (c.x() + 15, 2.8), (c.x() + 8, 7.5))))
+            p.drawPath(plug)
+            p.setPen(QPen(colour, 3.4, Qt.SolidLine, Qt.FlatCap))
+            for dy in (-5, 5):
+                p.drawLine(c + QPointF(-10, dy), c + QPointF(-21, dy))
+            p.setPen(QPen(colour, 5, Qt.SolidLine, Qt.FlatCap))
+            p.drawLine(c + QPointF(14, 0), c + QPointF(22, 0))
+        elif what in (12, 13, 14, 15):  # chevrons, opening 105 degrees
+            p.setPen(QPen(colour, 8, Qt.SolidLine, Qt.FlatCap, Qt.MiterJoin))
             p.setBrush(Qt.NoBrush)
-            path = QPainterPath(c + QPointF(6, -12))
-            path.lineTo(c + QPointF(-5, 0))
-            path.lineTo(c + QPointF(6, 12))
+            path = QPainterPath(c + QPointF(5.7, -16.7))
+            path.lineTo(c + QPointF(-7, 0))
+            path.lineTo(c + QPointF(5.7, 16.7))
             p.drawPath(path)
-        else:                                           # watts: a window each
-            r = QRectF(c.x() - 5.5, -12.5, 11, 25)
+        else:                                           # watts: a bar each
+            bar = rrect(QRectF(c.x() - 4, -11.5, 8, 23), 2.5)
             if on:
-                fill(p, rrect(r, 3.5), colour)
+                fill(p, bar, colour, QPen(mix(led, "#000000", 0.25), 1))
             else:
-                fill(p, rrect(r, 3.5), QColor("#0f0f10"))
-                edges(p, rrect(r, 3.5), 1.4, rgba("#000000", 255),
-                      rgba("#5e5c61", 200))
+                fill(p, bar.translated(1.3, -0.25), rgba("#ffffff", 26))
+                fill(p, bar, QColor("#19191a"))
     p.restore()
 
 
@@ -738,18 +748,20 @@ def _battery(p, c, st):
     edge = next((led for led in outline if lit(led)), None)
     if edge is not None:
         glow(p, c, edge, 36, 110)
-    colour = bright(edge) if edge is not None else QColor("#4a494e")
+    colour = bright(edge) if edge is not None else QColor(METER_MARK)
     p.setPen(QPen(colour, 3.6))
     p.setBrush(Qt.NoBrush)
-    p.drawRoundedRect(QRectF(c.x() - 17, -12, 38, 24), 4, 4)
+    p.drawRoundedRect(QRectF(c.x() - 16, -12.5, 36, 25), 4.5, 4.5)
     p.setPen(Qt.NoPen)
     p.setBrush(colour)
-    p.drawRect(QRectF(c.x() - 23, -5.5, 6, 11))
-    bolt = QPainterPath(c + QPointF(-7, 1.5))
-    for pt in ((3, -7), (1.5, -1), (8, -1.5), (-2, 7), (-0.5, 1)):
+    p.drawRoundedRect(QRectF(c.x() - 22, -6, 6, 12), 1.5, 1.5)
+    bolt = QPainterPath(c + QPointF(-8, 1.8))
+    for pt in ((4, -8), (2, -1.2), (10, -1.8), (-2, 8), (0, 1.2)):
         bolt.lineTo(c + QPointF(*pt))
     bolt.closeSubpath()
-    p.setBrush(bright(centre) if lit(centre) else colour)
+    if lit(centre):
+        glow(p, c + QPointF(1, 0), centre, 20, 120)
+    p.setBrush(bright(centre) if lit(centre) else QColor(METER_MARK))
     p.drawPath(bolt)
 
 
