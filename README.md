@@ -152,6 +152,7 @@ yet.
 | 0010 | hw/ufs: let WriteBooster's flush during hibernation be set |
 | 0011 | hw/usb/hcd-xhci: a property for an ERSTBA written high then low (as DWC3's) |
 | 0012 | hw/dma/pl330: let the machine go on during a long transfer |
+| 0013 | target/arm: an exception return without the BQL when the PMU is idle |
 
 ## Layout
 

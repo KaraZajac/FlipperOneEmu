@@ -140,7 +140,8 @@ screen and its CLI.
 - ☑ Speed while FlipCTL draws: the display link's bursts go to the MCU's PIO as a
       wave, paced so that the CPUs get the BQL between them, and Linux's SPI DMA
       no longer runs whole inside its register write (QEMU patch 0012): the sound
-      at speed (2026-11-25)
+      at speed; an exception return takes the BQL only while the PMU counts
+      (patch 0013) (2026-11-25)
 - ☐ Wi-Fi (the MT7921 on USB)
 
 ## Not planned

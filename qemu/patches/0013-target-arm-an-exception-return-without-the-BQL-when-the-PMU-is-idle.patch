@@ -1,0 +1,130 @@
+From: FlipperOneEmu
+Subject: [PATCH] target/arm: an exception return without the BQL when the PMU is idle
+
+Every exception return (ERET, and AArch32's CPSR write on one) takes the
+BQL twice, to call the EL change hooks before and after it. On a CPU with
+a PMU these are the PMU's, for counters that filter by EL. With no counter
+enabled in PMCNTENSET they do nothing that matters: each counter's delta
+is set to the present count, and nothing reads a delta before a counter is
+enabled, which is a register write that brackets itself with the PMU's
+start and finish. Linux leaves the counters off unless perf is used, and
+with eight cores the BQL taken at every syscall's and interrupt's return
+was where they waited most for it.
+
+Skip the hooks, and the BQL, when the PMU's are the only hooks and no
+counter is enabled; decide once per return, so that the two are called
+both or neither.
+
+---
+--- a/target/arm/internals.h
++++ b/target/arm/internals.h
+@@ -1080,6 +1080,34 @@
+     }
+ }
+ 
++/*
++ * Whether an EL change's hooks have nothing to do: when the PMU's are all
++ * there are, and no counter is enabled in PMCNTENSET, they only set each
++ * counter's delta to the present count, which nothing reads before a
++ * counter is enabled (and what enables one, a register write, does the
++ * PMU's start and finish itself). An exception return then need not take
++ * the BQL to call them.
++ */
++static inline bool arm_el_change_hooks_idle(ARMCPU *cpu)
++{
++    ARMELChangeHook *hook;
++
++    if (cpu->env.cp15.c9_pmcnten) {
++        return false;
++    }
++    QLIST_FOREACH(hook, &cpu->pre_el_change_hooks, node) {
++        if (hook->hook != pmu_pre_el_change) {
++            return false;
++        }
++    }
++    QLIST_FOREACH(hook, &cpu->el_change_hooks, node) {
++        if (hook->hook != pmu_post_el_change) {
++            return false;
++        }
++    }
++    return true;
++}
++
+ /* Return the SCTLR value which controls this address translation regime */
+ static inline uint64_t regime_sctlr(CPUARMState *env, ARMMMUIdx mmu_idx)
+ {
+--- a/target/arm/tcg/helper-a64.c
++++ b/target/arm/tcg/helper-a64.c
+@@ -628,6 +628,7 @@
+     uint64_t spsr = env->banked_spsr[spsr_idx];
+     int new_el;
+     bool return_to_aa64 = (spsr & PSTATE_nRW) == 0;
++    bool hooks;
+ 
+     aarch64_save_sp(env, cur_el);
+ 
+@@ -691,9 +692,12 @@
+         goto illegal_return;
+     }
+ 
+-    bql_lock();
+-    arm_call_pre_el_change_hook(cpu);
+-    bql_unlock();
++    hooks = !arm_el_change_hooks_idle(cpu);
++    if (hooks) {
++        bql_lock();
++        arm_call_pre_el_change_hook(cpu);
++        bql_unlock();
++    }
+ 
+     if (!return_to_aa64) {
+         env->aarch64 = false;
+@@ -758,9 +762,11 @@
+      */
+     aarch64_sve_change_el(env, cur_el, new_el, return_to_aa64);
+ 
+-    bql_lock();
+-    arm_call_el_change_hook(cpu);
+-    bql_unlock();
++    if (hooks) {
++        bql_lock();
++        arm_call_el_change_hook(cpu);
++        bql_unlock();
++    }
+ 
+     return;
+ 
+--- a/target/arm/tcg/op_helper.c
++++ b/target/arm/tcg/op_helper.c
+@@ -797,10 +797,13 @@
+ void HELPER(cpsr_write_eret)(CPUARMState *env, uint32_t val)
+ {
+     uint32_t mask;
++    bool hooks = !arm_el_change_hooks_idle(env_archcpu(env));
+ 
+-    bql_lock();
+-    arm_call_pre_el_change_hook(env_archcpu(env));
+-    bql_unlock();
++    if (hooks) {
++        bql_lock();
++        arm_call_pre_el_change_hook(env_archcpu(env));
++        bql_unlock();
++    }
+ 
+     mask = aarch32_cpsr_valid_mask(env->features, &env_archcpu(env)->isar);
+     cpsr_write(env, val, mask, CPSRWriteExceptionReturn);
+@@ -813,9 +816,11 @@
+     env->regs[15] &= (env->thumb ? ~1 : ~3);
+     arm_rebuild_hflags(env);
+ 
+-    bql_lock();
+-    arm_call_el_change_hook(env_archcpu(env));
+-    bql_unlock();
++    if (hooks) {
++        bql_lock();
++        arm_call_el_change_hook(env_archcpu(env));
++        bql_unlock();
++    }
+ }
+ 
+ /* Access to user mode registers from privileged modes.  */

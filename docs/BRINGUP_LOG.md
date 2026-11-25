@@ -1322,3 +1322,25 @@ register headers.
       One play in six came out 0.3 s short at its end in the WAV; the others were
       whole. A steady tone cannot show where, since its periods line up with
       the buffer's.
+
+67. **Exception returns without the BQL.** Sampled during entry 66's runs, the
+    RK3576's cores waited for the BQL most in `helper_exception_return`. QEMU takes
+    it twice at every exception return (each syscall's and interrupt's) to call the
+    EL change hooks. On these cores those are the PMU's, for counters that count
+    only at some ELs. With no counter enabled in PMCNTENSET they do nothing that
+    matters: they set each counter's delta to the present count, and what enables a
+    counter is a register write that does the PMU's bookkeeping itself. Linux
+    enables none unless perf is used, and Flipper OS's kernel has no hard-lockup
+    detector to use one. QEMU patch 0013 skips the hooks, and the lock, when the
+    PMU's are the only ones and no counter is enabled, deciding once per return so
+    that both hooks run or neither does.
+    - **The lock waits.** In 80 samples of every thread during 8 × 200 `date`s at
+      once, no core waited for the BQL there any more. What is left is the end of
+      a run of guest code (`mttcg_cpu_thread_fn`), a few system registers, and
+      device accesses.
+    - **The times are loose.** Another job kept about two of this host's cores busy
+      meanwhile (load 13), and the times varied widely on one build. The best of
+      four rounds went from 14.8 to 6.9 s for 200 `date`s in a row, and from 5.9 to
+      3.3 s for 8 × 50 at once. Login from the Linux check's kept card took 81 s
+      once and 155 s another time, against 155 to 169 s before.
+    The smoke test and the Linux check pass.
