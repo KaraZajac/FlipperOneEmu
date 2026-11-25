@@ -136,6 +136,12 @@ def cmd_run(args):
         cmd += ["-chardev", f"socket,id=usbip,host=127.0.0.1,port={args.usbip},"
                 "server=on,wait=off",
                 "-global", "flipper-one-usb-host.usbip=usbip"]
+    # the audio codec's sound (Flipper OS plays at 48 kHz): nowhere, a WAV
+    # file, or this PC's sound through a driver QEMU was built with
+    audio = (f"wav,path={os.path.abspath(args.audio)}"
+             if args.audio.endswith(".wav") else args.audio)
+    cmd += ["-audiodev", f"{audio},id=snd0,out.frequency=48000",
+            "-global", "nau8822.audiodev=snd0"]
     if args.detach:
         with open(d / "qemu.out", "wb") as out:
             p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=out,
@@ -508,6 +514,11 @@ def main():
             p.add_argument("--kernel-args", metavar="ARGS", default="",
                            help="more of the kernel's command line, after "
                                 "the boot entry's")
+            p.add_argument("--audio", metavar="WHERE", default="none",
+                           help="where the audio codec's sound goes: none "
+                                "(the default), FILE.wav, or an audio driver "
+                                "this QEMU has (qemu-system-aarch64 "
+                                "-audiodev help)")
         if name in ("gui", "shot"):
             p.add_argument("--zoom", type=int)
         if name == "gui":

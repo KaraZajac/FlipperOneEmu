@@ -146,8 +146,15 @@ static void pio_irqs(RP2Pio *p)
         intr |= (p->sm[i].tx_n < tx_depth(&p->sm[i]) ? 1u : 0) << (4 + i);
     }
     intr |= (uint32_t)p->irq << 8;
-    for (int i = 0; i < 2; i++) {
-        qemu_set_irq(p->irq_line[i], ((intr | p->intf[i]) & p->inte[i]) != 0);
+    for (int i = 0; i < 2; i++) {               /* (it runs at every step:
+                                                   a line set only when it
+                                                   changes) */
+        bool level = ((intr | p->intf[i]) & p->inte[i]) != 0;
+
+        if (level != p->irq_level[i]) {
+            p->irq_level[i] = level;
+            qemu_set_irq(p->irq_line[i], level);
+        }
     }
 }
 
@@ -883,5 +890,9 @@ void rp2350_pio_reset(RP2350State *s)
         p->inte[0] = p->inte[1] = p->intf[0] = p->intf[1] = 0;
         p->fdebug = 0;
         p->running = false;
+        for (int n = 0; n < 2; n++) {
+            p->irq_level[n] = false;
+            qemu_set_irq(p->irq_line[n], 0);
+        }
     }
 }

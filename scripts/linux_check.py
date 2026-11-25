@@ -29,6 +29,9 @@ Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
   Linux sees configured at high speed; a line goes each way over its
   serial port (ttyGS0, the host's chardev at the other end); unplugged,
   Linux sees the computer go;
+- Flipper OS's sound card (the NAU8822 codec on SAI2) plays a tone of 2 s
+  at 1 kHz, and the codec gives it out: the device's audio.wav, from QEMU's
+  wav backend (`run --audio`), has 2 s of 1 kHz;
 - `systemctl reboot` starts the RK3576 again, and the kernel with it;
   `systemctl poweroff` switches it off (PSCI), after which the MCU cuts
   its rail; the MCU's CPU app switches it on again, and the kernel starts;
@@ -54,6 +57,7 @@ import pathlib
 import re
 import shutil
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -195,6 +199,28 @@ def gadget_serial(con, path):
         s.close()
 
 
+def wav_tone(path):
+    """the sound in a WAV file from QEMU's wav backend (S16 stereo, its data
+    after a 44-byte header that is finished only at the end): (its seconds,
+    from the first sample above silence to the last; its frequency, from the
+    left channel's rising zero crossings), or None"""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    n = (len(data) - 44) // 4
+    if n <= 0:
+        return None
+    left = struct.unpack(f"<{2 * n}h", data[44:44 + 4 * n])[::2]
+    loud = [i for i, v in enumerate(left) if abs(v) > 300]
+    if not loud:
+        return None
+    a, b = loud[0], loud[-1]
+    ups = sum(1 for i in range(a + 1, b) if left[i - 1] < 0 <= left[i])
+    secs = (b - a) / 48000
+    return round(secs, 3), round(ups / secs, 1) if secs else 0
+
+
 def copy_card(src, dst):
     subprocess.run(["cp", "--reflink=auto", "--sparse=always", str(src),
                     str(dst)], check=True)
@@ -311,6 +337,21 @@ def checks(check, d, out, first_boot, off, net):
           st.until(lambda: con.run(f"cat {udc}/state") ==
                    ["not attached"], 30))
 
+    # the audio codec on SAI2: Flipper OS's sound card, and a tone through
+    # it, as QEMU's wav backend takes what the codec plays
+    card = con.run("cat /proc/asound/NAU8822/id")
+    tone = con.run("sox -n -r 48000 -c 2 -b 16 /tmp/tone.wav synth 2 sine "
+                   "1000 vol 0.5 && aplay -q -D hw:NAU8822 /tmp/tone.wav && "
+                   "echo played", 90)
+    check("audio: Flipper OS's sound card (the NAU8822 on SAI2) plays a "
+          "tone", card == ["NAU8822"] and bool(tone) and tone[-1] == "played",
+          f"{card} {tone}")
+    time.sleep(2)                       # (the last of it, to the file)
+    got = wav_tone(d / "audio.wav")
+    check("... and the codec gives it out: 2 s of 1 kHz",
+          got is not None and 1.9 <= got[0] <= 2.1 and
+          990 <= got[1] <= 1010, str(got))
+
     qmark = len(text_of(qlog))
     lmark = len(text_of(linux))
     con.send("systemctl reboot")
@@ -392,10 +433,12 @@ def main():
     # the getty on the USB gadget's serial port is masked: with no computer
     # on the gadget, its setup blocks while it holds the console's lock,
     # and the console's getty may then never start (Flipper OS's OS-02,
-    # docs/FIRMWARE_BUGS.md; about one boot in six)
+    # docs/FIRMWARE_BUGS.md; 2 boots of 19 here). The audio codec's sound
+    # goes to the device's audio.wav.
     run = [sys.executable, str(st.LAUNCHER), "run", "-n", name, "--detach",
            "--linux", "--kernel-args",
-           "systemd.mask=serial-getty@flipserial0.service"] + \
+           "systemd.mask=serial-getty@flipserial0.service",
+           "--audio", str(d / "audio.wav")] + \
         (["--net"] if net else [])
     if subprocess.run(run).returncode:
         sys.exit("the device did not start")

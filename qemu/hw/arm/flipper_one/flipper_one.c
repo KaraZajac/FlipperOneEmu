@@ -832,6 +832,19 @@ static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
     }
     i2c_slave_create_simple(rk3576_i2c_bus(&s->rk3576, 1), "rk806", 0x23);
     i2c_slave_create_simple(rk3576_i2c_bus(&s->rk3576, 8), "hym8563", 0x51);
+    /* the audio codec on I2C6, on SAI2's I2S link: -global
+     * nau8822.audiodev=ID for where its sound goes */
+    {
+        DeviceState *codec = qdev_new(TYPE_NAU8822);
+        RkSaiState *sai = rk3576_sai(&s->rk3576, 2);
+
+        qdev_prop_set_uint8(codec, "address", 0x1a);
+        i2c_slave_realize_and_unref(I2C_SLAVE(codec),
+                                    rk3576_i2c_bus(&s->rk3576, 6),
+                                    &error_fatal);
+        nau8822_link(codec, rk_sai_lrck, sai);
+        rk_sai_set_sink(sai, nau8822_dac, codec);
+    }
     if (!ms->kernel_filename) {
         qemu_register_reset(flipper_one_rk3576_reset, &s->rk3576);
         return;

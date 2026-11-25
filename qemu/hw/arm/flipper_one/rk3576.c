@@ -44,7 +44,8 @@
  *             held low), masked, cleared by EOI
  *   DMAC0-2   0x2ab90000, 0x2abb0000, 0x2abd0000: ARM PL330s (QEMU's), their
  *             event and abort interrupts on the first of their two SPIs
- *             (32, 34, 36); peripherals never hold them back. AMBA reads a
+ *             (32, 34, 36); only the SAIs hold them back with their
+ *             requests, the other peripherals never do. AMBA reads a
  *             PrimeCell's IDs at the end of its region, 16 KiB here: QEMU's
  *             4 KiB of registers are there, and their IDs again at 0x3fe0
  *   SPI0      rk_spi.c, 0x2acf0000, SPI 116: the display link (the board
@@ -58,6 +59,10 @@
  *   GMAC0-1   rk_gmac.c, 0x2a220000 and 0x2a230000, SPIs 293 and 301: the
  *             Ethernet ports, each with the board's PHY; each takes the next
  *             -nic (its network), and has no link without one
+ *   SAI0/2/6  rk_sai.c, 0x2a600000, 0x2a620000, 0x27d50000, SPIs 187, 189,
+ *             193: the serial audio interfaces Flipper OS enables (SAI2:
+ *             the codec's I2S link, SAI6: HDMI's); their DMA requests on
+ *             DMAC0's 0/1, DMAC1's 0/1, DMAC2's 4/5
  *   UFS       0x2a2d0000, SPI 361: QEMU's UFS host (UFSHCI 4.0, no MCQ;
  *             QEMU patch 0008 for the UIC commands Rockchip's driver
  *             sends), on a PCI host that the kernel does not see; the
@@ -587,6 +592,11 @@ void rk3576_reset_devices(RK3576State *s)
     for (int d = 0; d < 3; d++) {
         device_cold_reset(s->dmac[d]);
     }
+    for (int i = 0; i < RK3576_NSAI; i++) {    /* (after the DMACs, whose
+                                                   reset forgets their
+                                                   requests) */
+        device_cold_reset(DEVICE(&s->sai[i]));
+    }
     /* (I2C2's bus is the main board's: what is on it keeps its power) */
     for (int n = 0; n < RK3576_NI2C; n++) {
         device_cold_reset(DEVICE(&s->i2c[n]));
@@ -625,6 +635,28 @@ void rk3576_reset_devices(RK3576State *s)
 I2CBus *rk3576_i2c_bus(RK3576State *s, int n)
 {
     return s->i2c[n].bus;
+}
+
+/* the SAIs Flipper OS enables: where, their SPI, their DMAC and its
+ * requests for TX and RX */
+static const struct {
+    int n;
+    hwaddr base;
+    int spi, dmac, tx, rx;
+} rk3576_sais[RK3576_NSAI] = {
+    { 0, 0x2a600000, 187, 0, 0, 1 },
+    { 2, 0x2a620000, 189, 1, 0, 1 },    /* the codec's */
+    { 6, 0x27d50000, 193, 2, 4, 5 },    /* HDMI's */
+};
+
+RkSaiState *rk3576_sai(RK3576State *s, int n)
+{
+    for (int i = 0; i < RK3576_NSAI; i++) {
+        if (rk3576_sais[i].n == n) {
+            return &s->sai[i];
+        }
+    }
+    g_assert_not_reached();
 }
 
 void rk3576_i2c_target(RK3576State *s, int n, const RkI2cTarget *t)
@@ -682,6 +714,11 @@ static void rk3576_init(Object *obj)
         g_autofree char *name = g_strdup_printf("i2c%d", n);
 
         object_initialize_child(obj, name, &s->i2c[n], TYPE_RK_I2C);
+    }
+    for (int i = 0; i < RK3576_NSAI; i++) {
+        g_autofree char *name = g_strdup_printf("sai%d", rk3576_sais[i].n);
+
+        object_initialize_child(obj, name, &s->sai[i], TYPE_RK_SAI);
     }
 }
 
@@ -907,6 +944,23 @@ static void rk3576_realize(DeviceState *dev, Error **errp)
                                qdev_get_gpio_in(any, i));
         }
         qdev_connect_gpio_out(any, 0, rk3576_spi(s, 32 + 2 * d));
+    }
+
+    /* the SAIs, their requests to their DMACs */
+    for (int i = 0; i < RK3576_NSAI; i++) {
+        SysBusDevice *sai = SYS_BUS_DEVICE(&s->sai[i]);
+        DeviceState *dma = s->dmac[rk3576_sais[i].dmac];
+
+        if (!sysbus_realize(sai, errp)) {
+            return;
+        }
+        memory_region_add_subregion(sysmem, rk3576_sais[i].base,
+                                    sysbus_mmio_get_region(sai, 0));
+        sysbus_connect_irq(sai, 0, rk3576_spi(s, rk3576_sais[i].spi));
+        qdev_connect_gpio_out_named(DEVICE(sai), "dma", 0,
+                                    qdev_get_gpio_in(dma, rk3576_sais[i].tx));
+        qdev_connect_gpio_out_named(DEVICE(sai), "dma", 1,
+                                    qdev_get_gpio_in(dma, rk3576_sais[i].rx));
     }
 
     create_unimplemented_device("rk3576", PERIPH_BASE, PERIPH_SIZE);

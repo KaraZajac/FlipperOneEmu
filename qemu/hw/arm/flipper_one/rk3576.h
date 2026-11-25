@@ -212,6 +212,45 @@ struct RkDwc3State {
 struct FoUsbDevOps;
 extern const struct FoUsbDevOps rk_dwc3_usb_ops;
 
+/* rk_sai.c: a SAI (serial audio interface): FIFOs between its DMAC and an
+ * I2S link. As the link's master its frame clock is its own; as a slave
+ * (SAI2, the codec's) the codec gives it (rk_sai_lrck). The frames it sends
+ * go to its sink, the codec's DAC; it receives silence. */
+#define TYPE_RK_SAI "rk-sai"
+OBJECT_DECLARE_SIMPLE_TYPE(RkSaiState, RK_SAI)
+#define RK_SAI_FIFO     1024            /* words, each way */
+
+/* what takes the frames a SAI sends: @frames of them, S16 stereo */
+typedef void RkSaiSink(void *opaque, const int16_t *lr, int frames);
+
+struct RkSaiState {
+    SysBusDevice parent_obj;
+    MemoryRegion mr;
+    qemu_irq irq;
+    qemu_irq dma_busy[2];               /* to its DMAC, TX's and RX's:
+                                           QEMU's PL330 waits while high */
+    QEMUTimer *timer;                   /* its frame clock, while it runs */
+    uint32_t regs[0x80 / 4];
+    uint32_t tx[RK_SAI_FIFO], rx[RK_SAI_FIFO];
+    int tx_head, tx_n, rx_head, rx_n;
+    bool tx_half, rx_half;              /* (16-bit samples: half a word) */
+    int64_t last_ns;                    /* the frame clock, last looked at */
+    int64_t owed;                       /* ... the frames since, × 1e9 */
+    int64_t tx_late;                    /* frames due that TX did not have */
+    uint32_t mclk;                      /* its MCLK, as master (property) */
+    int lrck_hz;                        /* a slave's frame clock (0: none) */
+    RkSaiSink *sink;
+    void *sink_opaque;
+    bool verbose;                       /* (property, any time: its ticks
+                                           and controls in QEMU's log) */
+    int tx_in;                          /* (... words come since a tick) */
+};
+
+/* @sai's frame clock, from the link's master: @hz frames a second (0:
+ * none) */
+void rk_sai_lrck(void *sai, int hz);
+void rk_sai_set_sink(RkSaiState *s, RkSaiSink *sink, void *opaque);
+
 /* rk_gmac.c: an Ethernet MAC (DWC Ethernet QoS 4.20a), with the board's
  * RTL8211F PHY on its MDIO bus */
 #define TYPE_RK_GMAC "rk-gmac"
@@ -292,7 +331,8 @@ void rk_tsadc_otp_trims(uint8_t *otp);
 
 #define RK3576_NCPUS        8
 #define RK3576_NI2C         9           /* I2C0 ... I2C8 */
-#define RK3576_NGPIO        5           /* GPIO0 ... GPIO4 */           /* 4 Cortex-A53, then 4 Cortex-A72 */
+#define RK3576_NGPIO        5           /* GPIO0 ... GPIO4 */
+#define RK3576_NSAI         3           /* those Flipper OS enables */           /* 4 Cortex-A53, then 4 Cortex-A72 */
 #define RK3576_DRAM_BASE    0x40000000ULL
 #define RK3576_GIC_SPIS     448         /* the GIC-400's, as the SoC has it */
 
@@ -326,6 +366,8 @@ struct RK3576State {
     DeviceState *dmac[3];
     MemoryRegion dmac_id[3];            /* the PL330s' IDs, where AMBA
                                            looks: their regions' ends */
+    RkSaiState sai[RK3576_NSAI];        /* SAI0, SAI2 (the codec's), SAI6
+                                           (HDMI's): rk3576_sai() */
     /* the board is told of a GPIO pin's new level */
     void (*gpio_out)(void *opaque, int bank, int pin, bool level);
     void *gpio_out_opaque;
@@ -345,6 +387,8 @@ qemu_irq rk3576_spi(RK3576State *s, int spi);
 void rk3576_reset_devices(RK3576State *s);
 /* the bus of I2C@n, for what the board has on it */
 I2CBus *rk3576_i2c_bus(RK3576State *s, int n);
+/* SAI @n (0, 2 or 6) */
+RkSaiState *rk3576_sai(RK3576State *s, int n);
 /* the UFS host's bus, for the device's logical units (ufs-lu) */
 BusState *rk3576_ufs_bus(RK3576State *s);
 /* a level from outside on GPIO@bank's @pin (0 ... 31: A0 ... D7) */

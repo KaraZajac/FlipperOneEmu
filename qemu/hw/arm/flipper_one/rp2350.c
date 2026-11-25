@@ -250,7 +250,7 @@ static void rp2350_irq_set(void *opaque, int n, int level)
     RP2350State *s = opaque;
 
     for (int c = 0; c < ARRAY_SIZE(s->cpu); c++) {
-        qemu_set_irq(qdev_get_gpio_in(DEVICE(&s->cpu[c]), n), level);
+        qemu_set_irq(s->cpu_irq[c][n], level);
     }
 }
 
@@ -405,6 +405,13 @@ static void rp2350_realize(DeviceState *dev, Error **errp)
         rp2350_ppb_realize(s, c);
     }
     qemu_register_reset(rp2350_cores_reset, s);
+    /* each core's NVIC inputs, looked up once: a PIO block sets its lines
+     * at every step it takes (qdev_get_gpio_in() searches by name) */
+    for (int c = 0; c < ARRAY_SIZE(s->cpu); c++) {
+        for (int n = 0; n < RP2350_NUM_IRQ; n++) {
+            s->cpu_irq[c][n] = qdev_get_gpio_in(DEVICE(&s->cpu[c]), n);
+        }
+    }
     s->irqs = qemu_allocate_irqs(rp2350_irq_set, s, RP2350_NUM_IRQ);
 
     /* what has interrupts: after the cores' NVICs */

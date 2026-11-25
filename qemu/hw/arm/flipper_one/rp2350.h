@@ -198,6 +198,7 @@ typedef struct RP2Pio {
     QEMUTimer *timer;
     bool running;
     qemu_irq irq_line[2];
+    bool irq_level[2];          /* ... as last set */
 } RP2Pio;
 
 /* what a core's PPB has beyond QEMU's (rp2350_ppb.c) */
@@ -292,6 +293,7 @@ struct RP2350State {
     ARMv7MState cpu[2];         /* the two Cortex-M33s */
     RP2350Core core[2];
     qemu_irq *irqs;             /* a peripheral's interrupt: to both NVICs */
+    qemu_irq cpu_irq[2][RP2350_NUM_IRQ];    /* ... their inputs */
     Clock *sysclk;
 
     MemoryRegion bus;           /* what the cores see, the PPB aside */

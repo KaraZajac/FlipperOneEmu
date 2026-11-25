@@ -133,7 +133,13 @@ screen and its CLI.
       USB-C port (the virtual PC, through USB20_SEL) enumerates Flipper OS's gadget,
       its serial port on usb.sock, all of it over USB/IP (2026-11-25); the board's
       hubs and the MT7921
-- ☐ M.2 and PCIe, audio (NAU8822), HDMI (the RTC: M3; the main bus's chips: M2)
+- ◐ Audio: the SAIs (0, 2, 6) and the NAU8822: Flipper OS's sound card plays, out of
+      QEMU's audio (`run --audio`) (2026-11-25); the microphones; this PC's own
+      sound (QEMU with a PipeWire backend)
+- ☐ M.2 and PCIe, HDMI (the RTC: M3; the main bus's chips: M2)
+- ☐ Speed: a frame on the display link costs the host about 0.45 s, the BQL held
+      (the MCU's PIO, edge by edge): while FlipCTL draws, the rest of the machine
+      waits (the sound runs up to 20 % slow)
 - ☐ Wi-Fi (the MT7921 on USB)
 
 ## Not planned

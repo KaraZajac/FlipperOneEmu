@@ -13,6 +13,8 @@ arm_common_ss.add(when: 'CONFIG_FLIPPER_ONE', if_true: files(
   'rk_spi.c',
   'rk_gmac.c',
   'rk_dwc3.c',
+  'rk_sai.c',
+  'nau8822.c',
   'dw_mshc.c',
   'rk806.c',
   'hym8563.c',

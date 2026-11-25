@@ -1210,3 +1210,56 @@ register headers.
       then had the gadget configured, and the console logged in 2 s later, with all
       three gettys running. So the gadget's getty held the console's lock until a
       computer configured the gadget, as entry 63 read it.
+
+65. **Sound.** Flipper OS's card "On-board Analog NAU8822" is a simple-audio-card. It
+    pairs SAI2, a serial audio interface on the I2S link, with a Nuvoton NAU8822 codec
+    on I2C6, and the codec is the link's master. Nothing answered at 0x1a ("Failed to
+    issue reset: -6"), so there was no card, and SAI6 (HDMI's) logged "Failed to idle
+    FS" at every boot. A spec came first, read from rockchip_sai, nau8822, pl330 and
+    simple-card at the kernel's own revision. Then:
+    - **`rk_sai.c`**, the three SAIs Flipper OS enables (0, 2, 6):
+      - **Registers.** Those the driver reads from the hardware (its regmap caches
+        the rest). VERSION is 0x23073576, so its idle flags are in STATUS. The flags
+        are worked out from XFER; CLR's clears are done at once. FIFO interrupts are
+        never raised (a gap here is the emulation's, not the program's).
+      - **FIFOs.** 1024 words each way. DMA requests go to the PL330s' request
+        inputs, which hold a channel at DMAWFP while high, and are driven again
+        after their reset forgets them.
+      - **Frame clock.** Its own as master (MCLK / (MDIV + 1) / (FW + 1)), the
+        codec's as slave. While a direction runs, it is looked at every millisecond
+        of virtual time: TX's frames go to the codec, and RX gets silence.
+    - **`nau8822.c`**, the codec: its 9-bit registers over two-byte writes, a reset at
+      any write to R0, and the defaults the driver assumes. As master it gives the
+      link fs = IMCLK / 256 (MCLK, or its PLL, over MCLKSEL): 48 kHz as Linux sets
+      it. Its DAC turns the frames SAI2 sends into QEMU audio at that rate, with the
+      DAC's mute, power and volume and the louder of the outputs that are on.
+    - **The launcher's `run --audio`.** The sound goes nowhere by default (QEMU's
+      `none`, paced on the virtual clock), to a WAV file, or to a driver QEMU has.
+      This QEMU has no PipeWire, PulseAudio or ALSA backend; their development
+      packages were not installed when it was configured.
+    The card is there, the HDMI one stops complaining, and a tone played with aplay
+    comes out of the codec as it went in: 5 s of 1 kHz, no sample lost. Three things
+    on the way:
+    - **QEMU's PL330 runs ahead of its requests.** Its write queue holds 16 store
+      instructions of a burst (8 words) each. So the channel can pass DMAWFP up to
+      128 words before the stores land in the FIFO and raise its request. With a
+      256-word FIFO and requests while two bursts fit, 360 words arrived in one
+      gap, and the rest were lost: a 5 s tone played in 2.6 s. Now TX asks while
+      256 words are free, and RX while 144 are there.
+    - **A frame not yet in the FIFO is late, not silent.** The DMAC's ring always has
+      frames (old ones, if the program is late), so a short FIFO means the emulation
+      is behind. Those frames go when they come, up to 20 ms late, instead of as
+      silence.
+    - **The display link slows the sound, and the rest of the machine.** With
+      FlipCTL running, the stream ran 15 to 20 % slow; without it, at speed (a period
+      in 127 ms, not 125). The guest's DMA interrupts, traced in the guest, came up
+      to 270 ms late, on any core, while a frame went to the MCU. That frame goes
+      edge by edge through the MCU's PIO (host_spi.c): about 0.45 s of the host's
+      time, with the BQL held by the main loop, every time FlipCTL draws (every 1 to
+      2 s). Two small things in that path are fixed: the RP2350's interrupt routing
+      looked up each core's NVIC input by name at every PIO step, and the PIO set
+      its interrupt lines at every step whether they changed or not. The frame
+      itself costs as much as before; making it cheaper is a task of its own.
+    The SAI's ticks can be logged (`qom-set /machine/rk3576/sai2 verbose on` in QEMU's
+    monitor). The Linux check plays a 2 s tone and measures it in the WAV file: 2 s
+    of 1 kHz.
