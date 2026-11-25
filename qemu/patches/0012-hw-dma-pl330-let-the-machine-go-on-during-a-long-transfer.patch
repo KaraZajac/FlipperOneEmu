@@ -1,0 +1,91 @@
+From: FlipperOneEmu
+Subject: [PATCH] hw/dma/pl330: let the machine go on during a long transfer
+
+pl330_exec() runs every channel until none can go on. A transfer to a
+peripheral that never holds its request back therefore runs whole in one
+call, and a DMAGO through the debug registers makes that call inside the
+guest's register write: Rockchip's SPI driver sending a 37 KB frame (one
+byte a beat, a read and a write each) held the BQL for about 50 ms, and
+the rest of the machine (its timers, the other CPUs' device accesses)
+waited.
+
+Bound a run: a channel (or the manager) executes at most 256 cycles at a
+turn, and a run at most one such slice per channel in all; the rest goes
+on from the DMAC's timer, at once. The first pass of a run always fits in
+it, so each channel has a turn in every run. A channel's deadlock is
+still detected when a cycle of it does nothing.
+
+---
+--- a/hw/dma/pl330.c
++++ b/hw/dma/pl330.c
+@@ -1236,38 +1236,56 @@
+     return num_exec;
+ }
+ 
+-static int pl330_exec_channel(PL330Chan *channel)
++/*
++ * A run of the DMAC gives each channel (and the manager) at most
++ * PL330_EXEC_SLICE cycles at a turn, and executes at most one slice per
++ * channel in all before the rest of the machine goes on: what is left runs
++ * from the timer, at once.  Without a bound, a transfer to a peripheral
++ * that never holds its request back (tens of kilobytes to a SPI
++ * controller's TX FIFO) ran whole inside the register write that started
++ * it, with the BQL held for tens of milliseconds.  The first pass of a run
++ * always fits, so every channel has a turn in each.
++ */
++#define PL330_EXEC_SLICE            256
++
++static int pl330_exec_channel(PL330Chan *channel, int *budget)
+ {
+     int insr_exec = 0;
+ 
+     /* TODO: Is it all right to execute everything or should we do per-cycle
+        simulation? */
+-    while (pl330_exec_cycle(channel)) {
++    while (insr_exec < PL330_EXEC_SLICE && *budget > 0) {
++        if (!pl330_exec_cycle(channel)) {
++            /* Detect deadlock */
++            if (channel->state == pl330_chan_executing) {
++                pl330_fault(channel, PL330_FAULT_LOCKUP_ERR);
++            }
++            /* Situation when one of the queues has deadlocked but all
++             * channels have finished their programs should be impossible.
++             */
++            break;
++        }
+         insr_exec++;
++        (*budget)--;
+     }
+ 
+-    /* Detect deadlock */
+-    if (channel->state == pl330_chan_executing) {
+-        pl330_fault(channel, PL330_FAULT_LOCKUP_ERR);
+-    }
+-    /* Situation when one of the queues has deadlocked but all channels
+-     * have finished their programs should be impossible.
+-     */
+-
+     return insr_exec;
+ }
+ 
+ static inline void pl330_exec(PL330State *s)
+ {
+-    int i, insr_exec;
++    int i, insr_exec, budget = PL330_EXEC_SLICE * (s->num_chnls + 1);
+     trace_pl330_exec();
+     do {
+-        insr_exec = pl330_exec_channel(&s->manager);
++        insr_exec = pl330_exec_channel(&s->manager, &budget);
+ 
+         for (i = 0; i < s->num_chnls; i++) {
+-            insr_exec += pl330_exec_channel(&s->chan[i]);
++            insr_exec += pl330_exec_channel(&s->chan[i], &budget);
+         }
+-    } while (insr_exec);
++    } while (insr_exec && budget > 0);
++    if (budget <= 0) {
++        timer_mod(s->timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
++    }
+ }
+ 
+ static void pl330_exec_cycle_timer(void *opaque)

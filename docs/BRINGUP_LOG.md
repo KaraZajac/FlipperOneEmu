@@ -1263,3 +1263,62 @@ register headers.
     The SAI's ticks can be logged (`qom-set /machine/rk3576/sai2 verbose on` in QEMU's
     monitor). The Linux check plays a 2 s tone and measures it in the WAV file: 2 s
     of 1 kHz.
+
+66. **The display link, and what held the machine up while FlipCTL drew.** Entry 65
+    left the sound 15 to 20 % slow while FlipCTL drew, and blamed the display link.
+    - **Where a frame's time went.** Sampled with eu-stack, the main loop spent 84 %
+      of a frame running the MCU's PIO up to each of its 600,000 edges: all three
+      blocks, twice an edge, a 64-bit division at every PIO step and a clock read
+      at every edge. A frame cost 146 ms back to back over the host link, MCU alone.
+    - **The wave** (`rp2350_pins_wave()`). The board hands the PIO a burst's lines as
+      a function of time: their levels at any moment, and when one next has a
+      level. A state machine reads its pins at its own time, and a WAIT for one of
+      them goes on at the moment the wave brings it there, so a burst is one run of
+      the PIO, not 2,000 of them. It is used only where nothing but the PIO looks at
+      those pins (no listener, no interrupt, nothing on the chip driving them);
+      otherwise the burst goes edge by edge as before. Also:
+      - the cycle's length is worked out once per CLKDIV and clock;
+      - a stalled machine looks again only when another changes pins or an IRQ
+        flag, or the DMA moves a FIFO (every stalled machine stepped again after
+        every step of another);
+      - the interrupt lines are worked out when a FIFO or a flag moved.
+      A frame now costs 71 ms instead of 146.
+    - **A bug on the way, in host_spi.c.** "Active" goes down at t + 1 and the first
+      clock comes 2 µs later. But a change behind the virtual clock is made at its
+      present, and the bursts run behind it, so the sampler saw "active" a few
+      microseconds after t + 1. It then joined the wave 3.7 µs (122 bits) into the
+      frame: frames came 9 to 18 bytes short, and the firmware dropped them all
+      ("Waiting for CPU screen…"). Edge by edge this never showed, because every
+      edge was made at the present too. Now the first clock comes 2 µs after
+      "active" really went down, and every frame shows pixel for pixel. The smoke
+      test's frame caught it; a benchmark that looked only at its last frame had
+      not.
+    - **The sound was still behind, for two other reasons.** The SAI's tick log
+      showed them:
+      - **Three stalls of the main loop, about 50 ms each, in 10 s.** Each came
+        just before a frame. Linux's SPI0 sends the 37 KB frame by DMA (DMAC0, a
+        byte a beat), and QEMU's PL330 runs every channel until none can go on.
+        So the whole transfer ran inside the guest's DMAGO register write, with
+        the BQL held. QEMU patch 0012 bounds a run: at most 256 cycles per channel
+        at a turn, and one such slice per channel in all. The rest runs from the
+        DMAC's timer, at once.
+      - **Then the DMA ran dry exactly at period boundaries.** Each dry spell
+        started with whole periods of 6000 frames delivered. Linux's pl330 driver
+        starts each period's program from its interrupt handler, and during a
+        frame that came 13 to 115 ms late. The link's bursts held the BQL for 96 %
+        of a frame's span, back to back, and the CPUs' device accesses (an
+        interrupt taken among them) hardly got it between two. Now each burst
+        waits as long as the last one took, so the link takes at most half of the
+        main loop. On the wire, the clock pauses between bursts, as a DMA-fed one
+        may.
+    - **The result, with FlipCTL drawing.**
+      - **The stream is at speed.** A 10 s tone's 480,000 frames went out in 9.995
+        to 9.998 s of the SAI's time. Before, it ran 1.3 % slow, with 68 to 113
+        ticks at the 20 ms late cap.
+      - **Timed in the guest**, aplay's start and drain included, the tone took
+        10.4 to 10.5 s, with a key tapped every 0.5 s too (11.4 to 11.9 s before).
+      - **A frame now** costs the host about 70 ms with the MCU alone, or 140 ms
+        with Flipper OS running, spread over about 300 ms.
+      One play in six came out 0.3 s short at its end in the WAV; the others were
+      whole. A steady tone cannot show where, since its periods line up with
+      the buffer's.

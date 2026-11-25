@@ -155,6 +155,24 @@ typedef struct RP2PinListener {
     void *opaque;
 } RP2PinListener;
 
+/*
+ * Pins the board drives over a window of time as it knows ahead
+ * (rp2350_pins_wave()): their levels at any moment of it, and when one of
+ * them next has a level.  Times are picoseconds of the virtual clock.
+ */
+typedef struct RP2Wave RP2Wave;
+struct RP2Wave {
+    uint64_t mask;                      /* the pins */
+    int64_t from_ps, to_ps;             /* the window */
+    uint64_t rose, fell;                /* pins that went up, down in it */
+    /* the pins' levels (in @mask's bits) at @t_ps, from_ps or later: from
+     * to_ps on, as the window leaves them */
+    uint64_t (*levels)(const RP2Wave *w, int64_t t_ps);
+    /* the first moment from @t_ps on that @pin has @level, if it is in the
+     * window; INT64_MAX if not */
+    int64_t (*until)(const RP2Wave *w, int pin, bool level, int64_t t_ps);
+};
+
 /* a UART's bytes from a pin's changes (the firmware's log, on GPIO41) */
 typedef struct RP2PinUart {
     struct RP2350State *soc;
@@ -182,6 +200,10 @@ typedef struct RP2PioSM {
     bool on_pins;                       /* ... on a WAIT for a pin */
     int64_t next_ps;                    /* when its next cycle is (ps) */
     bool irq_waiting;                   /* an IRQ WAIT set its flag */
+    /* its cycle's length, worked out for this CLKDIV and clk_sys period */
+    uint32_t period_div;
+    uint64_t period_clk;
+    int64_t period_ps;
 } RP2PioSM;
 
 typedef struct RP2Pio {
@@ -329,6 +351,7 @@ struct RP2350State {
     /* rp2350_pio.c */
     RP2Pio pio[3];
     bool pio_burst;                     /* a burst of pins runs them */
+    const RP2Wave *wave;                /* ... or a wave, while they run */
 
     /* rp2350_ppb.c */
     RP2Ppb ppb[2];
@@ -414,6 +437,19 @@ void rp2350_pin_drive(RP2350State *s, int pin, int level);
  */
 void rp2350_pins_drive_at(RP2350State *s, uint64_t mask, uint64_t levels,
                           int64_t when_ns);
+/*
+ * ... or drives @w's pins over its window as it says, which the PIO sees as
+ * it would see each change through rp2350_pins_drive_at(), but without a
+ * call for each: a state machine that waits on one of them goes on at the
+ * moment it comes.  The pins are left as the window leaves them, driven.
+ * Only for pins nothing but the PIO looks at meanwhile (no listener, no
+ * interrupt, nothing on the chip driving them): false, and nothing done,
+ * otherwise.  The window starts at the virtual clock or later, and after
+ * any change made before it (rp2350_pins_drive_at() makes one that is
+ * behind the clock at its present): a machine already past the window's
+ * start misses what the wave did before its time.
+ */
+bool rp2350_pins_wave(RP2350State *s, const RP2Wave *w);
 void rp2350_pin_listen(RP2350State *s, int pin, RP2PinFn *fn, void *opaque);
 /* the level @pin has from the chip and the pulls alone, whatever the board
  * drives: what an open-drain master on it lets the line do */
@@ -493,6 +529,8 @@ void rp2350_pio_kick(RP2350State *s);
 /* the state machines run up to @when_ns (ahead of the clock, it may be);
  * @pins: a pin changed then, and those that wait on pins look again */
 void rp2350_pio_run_to(RP2350State *s, int64_t when_ns, bool pins);
+/* the state machines run through @w's window (rp2350_pins_wave()) */
+void rp2350_pio_wave(RP2350State *s, const RP2Wave *w);
 /* a burst of rp2350_pins_drive_at() begins (its changes run the machines;
  * their timers wait), or ends */
 void rp2350_pio_burst(RP2350State *s, bool on);

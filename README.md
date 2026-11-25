@@ -151,6 +151,7 @@ yet.
 | 0009 | hw/ufs: the link's lanes as a property (the RK3576's link has two) |
 | 0010 | hw/ufs: let WriteBooster's flush during hibernation be set |
 | 0011 | hw/usb/hcd-xhci: a property for an ERSTBA written high then low (as DWC3's) |
+| 0012 | hw/dma/pl330: let the machine go on during a long transfer |
 
 ## Layout
 

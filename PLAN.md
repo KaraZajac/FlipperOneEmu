@@ -114,7 +114,7 @@ screen and its CLI.
 - ◐ A program in the RK3576's place on the link: the host link (docs/HOST_LINK.md,
       `devices/NAME/host.sock`): the MCU's registers at 0x69 and CPU_INT (2026-11-24);
       the screen's frames over the display SPI, edge by edge to the MCU's PIO
-      (2026-11-24)
+      (2026-11-24), as a wave of edges (2026-11-25)
 - ☑ i2c0 (rk3x) with the MCU's register slave at 0x69 and its interrupt line (GPIO2_A6):
       Flipper OS's `flipper-one-mcu` driver and the MCU firmware talk (2026-11-24)
 - ☑ spi0 with the MCU's frame sampler: FlipCTL on the emulated screen, the Flipper's
@@ -137,9 +137,10 @@ screen and its CLI.
       QEMU's audio (`run --audio`) (2026-11-25); the microphones; this PC's own
       sound (QEMU with a PipeWire backend)
 - ☐ M.2 and PCIe, HDMI (the RTC: M3; the main bus's chips: M2)
-- ☐ Speed: a frame on the display link costs the host about 0.45 s, the BQL held
-      (the MCU's PIO, edge by edge): while FlipCTL draws, the rest of the machine
-      waits (the sound runs up to 20 % slow)
+- ☑ Speed while FlipCTL draws: the display link's bursts go to the MCU's PIO as a
+      wave, paced so that the CPUs get the BQL between them, and Linux's SPI DMA
+      no longer runs whole inside its register write (QEMU patch 0012): the sound
+      at speed (2026-11-25)
 - ☐ Wi-Fi (the MT7921 on USB)
 
 ## Not planned

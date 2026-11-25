@@ -131,6 +131,10 @@ void rp2350_pins_update(RP2350State *s, int64_t when_ns)
     for (int pin = 0; pin < RP2_PINS; pin++) {
         now |= (uint64_t)pin_compute(s, pin) << pin;
     }
+    if (s->wave) {
+        /* a wave's pins change as it says until its window is over */
+        now = (now & ~s->wave->mask) | (s->pin_level & s->wave->mask);
+    }
     changed = now ^ s->pin_level;
     s->pin_level = now;
     if (!changed) {
@@ -215,6 +219,35 @@ void rp2350_pins_drive_at(RP2350State *s, uint64_t mask, uint64_t levels,
     if (changed) {
         rp2350_pio_run_to(s, when_ns, true);
     }
+}
+
+bool rp2350_pins_wave(RP2350State *s, const RP2Wave *w)
+{
+    uint64_t final;
+
+    for (uint64_t m = w->mask; m; m &= m - 1) {
+        int pin = ctz64(m);
+        bool out, oe;
+
+        pin_function(s, pin, &out, &oe);
+        if (oe || s->pin_listener[pin][0].fn || pin_watched(s, pin)) {
+            return false;                           /* more than the PIO's */
+        }
+    }
+    rp2350_pio_wave(s, w);
+    final = w->levels(w, w->to_ps) & w->mask;
+    s->ext_drive |= w->mask;
+    s->ext_level = (s->ext_level & ~w->mask) | final;
+    s->pin_level = (s->pin_level & ~w->mask) | final;
+    for (uint64_t m = (w->rose | w->fell) & w->mask; m; m &= m - 1) {
+        int pin = ctz64(m);
+
+        /* INTR's EDGE_HIGH (bit 3), EDGE_LOW (bit 2) */
+        s->gpio_edges[pin / 8] |= (((w->rose >> pin) & 1 ? 8u : 0) |
+                                   ((w->fell >> pin) & 1 ? 4u : 0))
+                                  << ((pin % 8) * 4);
+    }
+    return true;
 }
 
 int rp2350_pin_own(RP2350State *s, int pin)

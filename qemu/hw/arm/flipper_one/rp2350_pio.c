@@ -14,7 +14,11 @@
  * level.  A machine that stalls (a FIFO, a WAIT, an IRQ) costs nothing until
  * then, and goes on at that moment; so does one that jumps to itself, always,
  * which nothing but the CPU or the DMA can move on (a program that ran off
- * its end, into empty instruction memory, is such a loop: JMP 0 at 0).
+ * its end, into empty instruction memory, is such a loop: JMP 0 at 0).  A
+ * stalled machine looks again when another one changes pins or an IRQ flag,
+ * or the DMA moves a FIFO; nothing else of another's can free it.  Pins a
+ * wave drives (rp2350_pins_wave()) are read at the machine's own time, and a
+ * WAIT for one of them goes on at the moment the wave brings it there.
  * Pins it drives change at the time of the instruction that drove them; the
  * pins (rp2350_gpio.c) take them from pad_out and pad_oe, PIO pin 0 being
  * GPIOBASE.
@@ -97,28 +101,45 @@ static uint32_t rx_pop(RP2PioSM *sm)
 
 /* --------------------------------------------------------- pins, IRQs */
 
+/* a cycle's length (worked out again only when CLKDIV or clk_sys changed) */
 static int64_t sm_period_ps(RP2350State *s, RP2PioSM *sm)
 {
-    uint64_t hz = clock_get_hz(s->sysclk) ?: 150000000;
-    uint32_t div = sm->clkdiv >> 8;                 /* INT.FRAC, 16.8 */
+    uint64_t clk = clock_get(s->sysclk);
 
-    if (!(div >> 8)) {
-        div |= 0x10000 << 8;                        /* INT 0: 65536 */
+    if (sm->period_div != sm->clkdiv || sm->period_clk != clk ||
+        !sm->period_ps) {
+        uint64_t hz = clock_get_hz(s->sysclk) ?: 150000000;
+        uint32_t div = sm->clkdiv >> 8;             /* INT.FRAC, 16.8 */
+
+        if (!(div >> 8)) {
+            div |= 0x10000 << 8;                    /* INT 0: 65536 */
+        }
+        sm->period_ps = (int64_t)((uint64_t)div * 1000000000000ull / 256 /
+                                  hz) ?: 1;
+        sm->period_div = sm->clkdiv;
+        sm->period_clk = clk;
     }
-    return (int64_t)((uint64_t)div * 1000000000000ull / 256 / hz);
+    return sm->period_ps;
 }
 
-static uint32_t pio_pins(RP2350State *s, RP2Pio *p)
+/* the 32 pins from GPIOBASE at @t_ps: a wave's (rp2350_pins_wave()) as it
+ * has them then */
+static uint32_t pio_pins(RP2350State *s, RP2Pio *p, int64_t t_ps)
 {
-    uint64_t all = s->pin_level | ((uint64_t)s->pin_level << RP2_PINS);
+    const RP2Wave *w = s->wave;
+    uint64_t level = s->pin_level, all;
 
-    return all >> p->gpiobase;                      /* 32 pins from GPIOBASE */
+    if (w && t_ps >= w->from_ps) {
+        level = (level & ~w->mask) | (w->levels(w, t_ps) & w->mask);
+    }
+    all = level | (level << RP2_PINS);
+    return all >> p->gpiobase;
 }
 
 static uint32_t sm_in_pins(RP2350State *s, RP2Pio *p, RP2PioSM *sm)
 {
     int base = (sm->pinctrl >> 15) & 31;
-    uint32_t v = ror32(pio_pins(s, p), base);
+    uint32_t v = ror32(pio_pins(s, p, sm->next_ps), base);
     int count = sm->shiftctrl & 31;
 
     return count ? v & ((1u << count) - 1) : v;
@@ -191,6 +212,33 @@ static RP2Pio *irq_target(RP2350State *s, RP2Pio *p, int sm, int index,
 
 /* ------------------------------------------------------ the instructions */
 
+/* a step may have freed another machine: it changed pins or an IRQ flag */
+static bool pio_freed;
+
+/*
+ * A WAIT for PIO pin @rel (from GPIOBASE) to be @pol, which it is not at the
+ * machine's time: if a wave drives the pin and brings it to that in its
+ * window, the machine goes on at that moment, as a change there would have
+ * woken it.
+ */
+static bool wait_wave(RP2350State *s, RP2Pio *p, RP2PioSM *sm, int rel,
+                      bool pol)
+{
+    const RP2Wave *w = s->wave;
+    int gpio = (p->gpiobase + rel) % RP2_PINS;
+    int64_t at;
+
+    if (!w || !((w->mask >> gpio) & 1) || sm->next_ps < w->from_ps) {
+        return false;
+    }
+    at = w->until(w, gpio, pol, sm->next_ps);
+    if (at > w->to_ps) {                            /* (INT64_MAX: not in it) */
+        return false;
+    }
+    sm->next_ps = MAX(sm->next_ps, at);
+    return true;
+}
+
 /*
  * One instruction of state machine @n at its time: false if it stalled (its
  * side-set took effect anyway, as on the chip).
@@ -198,6 +246,8 @@ static RP2Pio *irq_target(RP2350State *s, RP2Pio *p, int sm, int index,
 static bool sm_step(RP2350State *s, RP2Pio *p, int n)
 {
     RP2PioSM *sm = &p->sm[n];
+    int64_t t0 = sm->next_ps;
+    uint32_t out0 = p->pad_out, oe0 = p->pad_oe;
     bool exec = sm->has_exec;
     uint8_t pc0 = sm->pc;
     uint16_t insn = exec ? sm->exec : p->imem[sm->pc];
@@ -238,7 +288,7 @@ static bool sm_step(RP2350State *s, RP2Pio *p, int n)
         case 4: take = sm->y != 0; sm->y--; break;
         case 5: take = sm->x != sm->y; break;
         case 6:
-            take = (pio_pins(s, p) >> ((sm->execctrl >> 24) & 31)) & 1;
+            take = (pio_pins(s, p, t0) >> ((sm->execctrl >> 24) & 31)) & 1;
             break;
         default:                                    /* !OSRE */
             take = sm->osr_count < (((sm->shiftctrl >> 25) & 31) ?: 32);
@@ -260,27 +310,36 @@ static bool sm_step(RP2350State *s, RP2Pio *p, int n)
     }
     case 1: {                                       /* WAIT */
         bool pol = arg & 0x80, ok;
-        int index = arg & 31;
+        int index = arg & 31, rel = -1;             /* rel: a PIO pin's */
 
         switch ((arg >> 5) & 3) {
         case 0:                                     /* GPIO */
-            ok = ((pio_pins(s, p) >> index) & 1) == pol;
+            rel = index;
+            ok = ((pio_pins(s, p, t0) >> rel) & 1) == pol;
             break;
         case 1:                                     /* PIN */
             ok = ((sm_in_pins(s, p, sm) >> index) & 1) == pol;
+            count = sm->shiftctrl & 31;             /* IN_COUNT: 0 is 32 */
+            if (!count || index < count) {
+                rel = (((sm->pinctrl >> 15) & 31) + index) & 31;
+            }
             break;
         case 2:                                     /* IRQ */
             tp = irq_target(s, p, n, index, &flag);
             ok = ((tp->irq >> flag) & 1) == pol;
             if (ok && pol) {
                 tp->irq &= ~(1u << flag);
+                pio_freed = true;
                 pio_irqs(tp);
             }
             break;
         default:                                    /* JMPPIN */
-            ok = ((pio_pins(s, p) >> (((sm->execctrl >> 24) + (index & 3))
-                                      & 31)) & 1) == pol;
+            rel = ((sm->execctrl >> 24) + (index & 3)) & 31;
+            ok = ((pio_pins(s, p, t0) >> rel) & 1) == pol;
             break;
+        }
+        if (!ok && rel >= 0) {
+            ok = wait_wave(s, p, sm, rel, pol);
         }
         if (!ok) {
             on_pins = ((arg >> 5) & 3) != 2;        /* GPIO, PIN, JMPPIN */
@@ -473,8 +532,10 @@ static bool sm_step(RP2350State *s, RP2Pio *p, int n)
     case 6: {                                       /* IRQ */
         tp = irq_target(s, p, n, arg & 31, &flag);
         if (arg & 0x40) {                           /* clear */
+            pio_freed |= (tp->irq >> flag) & 1;
             tp->irq &= ~(1u << flag);
         } else if (!sm->irq_waiting) {
+            pio_freed |= !((tp->irq >> flag) & 1);
             tp->irq |= 1u << flag;
             if (arg & 0x20) {
                 sm->irq_waiting = true;
@@ -514,21 +575,27 @@ static bool sm_step(RP2350State *s, RP2Pio *p, int n)
 
         sm->pc = sm->pc == top ? (sm->execctrl >> 7) & 31 : (sm->pc + 1) & 31;
     }
-    if (pins_changed) {
-        pio_pins_changed(s, sm->next_ps);
+    if (pins_changed && (p->pad_out != out0 || p->pad_oe != oe0)) {
+        pio_freed = true;
+        pio_pins_changed(s, t0);
     }
     sm->stalled = false;
     sm->next_ps += (1 + delay) * sm_period_ps(s, sm);
-    pio_irqs(p);
+    if (fifo_moved) {                   /* (its IRQ flags: done above) */
+        pio_irqs(p);
+    }
     return true;
 
 stall:
-    if (pins_changed) {
-        pio_pins_changed(s, sm->next_ps);
+    if (pins_changed && (p->pad_out != out0 || p->pad_oe != oe0)) {
+        pio_freed = true;
+        pio_pins_changed(s, t0);
     }
     sm->stalled = true;
     sm->on_pins = on_pins;
-    pio_irqs(p);
+    if (fifo_moved) {
+        pio_irqs(p);
+    }
     return false;
 }
 
@@ -540,7 +607,7 @@ enum { WAKE_NONE, WAKE_PINS, WAKE_ALL };
  * Run @p's machines up to @now_ps.  Those that stalled look again first:
  * every one (WAKE_ALL: the CPU, the DMA or the timer came), those that wait
  * on a pin (WAKE_PINS: a pin changed), or none (WAKE_NONE: only the time
- * went on); and when one goes on, the others, which it may have freed.  A
+ * went on); and when one changes what another may wait for, the others.  A
  * machine's time never goes back: one that ran ahead of the clock with a
  * burst of pin changes (rp2350_pins_drive_at()) looks again at its own time.
  */
@@ -548,6 +615,7 @@ static void pio_run_at(RP2350State *s, RP2Pio *p, int64_t now_ps, int wake)
 {
     int64_t next = INT64_MAX;
     int budget = BUDGET;
+    bool freed;
 
     if (p->running) {
         return;
@@ -562,10 +630,11 @@ static void pio_run_at(RP2350State *s, RP2Pio *p, int64_t now_ps, int wake)
             sm->stalled = false;
         }
     }
+    freed = pio_freed;              /* (a run within a step of another's) */
+    pio_freed = false;
     while (budget-- > 0) {
         int best = -1;
         int64_t at;
-        bool went_on;
 
         for (int i = 0; i < 4; i++) {
             RP2PioSM *sm = &p->sm[i];
@@ -580,16 +649,20 @@ static void pio_run_at(RP2350State *s, RP2Pio *p, int64_t now_ps, int wake)
             break;
         }
         at = p->sm[best].next_ps;
-        went_on = sm_step(s, p, best);
+        sm_step(s, p, best);
         if (fifo_moved) {
             /* a DREQ: the DMA answers at once, as on the chip, so that a
              * FIFO it feeds (or drains) does not run dry (or fill) here */
             fifo_moved = false;
             rp2350_dma_kick(s);
-            went_on = true;
+            pio_freed = true;
         }
-        if (went_on) {
-            for (int i = 0; i < 4; i++) {           /* it may free another */
+        if (pio_freed) {
+            /* it changed pins or an IRQ flag, or the DMA moved a FIFO: the
+             * others look again (a step that changed none of that cannot
+             * have freed them) */
+            pio_freed = false;
+            for (int i = 0; i < 4; i++) {
                 RP2PioSM *sm = &p->sm[i];
 
                 if (sm->stalled) {
@@ -614,6 +687,7 @@ static void pio_run_at(RP2350State *s, RP2Pio *p, int64_t now_ps, int wake)
         timer_del(p->timer);
     }
     p->running = false;
+    pio_freed = freed;
     if (fifo_moved) {
         fifo_moved = false;
         rp2350_dma_kick(s);
@@ -622,7 +696,10 @@ static void pio_run_at(RP2350State *s, RP2Pio *p, int64_t now_ps, int wake)
 
 static void pio_run(RP2350State *s, RP2Pio *p)
 {
-    pio_run_at(s, p, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) * 1000, WAKE_ALL);
+    if (!p->running) {                  /* (the DMA at a FIFO, in a run) */
+        pio_run_at(s, p, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) * 1000,
+                   WAKE_ALL);
+    }
 }
 
 static void pio_timer(void *opaque)
@@ -664,6 +741,33 @@ void rp2350_pio_run_to(RP2350State *s, int64_t when_ns, bool pins)
             pio_run_at(s, &s->pio[i], at_ps, pins ? WAKE_PINS : WAKE_NONE);
         }
     }
+}
+
+void rp2350_pio_wave(RP2350State *s, const RP2Wave *w)
+{
+    for (int i = 0; i < 3; i++) {                   /* up to it, as was */
+        if (s->pio[i].ctrl & 0xf) {
+            pio_run_at(s, &s->pio[i], w->from_ps, WAKE_NONE);
+        }
+    }
+    s->wave = w;
+    for (int i = 0; i < 3; i++) {
+        RP2Pio *p = &s->pio[i];
+
+        if (!(p->ctrl & 0xf)) {
+            continue;
+        }
+        for (int n = 0; n < 4; n++) {               /* its start wakes them */
+            RP2PioSM *sm = &p->sm[n];
+
+            if (sm->stalled && sm->on_pins) {
+                sm->next_ps = MAX(sm->next_ps, w->from_ps);
+                sm->stalled = false;
+            }
+        }
+        pio_run_at(s, p, w->to_ps, WAKE_NONE);
+    }
+    s->wave = NULL;
 }
 
 /* ------------------------------------------------------------ registers */
