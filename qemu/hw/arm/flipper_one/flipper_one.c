@@ -85,6 +85,7 @@ struct FlipperOneState {
                                    computer */
     bool usb20_sel;             /* the USB mux: the RK3576's, not the MCU's */
     int headset;                /* in the jack: FO_HEADSET_... */
+    int ambient_dc;             /* around the device: 0.1 °C */
     bool off;                   /* the board's supply cut (the charger's
                                    ship FET) */
     QEMUTimer *power_timer;     /* ... back, after a system power reset */
@@ -104,6 +105,7 @@ struct FlipperOneState {
  */
 static void flipper_one_usb(FlipperOneState *s, int what);
 static void flipper_one_headset(FlipperOneState *s, int what);
+static void flipper_one_ambient(FlipperOneState *s, int dc);
 
 static void flipper_one_input(void *opaque)
 {
@@ -119,6 +121,22 @@ static void flipper_one_input(void *opaque)
     if (p->headset != s->headset) {
         flipper_one_headset(s, p->headset);
     }
+    if (p->ambient_dc != s->ambient_dc) {
+        flipper_one_ambient(s, p->ambient_dc);
+    }
+}
+
+/*
+ * The temperature around the device (the panel's `ambient`, 25 °C unless
+ * told): the battery takes it at once (its gauge reads it, and the
+ * charger's TS input), and the RK3576 warms or cools toward it, its own
+ * warmth on top (rk3576_tsadc.c)
+ */
+static void flipper_one_ambient(FlipperOneState *s, int dc)
+{
+    s->ambient_dc = dc;
+    s->battery.temp_dk = dc + 2732;
+    s->rk3576.tsadc.ambient = dc / 10.0;
 }
 
 /*
@@ -359,7 +377,9 @@ static void flipper_one_backlight(void *opaque)
  * the RK3576 runs, the control board's 3.3 V while the board has its
  * supply. The currents are nominal, not measured: Flipper OS at rest, and
  * on the two CPU rails so much more for each core of the cluster that is
- * running (not waiting for an interrupt) as a channel is read.
+ * running (not waiting for an interrupt) as a channel is read, at the
+ * cluster's top clock; at a lower one less, and the rail at the voltage
+ * the OPP table gives that clock (rk3576_cluster_*).
  */
 static const struct {
     const char *name;
@@ -398,22 +418,24 @@ static void flipper_one_rail(void *opaque, int rail, int32_t *mv,
     FlipperOneState *s = opaque;
     int ma = fo_rails[rail].ma;
 
+    int c = fo_rails[rail].cluster;
+    double core_ma = 0;
+
     *mv = *ua = 0;
     if (s->off || (rail != FO_RAIL_CONTROL && !s->rk_on)) {
         return;
     }
-    if (fo_rails[rail].cluster >= 0) {
+    *mv = fo_rails[rail].mv;
+    if (c >= 0) {
         for (int i = 0; i < 4; i++) {
-            CPUState *cs = CPU(&s->rk3576.cpu[fo_rails[rail].cluster * 4 +
-                                              i]);
-
-            if (!qatomic_read(&cs->halted)) {
-                ma += fo_rails[rail].ma_per_core;
+            if (!qatomic_read(&CPU(&s->rk3576.cpu[c * 4 + i])->halted)) {
+                core_ma += fo_rails[rail].ma_per_core;
             }
         }
+        core_ma *= rk3576_cluster_current(&s->rk3576, c);
+        *mv = rk3576_cluster_mv(&s->rk3576, c);
     }
-    *mv = fo_rails[rail].mv;
-    *ua = ma * 1000;
+    *ua = ma * 1000 + (int32_t)(core_ma * 1000 + 0.5);
 }
 
 /* the main board's bus: the MCU's PIO I2C, and the RK3576's I2C2 */
@@ -994,7 +1016,8 @@ static void flipper_one_instance_init(Object *obj)
     FlipperOneState *s = FLIPPER_ONE(obj);
 
     s->battery.design_mah = 3000;
-    s->battery.temp_dk = 2982;                  /* 25 °C */
+    s->ambient_dc = 250;                        /* 25 °C */
+    s->battery.temp_dk = 2982;
     fo_battery_set_percent(&s->battery, 80);
 }
 

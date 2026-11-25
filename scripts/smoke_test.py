@@ -16,7 +16,8 @@ Boots a throwaway device, devices/smoke-PID (removed at the end unless
   state; a frame over the display SPI, on the panel pixel for pixel; an LED
   from its colour register; the haptic register running the motor;
 - its CLI: the firmware's own unit tests pass, and `power show` reads the
-  gauge, the charger and the current meter as the battery model has them;
+  gauge, the charger and the current meter as the battery model has them,
+  and the battery's temperature as the panel link's `ambient` sets it;
 - the buttons and the touchpad: `input dump` sees a key and a touch sent on
   the front-panel link; a headset in the jack, its mic, a button on it;
 - Power's Flipper OS menu over the frame, and Stop there: the MCU's desktop;
@@ -177,6 +178,9 @@ class Panel:
             b"\x89PNG\r\n\x1a\n" +
             chunk(b"IHDR", struct.pack(">IIBBBBB", LCD_W, H, 8, 0, 0, 0, 0)) +
             chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+    def send(self, line):
+        self.s.sendall(line.encode() + b"\n")
 
     def tap(self, key, hold=0.15):
         self.s.sendall(f"press {key}\n".encode())
@@ -449,6 +453,13 @@ def body(check, name, d, out, port):
     temp = value("BatTemp")
     check("power show: the battery is at 25 °C", temp is not None and
           abs(temp - 25) < 0.5, str(temp))
+    panel.send("ambient 40")            # the temperature around the device
+    text = cli(d, "power show", None, 2.5, ctrl_c=True)
+    temp, die = value("BatTemp"), value("ChgTemp")
+    check("the panel's ambient: the battery at 40 °C, the charger's die 45",
+          temp is not None and abs(temp - 40) < 0.5 and die is not None and
+          abs(die - 45) < 0.6, f"{temp} {die}")
+    panel.send("ambient 25")
     # the five INA4230s: with no Linux, only the control board's 3.3 V is up
     text = cli(d, "power consumption", None, 3, ctrl_c=True)
 

@@ -61,7 +61,9 @@ has them: this project's own vector drawing, measured from the device's publishe
 is), with its LEDs where the device has them. Click its buttons, or use the keyboard:
 the arrows and Enter are the pad, Backspace or Esc is Back, F1 to F5 are the soft keys
 (Esc, View, Power, Edit, Run), Tab is App Switcher, Space is PTT; drag on the touchpad;
-Ctrl+U plugs a charger into the USB-C port, Ctrl+Shift+U a computer. It talks to the
+Ctrl+U plugs a charger into the USB-C port, Ctrl+Shift+U a computer; the Device menu
+also sets the temperature around it (the battery's, and what the RK3576 warms from: at
+85 °C Linux slows its cores, at 110 °C it cannot run). It talks to the
 emulator over a front-panel link, [docs/PANEL_LINK.md](docs/PANEL_LINK.md), which any program can use.
 Another,
 [docs/HOST_LINK.md](docs/HOST_LINK.md) (`devices/NAME/host.sock`), lets a program take
@@ -127,7 +129,7 @@ yet.
 | `flipperoneemu` | The launcher: run, the window, stop, status, log, cli, shot, where |
 | `scripts/` | Setting up QEMU, fetching the firmware, the window (`fo_gui.py`, `fo_view.py`, `fo_link.py`), the launcher's parts, checks |
 | `docs/BRINGUP_LOG.md` | What was found on the way, in order |
-| `docs/FIRMWARE_BUGS.md` | Bugs in the MCU firmware that the emulator turned up |
+| `docs/FIRMWARE_BUGS.md` | Bugs in the MCU firmware and Flipper OS that the emulator turned up |
 
 ## License
 

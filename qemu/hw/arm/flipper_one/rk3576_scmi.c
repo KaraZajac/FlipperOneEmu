@@ -16,8 +16,10 @@
  *       each takes any rate from 24 MHz to 2.4 GHz in 1 MHz steps, and
  *       keeps it; the others are NOT_FOUND
  * Its vendor is "FlipperOneEmu", its sub-vendor "TF-A": it stands in for
- * Rockchip's firmware, whose own names are not known here. A rate changes
- * nothing else: the emulated cores run as fast as they run.
+ * Rockchip's firmware, whose own names are not known here. A rate does not
+ * change how fast the emulated cores run; it changes what they draw, as
+ * the CPU rails' power monitors read it, and how warm the chip gets
+ * (rk3576_cluster_*: the device tree's OPP tables give the voltages).
  *
  * Copyright (c) 2026, Kara Zajac
  * SPDX-License-Identifier: BSD-3-Clause
@@ -65,6 +67,13 @@ static int scmi_clock(uint32_t id)
     return -1;
 }
 
+/* a word of a message (ldl_le_p's is signed: a rate over 2^31 Hz, as the
+ * A72s' 2208 MHz, would be sign-extended) */
+static uint32_t le32(const uint8_t *p)
+{
+    return ldl_le_p(p);
+}
+
 static void put32(uint8_t *p, int *n, uint32_t v)
 {
     stl_le_p(p + *n, v);
@@ -90,7 +99,7 @@ static int32_t scmi_base(RkScmi *s, int msg, const uint8_t *in, int in_n,
         put32(out, n, 1);                       /* 1 protocol, 0 agents */
         return SCMI_SUCCESS;
     case 0x2:                                   /* PROTOCOL_MESSAGE_ATTRIB */
-        if (in_n < 4 || ldl_le_p(in) > 0x6) {
+        if (in_n < 4 || le32(in) > 0x6) {
             return SCMI_NOT_FOUND;
         }
         put32(out, n, 0);
@@ -105,7 +114,7 @@ static int32_t scmi_base(RkScmi *s, int msg, const uint8_t *in, int in_n,
         put32(out, n, 1);
         return SCMI_SUCCESS;
     case 0x6:                                   /* DISCOVER_LIST_PROTOCOLS */
-        if (in_n >= 4 && ldl_le_p(in) == 0) {
+        if (in_n >= 4 && le32(in) == 0) {
             put32(out, n, 1);
             put32(out, n, PROT_CLOCK);          /* (one byte, padded) */
         } else {
@@ -119,7 +128,7 @@ static int32_t scmi_base(RkScmi *s, int msg, const uint8_t *in, int in_n,
 static int32_t scmi_clock_cmd(RkScmi *s, int msg, const uint8_t *in,
                               int in_n, uint8_t *out, int *n)
 {
-    int c = in_n >= 4 ? scmi_clock(ldl_le_p(in)) : -1;
+    int c = in_n >= 4 ? scmi_clock(le32(in)) : -1;
     uint64_t hz;
 
     switch (msg) {
@@ -130,7 +139,7 @@ static int32_t scmi_clock_cmd(RkScmi *s, int msg, const uint8_t *in,
         put32(out, n, N_CLOCKS);                /* no asynchronous ones */
         return SCMI_SUCCESS;
     case 0x2:                                   /* PROTOCOL_MESSAGE_ATTRIB */
-        if (in_n < 4 || ldl_le_p(in) > 0x7) {
+        if (in_n < 4 || le32(in) > 0x7) {
             return SCMI_NOT_FOUND;
         }
         put32(out, n, 0);
@@ -158,11 +167,11 @@ static int32_t scmi_clock_cmd(RkScmi *s, int msg, const uint8_t *in,
         if (in_n < 16) {
             return SCMI_INVALID;
         }
-        c = scmi_clock(ldl_le_p(in + 4));
+        c = scmi_clock(le32(in + 4));
         if (c < 0) {
             return SCMI_NOT_FOUND;
         }
-        hz = ldl_le_p(in + 8) | (uint64_t)ldl_le_p(in + 12) << 32;
+        hz = le32(in + 8) | (uint64_t)le32(in + 12) << 32;
         if (hz < RATE_MIN || hz > RATE_MAX) {
             return SCMI_INVALID;
         }
@@ -182,10 +191,70 @@ static int32_t scmi_clock_cmd(RkScmi *s, int msg, const uint8_t *in,
         if (in_n < 8) {
             return SCMI_INVALID;
         }
-        s->clk_on[c] = ldl_le_p(in + 4) & 1;
+        s->clk_on[c] = le32(in + 4) & 1;
         return SCMI_SUCCESS;
     }
     return SCMI_NOT_SUPPORTED;
+}
+
+/*
+ * The clusters' operating points (the device tree's OPP tables): the voltage
+ * the kernel gives a cluster's rail with each clock, for the CPU rails'
+ * currents and the chip's warmth
+ */
+typedef struct RkOpp {
+    uint32_t mhz, uv;
+} RkOpp;
+
+static const RkOpp opp_little[] = {
+    { 408, 700000 }, { 600, 700000 }, { 816, 700000 }, { 1008, 700000 },
+    { 1200, 700000 }, { 1416, 725000 }, { 1608, 750000 }, { 1800, 825000 },
+    { 2016, 900000 },
+};
+static const RkOpp opp_big[] = {
+    { 408, 700000 }, { 600, 700000 }, { 816, 700000 }, { 1008, 700000 },
+    { 1200, 700000 }, { 1416, 712500 }, { 1608, 737500 }, { 1800, 800000 },
+    { 2016, 862500 }, { 2208, 925000 },
+};
+static const struct {
+    const RkOpp *opp;
+    int n;
+} cluster_opps[2] = {
+    { opp_little, ARRAY_SIZE(opp_little) }, { opp_big, ARRAY_SIZE(opp_big) },
+};
+
+/* the cluster's top point, and the voltage at its clock now: the lowest
+ * point at or above it */
+static const RkOpp *cluster_top(int c)
+{
+    return &cluster_opps[c].opp[cluster_opps[c].n - 1];
+}
+
+static uint32_t cluster_uv(RK3576State *s, int c)
+{
+    for (int i = 0; i < cluster_opps[c].n; i++) {
+        if (s->scmi.clk_hz[c] <= cluster_opps[c].opp[i].mhz * 1000000ull) {
+            return cluster_opps[c].opp[i].uv;
+        }
+    }
+    return cluster_top(c)->uv;
+}
+
+int rk3576_cluster_mv(RK3576State *s, int c)
+{
+    return cluster_uv(s, c) / 1000;
+}
+
+double rk3576_cluster_current(RK3576State *s, int c)
+{
+    return s->scmi.clk_hz[c] / (cluster_top(c)->mhz * 1e6) *
+           cluster_uv(s, c) / cluster_top(c)->uv;
+}
+
+double rk3576_cluster_power(RK3576State *s, int c)
+{
+    return rk3576_cluster_current(s, c) * cluster_uv(s, c) /
+           cluster_top(c)->uv;
 }
 
 void rk_scmi_reset(RkScmi *s)

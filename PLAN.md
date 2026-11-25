@@ -98,7 +98,10 @@ screen and its CLI.
 - ☑ SCMI (TF-A's clocks): the kernel's memory after TF-A's 2 MiB, SMCCC 1.1, the base and
       clock protocols: cpufreq on both clusters (2026-11-24)
 - ☑ Temperatures: the TSADC's six channels, warmed by the cores that run, its alarm and
-      TSHUT, and the OTP it takes its trims from (the CPU's code and ID too) (2026-11-24)
+      TSHUT, and the OTP it takes its trims from (the CPU's code and ID too); what the
+      cores draw follows their clocks and the OPP tables' voltages, so cpufreq's
+      cooling cools; the temperature around the device from the panel link and the
+      window, the battery's too (2026-11-24)
 - ◐ Storage: microSD (dw-mshc, QEMU's SD card) with the published image: Flipper OS
       boots to its login (2026-11-24); UFS; then U-Boot from the image (SPL, TF-A BL31,
       U-Boot proper, a BLS entry)

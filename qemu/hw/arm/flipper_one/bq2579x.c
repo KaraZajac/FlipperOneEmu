@@ -33,7 +33,8 @@
  * main board's expander, which latches it). The ADC reads the input (VBUS,
  * VAC1, IBUS), the battery's side (VBAT, IBAT + into it, VSYS), TS from the
  * 10 kΩ NTC at the battery's temperature through the board's divider (as
- * the firmware works it out: 5.23 kΩ and 31.6 kΩ), the die at 30 °C.
+ * the firmware works it out: 5.23 kΩ and 31.6 kΩ), the die 5 °C warmer
+ * than the battery (30 °C in a room).
  *
  * The ship FET's control (SDRV_CTRL, REG 0x11 bits 2:1), at once or 10 s
  * after (SDRV_DLY): a system power reset opens it for 350 ms (the
@@ -318,7 +319,8 @@ static uint16_t bq_adc(Bq2579xState *s, uint8_t reg)
     case R_VBAT: return vbat;
     case R_VSYS: return bq_powered(s) ? MAX(vbat, vsysmin) : vbat;
     case R_TS: return bq_ts(b);
-    case R_TDIE: return 60;                     /* 30 °C, 0.5 °C a step */
+    case R_TDIE:                                /* 0.5 °C a step */
+        return (b->temp_dk - 2732 + 50) / 5;
     default: return 0;                          /* VAC2, D+, D- */
     }
 }

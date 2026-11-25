@@ -10,22 +10,27 @@
  * a true one), and the kernel takes it off again (rk_tsadc_otp_trims gives
  * the OTP them).
  *
- * A code at or over a channel's COMP_INT, its HT_INT_EN bit set, is
- * pending in INT_PD (write 1 to clear) and raises SPI 123; at or over its
- * COMP_SHUT, its AUTO_SRC_CON bit set, it is pending in HSHUT_PD and, by
+ * A code over a channel's COMP_INT ("higher than": at it, the kernel's
+ * rounding reads a temperature under the trip it set the alarm for, and
+ * sets the same alarm again), its HT_INT_EN bit set, is pending in INT_PD
+ * (write 1 to clear) and raises SPI 123; over its COMP_SHUT, its
+ * AUTO_SRC_CON bit set, it is pending in HSHUT_PD and, by
  * HSHUT_CRU_INT_EN, resets the chip as its CRU does (the board's to do); by
  * HSHUT_GPIO_INT_EN it would drive the TSHUT pin, which the board does not
  * wire: logged. The control registers take the bits they change as a mask
  * in their top halves, as the kernel writes them. Samples are ten a
  * second, not the hardware's 400, and none is debounced.
  *
- * How warm: 25 °C around it (the battery's, too); the chip's own 0.4 W at
- * rest, and 0.26 W for each Cortex-A72 and 0.09 W for each A53 that is
- * running (not waiting for an interrupt) as a sample is taken, the CPU
- * rails' currents in the board's table. 20 °C a watt over the ambient for
- * the whole chip, 8 more a watt of its own for a cluster's sensor, reached
- * with a time constant of 10 s: about 33 °C at rest, 60-70 °C with every
- * core busy. Nominal, not measured. Off, the chip cools to the ambient.
+ * How warm: 25 °C around it unless the board says otherwise (the panel's
+ * `ambient`); the chip's own 0.4 W at rest, and for each core that is
+ * running (not waiting for an interrupt) as a sample is taken, 0.26 W for
+ * a Cortex-A72 and 0.09 W for an A53 at its cluster's top clock (the CPU
+ * rails' currents in the board's table), less at a lower one, as
+ * rk3576_cluster_power has it: cpufreq's cooling cools. 20 °C a watt over
+ * the ambient for the whole chip, 8 more a watt of its own for a cluster's
+ * sensor, reached with a time constant of 10 s: about 34 °C at rest,
+ * 60-70 °C with every core busy at its top clock. Nominal, not measured.
+ * Off, the chip cools to the ambient.
  *
  * Copyright (c) 2026, Kara Zajac
  * SPDX-License-Identifier: BSD-3-Clause
@@ -128,11 +133,11 @@ static void tsadc_sample(RkTsadc *t)
 
         t->regs[DATA(ch) / 4] = code;
         if (t->regs[HT_INT_EN / 4] & BIT(ch) &&
-            code >= t->regs[COMP_INT(ch) / 4]) {
+            code > t->regs[COMP_INT(ch) / 4]) {
             t->regs[INT_PD / 4] |= BIT(ch);
         }
         if (t->regs[AUTO_SRC_CON / 4] & BIT(ch) &&
-            code >= t->regs[COMP_SHUT(ch) / 4] &&
+            code > t->regs[COMP_SHUT(ch) / 4] &&
             !(t->regs[HSHUT_PD / 4] & BIT(ch))) {
             t->regs[HSHUT_PD / 4] |= BIT(ch);
             if (t->regs[HSHUT_CRU_EN / 4] & BIT(ch)) {
@@ -167,9 +172,9 @@ static void tsadc_tick(void *opaque)
         on |= s->cpu[i].power_state != PSCI_OFF;
         if (!qatomic_read(&CPU(&s->cpu[i])->halted)) {
             if (i < 4) {
-                little += A53_W;
+                little += A53_W * rk3576_cluster_power(s, 0);
             } else {
-                big += A72_W;
+                big += A72_W * rk3576_cluster_power(s, 1);
             }
         }
     }

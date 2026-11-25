@@ -101,6 +101,12 @@ off` and the desktop's Power Off: off until a charger or a computer is plugged i
 backlight and the LEDs are dark.
 
 ```
+ambient 25.0
+```
+
+The temperature around the device, in °C: on connecting, and when a program sets it.
+
+```
 rk3576 on
 rk3576 off
 ```
@@ -159,6 +165,24 @@ down (`play`, `volup`, `voldown`, `assist`: the standard's 0, 240, 470 and 135 �
 the mic line) and let go, and the headset pulled out. The firmware looks at the jack
 every 100 ms and takes a second after a plug goes in to look for the mic; a button
 shorter than that is not seen. The window's Device menu has them (The headphone jack).
+
+```
+ambient 40
+ambient -10.5
+```
+
+The temperature around the device, in °C, from -40 to 125 (to a tenth of a degree):
+25 until a program sets it, and it stays when the program goes. The battery takes it at
+once: its gauge reads it, and so does the charger's TS input (the charger's die is 5 °C
+warmer). The RK3576 warms or cools toward it, with a time constant of 10 s, its own
+warmth on top: about 8 °C at rest, and up to 45 °C with every core busy at full clock.
+Linux's thermal zones see that:
+- from 85 °C on a cluster's sensor, cpufreq's cooling slows the cores, and slower cores
+  draw less: at 85 °C around it, the chip holds near 94 °C;
+- at 115 °C, Linux shuts down;
+- at 120 °C, the TSADC resets the chip, as its CRU does.
+From about 105 °C around it, Flipper OS cannot run. The window's Device menu has a few
+(The temperature around it).
 
 ```
 refresh

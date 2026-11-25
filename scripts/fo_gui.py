@@ -64,6 +64,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.link.headset.connect(self._headset)
         self.link.stopped.connect(self._stopped)
         self.link.power.connect(self._power)
+        self.link.ambient.connect(self._ambient)
         self.view.key.connect(self._key)
         self.view.touch.connect(self._touch)
         self.lcd_on = False
@@ -115,6 +116,19 @@ class MainWindow(QtWidgets.QMainWindow):
                              self._headset_button(w))
             a.setEnabled(False)
             self.button_actions.append(a)
+        air = device.addMenu("The &temperature around it")
+        group = QtGui.QActionGroup(self)
+        self.ambient_actions = {}
+        for c, text in ((0, "&0 °C"), (25, "&25 °C, a room's"), (40, "&40 °C"),
+                        (60, "&60 °C"), (85, "&85 °C: Linux slows its cores"),
+                        (110, "&110 °C: too hot to run")):
+            a = self._action(air, text, lambda _=False, c=c:
+                             self.link.set_ambient(c))
+            a.setCheckable(True)
+            a.setChecked(c == 25)
+            group.addAction(a)
+            self.ambient_actions[c] = a
+        self.ambient_group = group
         device.addSeparator()
         self._action(device, "Save the &screen as a picture…", self.save_screen,
                      "Ctrl+S")
@@ -199,6 +213,16 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.headset != "0":
             self.link.set_headset(what)
             QtCore.QTimer.singleShot(300, lambda: self.link.set_headset("1"))
+
+    def _ambient(self, celsius):
+        a = self.ambient_actions.get(round(celsius))
+        if a and abs(celsius - round(celsius)) < 0.05:
+            a.setChecked(True)
+        else:                           # (a program set another)
+            self.ambient_group.setExclusive(False)
+            for a in self.ambient_actions.values():
+                a.setChecked(False)
+            self.ambient_group.setExclusive(True)
 
     def _usb(self, what):
         self.usb = what if 0 <= what <= 2 else 0

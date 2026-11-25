@@ -30,6 +30,7 @@ class PanelLink(QtCore.QObject):
                                         # 1 a charger, 2 a computer
     headset = QtCore.Signal(str)        # in the jack: "0", "1", or the
                                         # button held ("play", "volup", ...)
+    ambient = QtCore.Signal(float)      # around the device, in °C
     power = QtCore.Signal(bool)         # the board has its supply (the
                                         # charger's ship FET closed)
     stopped = QtCore.Signal(str)        # time stands still ("paused", "debug"
@@ -124,6 +125,11 @@ class PanelLink(QtCore.QObject):
         if self.up:
             self.send(f"usb {int(what)}")
 
+    def set_ambient(self, celsius):
+        """the temperature around the device: -40 to 125 °C"""
+        if self.up:
+            self.send(f"ambient {celsius:g}")
+
     # ---- from the emulator
 
     def _read(self):
@@ -160,6 +166,8 @@ class PanelLink(QtCore.QObject):
             self.usb.emit(int(rest))
         elif word == "headset":
             self.headset.emit(rest.strip())
+        elif word == "ambient":
+            self.ambient.emit(float(rest))
         elif word == "power":
             self.power.emit(rest.strip() == "on")
         elif word == "running":

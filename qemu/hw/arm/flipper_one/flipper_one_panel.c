@@ -3,7 +3,8 @@
  * (docs/PANEL_LINK.md): out go the screen, its backlight, the LEDs, the
  * vibration motor and whether the machine runs; in come the buttons, the
  * touchpad, what is plugged into the USB-C port (a charger, a computer) or
- * pulled out, and a headset in the jack with the button on its cable.
+ * pulled out, a headset in the jack with the button on its cable, and the
+ * temperature around the device.
  *
  * The screen is the panel's 256x144 picture, 0 black to 255 white, which the
  * display controller's model draws into; what changed since the program was
@@ -115,6 +116,14 @@ static void panel_lights(FlipperOnePanelState *s, bool all)
     s->haptic_blip = false;
 }
 
+static void panel_ambient(FlipperOnePanelState *s)
+{
+    int dc = s->ambient_dc;
+
+    flipper_link_send(&s->lk, "ambient %s%d.%d\n", dc < 0 ? "-" : "",
+                      abs(dc) / 10, abs(dc) % 10);
+}
+
 static void panel_everything(FlipperOnePanelState *s)
 {
     panel_running(s, true);
@@ -123,6 +132,7 @@ static void panel_everything(FlipperOnePanelState *s)
     flipper_link_send(&s->lk, "usb %d\n", s->usb);
     flipper_link_send(&s->lk, "headset %s\n", headset_names[s->headset]);
     flipper_link_send(&s->lk, "power %s\n", s->powered ? "on" : "off");
+    panel_ambient(s);
     if (s->rk3576 >= 0) {
         flipper_link_send(&s->lk, "rk3576 %s\n", s->rk3576 ? "on" : "off");
     }
@@ -203,6 +213,15 @@ static void panel_line(void *opaque, char *line)
         s->usb = arg[0] - '0';
         flipper_link_send(&s->lk, "usb %d\n", s->usb);
         panel_input(s);
+    } else if (!strcmp(line, "ambient") && arg) {
+        char *end;
+        double c = g_ascii_strtod(arg, &end);
+
+        if (end != arg && !*end && c >= -40 && c <= 125) {
+            s->ambient_dc = c * 10 + (c < 0 ? -0.5 : 0.5);
+            panel_ambient(s);
+            panel_input(s);
+        }
     }
 }
 
@@ -270,6 +289,7 @@ static void panel_realize(DeviceState *dev, Error **errp)
     s->sent_running = -1;
     s->powered = true;
     s->rk3576 = -1;
+    s->ambient_dc = 250;                        /* 25 °C */
     s->tick = timer_new_ms(QEMU_CLOCK_REALTIME, panel_tick, s);
     qemu_add_vm_change_state_handler(panel_vm_change, s);
     flipper_link_init(&s->lk, &s->link_chr, "panel", panel_line,

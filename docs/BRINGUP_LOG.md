@@ -926,8 +926,49 @@ register headers.
     Linux now has six thermal zones, which hwmon shows as well, and cpufreq cooling for
     both clusters. FlipCTL's home screen shows the temperature under its heading: 60.1 °C
     just after a boot, which keeps the cores busy. The OTP's bytes read back through the
-    nvmem device as written. The
-    device tree names thermal zone 3 the GPU's and zone 5 DDR's. Its sensor nodes,
-    though, give channel 3 DDR's trim and channel 5 the GPU's, and the driver's comment
-    agrees with the trims. Here the two channels read alike. The Linux check reads all
-    six zones (22 checks).
+    nvmem device as written. The device tree names thermal zone 3 the GPU's and zone 5
+    DDR's. Its sensor nodes, though, give channel 3 DDR's trim and channel 5 the GPU's,
+    and the driver's comment agrees with the trims. Here the two channels read alike.
+    The Linux check reads all six zones (22 checks).
+
+58. **The temperature around it, and cores that draw less when slowed.** The panel link
+    has `ambient` (and the window's Device menu a few values): the temperature around
+    the device, 25 °C until set. The battery takes it at once, for its gauge and the
+    charger's TS input. The charger's die is 5 °C above it, where it was a fixed 30 °C.
+    The RK3576 warms from it. Raising it found four things:
+    - **Slower cores drew the same.** At 85 °C, cpufreq's cooling took both clusters to
+      408 MHz, and the chip went on to 116 °C anyway. Linux began its critical
+      shutdown, and TSHUT reset the chip at 119.2 °C, again after each boot. Now a
+      running core's draw follows its cluster's clock and the voltage the OPP table
+      gives that clock: its current as (f / f_top)(V / V_top), its power as (f /
+      f_top)(V / V_top)². The INA4230s' CPU rails read that voltage and that current
+      too: the A72s' rail at 0.925 V and 1.459 A with four cores running at 2208 MHz.
+      At 85 °C the chip now holds near 94 °C, its clusters at 408 to 600 MHz, after
+      three alarms.
+    - **The A72s never left 816 MHz** (a bug in entry 56's SCMI server). Their rail read
+      0.70 V while Linux reported 2208 MHz. A trace of the SCMI messages (a log line in
+      the server, for one boot) showed Linux sending that rate. QEMU's `ldl_le_p()`
+      returns a signed int, so 2208 MHz (0x839b6800) became a 64-bit number over the
+      server's maximum, and RATE_SET answered INVALID. Linux's clock framework does not
+      look at `set_rate`'s result, so cpufreq recorded the change and the clock stayed
+      at TF-A's 816 MHz. The A53s' top, 2016 MHz, is under 2^31 and worked. The server
+      now reads a message's words unsigned. The board's other `ldl_*_p()` reads land
+      in `uint32_t`s.
+    - **An alarm at its own threshold.** The TSADC compared "at or over". The kernel
+      sets an alarm for a trip at the trip's code, and reads that code back a little
+      under the trip (84.999 °C for 85 °C, after the trim), so it set the same alarm
+      again. It would then go off at every sample until the next code. TSHUT fired at
+      119.2 °C, under the 120 °C it was set for. Now both compare "over", as the TRM
+      words it ("higher than"): TSHUT came at 120.1 to 120.4 °C.
+    - **OS-01, in Linux's driver** (docs/FIRMWARE_BUGS.md). Past a zone's last trip,
+      `rockchip_thermal_set_trips()` adds the sensor's trim to INT_MAX, which then no
+      longer means "no alarm". The alarm stays armed below the temperature, with
+      "Failed to set trips: -34" in the log. Upstream Linux has the same lines.
+    What the device does in the heat, now:
+    - at 105 °C and a busy loop on each core, the zones pass 115 °C, and Linux's
+      protective shutdown ends in PSCI's SYSTEM_OFF 30 s later; then the MCU cuts the
+      rail;
+    - at 110 °C, the chip reaches 120 °C before that shutdown is done, and TSHUT resets
+      it. It boots into the same heat and is shut down again 8 s after each start.
+    From about 105 °C around it, Flipper OS cannot run. The smoke test checks that the
+    ambient reaches the battery and the charger.

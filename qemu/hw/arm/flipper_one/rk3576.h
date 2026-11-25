@@ -176,6 +176,16 @@ typedef struct RkScmi {
 void rk_scmi_reset(RkScmi *s);
 /* SMC 0x82000010: the message in the shared memory, answered there */
 void rk_scmi_call(RkScmi *s);
+/*
+ * Cluster @c (0: the A53s, 1: the A72s) at its clock now: the voltage the
+ * kernel gives its rail with that clock (the OPP table's, in mV), and what
+ * a running core draws against what it draws at the cluster's top clock:
+ * its current, (f / f_top)(V / V_top), and its power, (f / f_top)(V /
+ * V_top)^2, as for any CMOS logic
+ */
+int rk3576_cluster_mv(struct RK3576State *s, int c);
+double rk3576_cluster_current(struct RK3576State *s, int c);
+double rk3576_cluster_power(struct RK3576State *s, int c);
 
 /*
  * rk3576_tsadc.c: the temperature sensor (six channels: the SoC, the big
