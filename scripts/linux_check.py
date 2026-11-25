@@ -15,7 +15,8 @@ Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
   Flipper's screen (its frames over the display SPI, through the MCU), and
   a key pressed on the panel reaches it, through the MCU and the I2C link;
 - Linux reads the main board's chips over the bus it shares with the MCU:
-  the INA219 on VSYS, the five INA4230s; its root is the microSD card;
+  the INA219 on VSYS, the five INA4230s; its root is the microSD card, and
+  its UFS is a 64 GB disk;
   the CPU clusters' clocks come from TF-A's SCMI server, and cpufreq has
   both clusters; the six thermal zones read the TSADC, with the trims the
   OTP holds;
@@ -197,6 +198,11 @@ def checks(check, d, out, first_boot, off):
     root = con.run("findmnt -no SOURCE /")
     check("its root is the microSD card",
           bool(root) and "mmcblk0" in root[-1], str(root))
+    ufs = con.run("lsblk -bdno SIZE /dev/sda; "
+                  "cat /sys/class/scsi_host/host*/proc_name")
+    check("its UFS: a 64 GB disk (sda) on the UFS host",
+          bool(ufs) and ufs[0].strip() == "64000000000" and
+          any(u.strip() == "ufshcd" for u in ufs[1:]), str(ufs))
     freq = con.run("cat /sys/devices/system/cpu/cpufreq/policy0/"
                    "scaling_cur_freq /sys/devices/system/cpu/cpufreq/"
                    "policy4/scaling_cur_freq")

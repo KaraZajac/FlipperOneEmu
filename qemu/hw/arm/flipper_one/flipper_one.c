@@ -784,6 +784,19 @@ static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
             rk3576_gpio_in(&s->rk3576, 0, 7, false);
         }
     }
+    /* the UFS's user area, its LU 0 (-drive if=none,id=ufs: the device's
+     * 64 GB, as the launcher makes it) */
+    {
+        BlockBackend *blk = blk_by_name("ufs");
+
+        if (blk) {
+            DeviceState *lu = qdev_new("ufs-lu");
+
+            qdev_prop_set_drive_err(lu, "drive", blk, &error_fatal);
+            qdev_realize_and_unref(lu, rk3576_ufs_bus(&s->rk3576),
+                                   &error_fatal);
+        }
+    }
     /* the display link: SPI0's frames to the MCU */
     s->frame = g_byte_array_sized_new(FO_LCD_H * (FO_LCD_W + 2));
     fo_host_spi_init(&s->linux_frames, &s->mcu, flipper_one_frame_sent, s);

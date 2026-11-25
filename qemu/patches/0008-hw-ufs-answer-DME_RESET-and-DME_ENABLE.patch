@@ -1,0 +1,28 @@
+From: FlipperOneEmu
+Subject: [PATCH] hw/ufs: answer DME_RESET and DME_ENABLE
+
+A UFS host's driver may reset and enable the UniPro stack (UIC commands
+DME_RESET and DME_ENABLE) before it sets its PHY up and starts the link:
+Linux's driver for Rockchip's RK3576 host does, as the host is enabled.
+QEMU's UFS answers both FAILURE, so the host never comes up. The emulated
+link has no PHY to reset or enable: answer SUCCESS, as for DME_SET.
+
+---
+--- a/hw/ufs/ufs.c
++++ b/hw/ufs/ufs.c
+@@ -418,6 +418,15 @@
+             u->reg.hcs = FIELD_DP32(u->reg.hcs, HCS, UPMCRS, UFS_PWR_LOCAL);
+         }
+         break;
++    case UFS_UIC_CMD_DME_RESET:
++    case UFS_UIC_CMD_DME_ENABLE:
++        /*
++         * The emulated link has no PHY to reset or to enable. Some hosts'
++         * drivers (Rockchip's) reset and enable the UniPro stack before
++         * they configure their PHY and start the link.
++         */
++        u->reg.ucmdarg2 = UFS_UIC_CMD_RESULT_SUCCESS;
++        break;
+     /*
+      * TODO: Revisit after PM implementation
+      * Power Management is not supported in current QEMU-UFS,

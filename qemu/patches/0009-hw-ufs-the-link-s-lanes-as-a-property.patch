@@ -1,0 +1,73 @@
+From: FlipperOneEmu
+Subject: [PATCH] hw/ufs: the link's lanes as a property
+
+The emulated UniPro link reports one data lane in each direction. A host
+whose link has two (Rockchip's RK3576, as most UFS 2.x and 3.x hosts)
+is set up for two, and Linux's driver checks PA_CONNECTEDTXDATALANES
+against the lanes it was configured for: "Tx lane mismatch", and the
+link never comes up. Add a "lanes" property, 1 (as before) or 2, which
+the lane attributes report.
+
+---
+--- a/hw/ufs/ufs.h
++++ b/hw/ufs/ufs.h
+@@ -93,6 +93,7 @@
+     uint8_t mcq_maxq; /* MCQ Maximum number of Queues */
+     uint32_t wb_max_size; /* WB Maximum allocation units */
+     uint32_t wb_min_size; /* WB Minimum allocation units */
++    uint8_t lanes; /* The link's data lanes, in each direction */
+ } UfsParams;
+ 
+ /*
+--- a/hw/ufs/ufs.c
++++ b/hw/ufs/ufs.c
+@@ -365,16 +365,17 @@
+ 
+ /*
+  * Return canned PA layer attribute values. The emulated link has no PHY,
+- * so these are purely declarative: a single lane in HS-Gear 4, FAST_MODE.
++ * so these are purely declarative: the "lanes" property's lanes (one unless
++ * told) in HS-Gear 4, FAST_MODE.
+  */
+-static uint32_t ufs_uic_dme_get_value(uint16_t attr_id)
++static uint32_t ufs_uic_dme_get_value(UfsHc *u, uint16_t attr_id)
+ {
+     switch (attr_id) {
+     case UFS_ATTR_PA_AVAILTXDATALANES:
+     case UFS_ATTR_PA_AVAILRXDATALANES:
+     case UFS_ATTR_PA_CONNECTEDTXDATALANES:
+     case UFS_ATTR_PA_CONNECTEDRXDATALANES:
+-        return 1;
++        return u->params.lanes;
+     case UFS_ATTR_PA_MAXRXHSGEAR:
+     case UFS_ATTR_PA_MAXRXPWMGEAR:
+         return 4;
+@@ -405,7 +406,7 @@
+     case UFS_UIC_CMD_DME_GET:
+     case UFS_UIC_CMD_DME_PEER_GET:
+         attr_id = (u->reg.ucmdarg1 >> 16) & 0xFFFF;
+-        u->reg.ucmdarg3 = ufs_uic_dme_get_value(attr_id);
++        u->reg.ucmdarg3 = ufs_uic_dme_get_value(u, attr_id);
+         u->reg.ucmdarg2 = UFS_UIC_CMD_RESULT_SUCCESS;
+         break;
+     case UFS_UIC_CMD_DME_SET:
+@@ -2494,6 +2495,11 @@
+         return false;
+     }
+ 
++    if (u->params.lanes < 1 || u->params.lanes > 2) {
++        error_setg(errp, "lanes must be 1 or 2");
++        return false;
++    }
++
+     return true;
+ }
+ 
+@@ -2757,6 +2763,7 @@
+     DEFINE_PROP_UINT8("mcq-maxq", UfsHc, params.mcq_maxq, 2),
+     DEFINE_PROP_UINT32("wb-max-size", UfsHc, params.wb_max_size, 0x400),
+     DEFINE_PROP_UINT32("wb-min-size", UfsHc, params.wb_min_size, 0x100),
++    DEFINE_PROP_UINT8("lanes", UfsHc, params.lanes, 1),
+ };
+ 
+ static const VMStateDescription ufs_vmstate = {

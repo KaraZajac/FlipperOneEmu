@@ -1,0 +1,40 @@
+From: FlipperOneEmu
+Subject: [PATCH] hw/ufs: let WriteBooster's flush during hibernation be set
+
+Linux sets fWriteBoosterBufferFlushDuringHibernate on a host that has
+WriteBooster enabled (Rockchip's RK3576 driver asks for it), and QEMU's
+UFS device takes the flag as read-only: three failed queries and "WB-Buf
+Flush during H8 enabling failed" at every start. A device with
+WriteBooster keeps the flag. With no hibernation emulated nothing waits
+for one to be flushed in, so keeping the value is all there is to do,
+as for fWriteBoosterBufferFlushEn.
+
+---
+--- a/hw/ufs/ufs.c
++++ b/hw/ufs/ufs.c
+@@ -1161,8 +1161,13 @@
+     [UFS_QUERY_FLAG_IDN_WB_BUFF_FLUSH_EN] =
+         UFS_QUERY_FLAG_READ | UFS_QUERY_FLAG_SET | UFS_QUERY_FLAG_CLEAR |
+         UFS_QUERY_FLAG_TOGGLE,
+-    /* TODO: Revisit after PM implementation */
+-    [UFS_QUERY_FLAG_IDN_WB_BUFF_FLUSH_DURING_HIBERN8] = UFS_QUERY_FLAG_READ,
++    /*
++     * Kept, as a device keeps it: with no hibernation (no power management
++     * yet), nothing waits for one to be flushed in
++     */
++    [UFS_QUERY_FLAG_IDN_WB_BUFF_FLUSH_DURING_HIBERN8] =
++        UFS_QUERY_FLAG_READ | UFS_QUERY_FLAG_SET | UFS_QUERY_FLAG_CLEAR |
++        UFS_QUERY_FLAG_TOGGLE,
+     [UFS_QUERY_FLAG_IDN_UNPIN_EN] = UFS_QUERY_FLAG_READ | UFS_QUERY_FLAG_SET |
+                                     UFS_QUERY_FLAG_CLEAR |
+                                     UFS_QUERY_FLAG_TOGGLE,
+@@ -1259,6 +1264,9 @@
+     case UFS_QUERY_FLAG_IDN_WB_BUFF_FLUSH_EN:
+         u->flags.wb_buffer_flush_en = value;
+         break;
++    case UFS_QUERY_FLAG_IDN_WB_BUFF_FLUSH_DURING_HIBERN8:
++        u->flags.wb_buffer_flush_during_hibernate = value;
++        break;
+     case UFS_QUERY_FLAG_IDN_UNPIN_EN:
+         u->flags.unpin_en = value;
+         break;

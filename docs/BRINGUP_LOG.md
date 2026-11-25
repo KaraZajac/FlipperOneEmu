@@ -972,3 +972,35 @@ register headers.
       it. It boots into the same heat and is shut down again 8 s after each start.
     From about 105 °C around it, Flipper OS cannot run. The smoke test checks that the
     ambient reaches the battery and the charger.
+
+## Storage (2026-11-24)
+
+59. **The 64 GB UFS.** The Flipper One's own storage is 64 GB of UFS 2.2; it boots from
+    microSD first, then UFS. Its host (`rockchip,rk3576-ufshc`, 0x2a2d0000) was
+    unimplemented registers, which read 0. Linux sized its command descriptors from the
+    capability register, the allocation failed with a WARN at every boot, and the probe
+    failed (-ENOMEM). Now there is a UFS, in three parts:
+    - **QEMU's UFS host** (UFSHCI 4.0, with a UFS device and its logical units behind
+      it). It is a PCI device, so it sits on a PCI host of its own (QEMU's generic one)
+      that is mapped nowhere: the kernel never sees a PCI bus. The host's registers are
+      aliased at 0x2a2d0000, and its INTA (slot 1, which is the host's line 1) goes to
+      SPI 361. It moves data in the system's memory with bus mastering, which a reset
+      clears, so it is set again at each start of the RK3576. The M-PHY and the GRFs
+      around it take what Rockchip's driver writes, as unimplemented registers do.
+    - **Three QEMU patches**, each one a small change to its UFS:
+      - 0008, DME_RESET and DME_ENABLE. Rockchip's driver resets and enables UniPro
+        before it sets its PHY up, and QEMU answered both FAILURE.
+      - 0009, a "lanes" property. The RK3576's link has two lanes, and Linux checks
+        PA_CONNECTEDTXDATALANES against them ("Tx lane mismatch [config,reported]
+        [2,1]"); QEMU reported one.
+      - 0010, fWriteBoosterBufferFlushDuringHibernate settable. Rockchip's driver turns
+        WriteBooster on and sets that flag, which QEMU kept read-only: three failed
+        queries at every boot.
+    - **The disk.** LU 0 is the device's `ufs.img`, which the launcher makes blank and
+      sparse, as a UFS that nothing was installed on: 64,000,000,000 bytes, 15,625,000
+      blocks of 4 KiB ("64.0 GB/59.6 GiB" to Linux). Its inquiry data are QEMU's ("QEMU
+      HARDDISK", and "QEMU UFS" for the well-known LUs), not a UFS vendor's.
+    Linux now attaches `sda`, with no WARN and no failed query. 32 MiB written to it
+    and read back match. Reading 32 MiB takes 4.6 s, against 6.1 s from the microSD: the
+    guest's own work bounds both. The Linux check looks for the 64 GB disk on the UFS
+    host.

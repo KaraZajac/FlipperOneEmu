@@ -50,6 +50,10 @@
  *   SPI0      rk_spi.c, 0x2acf0000, SPI 116: the display link (the board
  *             takes what it sends)
  *   SDMMC     dw_mshc.c, 0x2a310000, SPI 251: the microSD slot's host
+ *   UFS       0x2a2d0000, SPI 361: QEMU's UFS host (UFSHCI 4.0, no MCQ;
+ *             QEMU patch 0008 for the UIC commands Rockchip's driver
+ *             sends), on a PCI host that the kernel does not see; the
+ *             board gives it its logical units
  *   I2C0-8    rk3x_i2c.c: I2C0 at 0x27300000, I2C1-8 from 0x2ac40000 a
  *             0x10000 apart; SPIs 88-96
  *   UART0, UART4  DesignWare APB UARTs, 16550s with 32-bit registers
@@ -78,6 +82,9 @@
 #include "system/system.h"
 #include "target/arm/cpu-qom.h"
 #include "target/arm/gtimer.h"
+#include "hw/pci/pci.h"
+#include "hw/pci/pci_host.h"
+#include "hw/pci-host/gpex.h"
 #include "rk3576.h"
 
 #define PERIPH_BASE     0x20000000
@@ -98,6 +105,8 @@
 #define OTP_NS_WORD     0x1c0           /* the non-secure part's first word */
 #define TSADC_BASE      0x2ae70000
 #define TSADC_SPI       123
+#define UFS_BASE        0x2a2d0000
+#define UFS_SPI         361
 #define TIMER0_BASE     0x2acc0000
 #define TIMER0_SPI      45
 #define UART0_BASE      0x2ad40000
@@ -324,6 +333,20 @@ static void otp_init(RK3576State *s)
     rk_tsadc_otp_trims(s->otp_ns);
 }
 
+/* -------------------------------------------------------------- UFS */
+
+/* the UFS host moves its data itself: bus mastering on its PCI side (a
+ * reset clears it, as any PCI device's) */
+static void ufs_master(RK3576State *s)
+{
+    pci_default_write_config(s->ufs, PCI_COMMAND, PCI_COMMAND_MASTER, 2);
+}
+
+BusState *rk3576_ufs_bus(RK3576State *s)
+{
+    return QLIST_FIRST(&DEVICE(s->ufs)->child_bus);
+}
+
 /* ------------------------------------------------------------ TIMER0 */
 
 #define TMR_ENABLE      0x1
@@ -537,6 +560,10 @@ void rk3576_reset_devices(RK3576State *s)
     }
     device_cold_reset(DEVICE(&s->spi0));
     device_cold_reset(DEVICE(&s->sdmmc));       /* and its card */
+    device_cold_reset(s->ufs_pcie);             /* (the UFS host's PCI side:
+                                                   the kernel resets the
+                                                   host as it starts it) */
+    ufs_master(s);
     memset(s->cru.regs, 0, CRU_SIZE);
     memset(s->pmu.regs, 0, PMU_SIZE);
     memset(s->rng.regs, 0, RNG_SIZE);
@@ -755,6 +782,29 @@ static void rk3576_realize(DeviceState *dev, Error **errp)
                                 sysbus_mmio_get_region(
                                     SYS_BUS_DEVICE(&s->sdmmc), 0));
     sysbus_connect_irq(SYS_BUS_DEVICE(&s->sdmmc), 0, rk3576_spi(s, 251));
+
+    /*
+     * The UFS host: QEMU's, which is a PCI device, on a PCI host of its own
+     * that the kernel does not see (it is mapped nowhere): its registers
+     * where the RK3576 has its host's, its INTA on the host's SPI, its DMA
+     * to the system's memory. The M-PHY and the GRFs around it take what
+     * Rockchip's driver writes as unimplemented registers do.
+     */
+    s->ufs_pcie = qdev_new(TYPE_GPEX_HOST);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(s->ufs_pcie), &error_fatal);
+    /* (slot 0 is the host's own: in slot 1 its INTA is the host's line 1) */
+    sysbus_connect_irq(SYS_BUS_DEVICE(s->ufs_pcie), 1,
+                       rk3576_spi(s, UFS_SPI));
+    s->ufs = pci_new(PCI_DEVFN(1, 0), "ufs");
+    qdev_prop_set_string(DEVICE(s->ufs), "serial", "FlipperOneEmu");
+    qdev_prop_set_uint8(DEVICE(s->ufs), "lanes", 2);    /* (patch 0009) */
+    pci_realize_and_unref(s->ufs, PCI_HOST_BRIDGE(s->ufs_pcie)->bus,
+                          &error_fatal);
+    memory_region_init_alias(&s->ufs_hci, OBJECT(s), "rk3576.ufs",
+                             s->ufs->io_regions[0].memory, 0,
+                             memory_region_size(s->ufs->io_regions[0].memory));
+    memory_region_add_subregion(sysmem, UFS_BASE, &s->ufs_hci);
+    ufs_master(s);
 
     for (int d = 0; d < 3; d++) {
         DeviceState *dma = qdev_new("pl330");

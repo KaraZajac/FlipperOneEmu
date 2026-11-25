@@ -234,6 +234,10 @@ struct RK3576State {
     RkBlock otp;                        /* the OTP's controller */
     uint8_t otp_ns[0x100];              /* ... the part it reads */
     RkTsadc tsadc;                      /* the temperature sensor */
+    DeviceState *ufs_pcie;              /* a PCI host of its own, for ... */
+    PCIDevice *ufs;                     /* ... the UFS host (QEMU's) */
+    MemoryRegion ufs_hci;               /* its registers, where the RK3576
+                                           has its host's */
     DeviceState *uart[2];               /* UART0, UART4 */
     DeviceState *dmac[3];
     MemoryRegion dmac_id[3];            /* the PL330s' IDs, where AMBA
@@ -257,6 +261,8 @@ qemu_irq rk3576_spi(RK3576State *s, int spi);
 void rk3576_reset_devices(RK3576State *s);
 /* the bus of I2C@n, for what the board has on it */
 I2CBus *rk3576_i2c_bus(RK3576State *s, int n);
+/* the UFS host's bus, for the device's logical units (ufs-lu) */
+BusState *rk3576_ufs_bus(RK3576State *s);
 /* a level from outside on GPIO@bank's @pin (0 ... 31: A0 ... D7) */
 void rk3576_gpio_in(RK3576State *s, int bank, int pin, bool level);
 

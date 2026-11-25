@@ -32,15 +32,16 @@ Flipper OS build from its image on an emulated microSD card, to its login: its o
 kernel and device tree, Debian 13 under systemd, and FlipCTL, which draws Flipper OS's
 interface on the Flipper's screen (its frames go over the display SPI to the MCU
 firmware, which shows them) and answers its keys (which the MCU firmware passes on over
-their I2C link). Its CPU clusters' clocks come from TF-A's SCMI (cpufreq), and its
-temperature sensors, calibrated from its OTP, read the chip warming as its cores run.
+their I2C link). Its CPU clusters' clocks come from TF-A's SCMI (cpufreq), its
+temperature sensors, calibrated from its OTP, read the chip warming as its cores run,
+and its 64 GB UFS (blank, as one that nothing was installed on) is a disk to Linux.
 It reaches its login in two to three minutes, the first boot included
 (TCG emulates eight cores). The MCU switches the RK3576 on and off as on the device:
 Flipper OS's power-off and reboot work, and so does the MCU's own Stop (now and then a
 power-off or reboot waits 90 s for BlueZ's `mpris-proxy`, which has no Bluetooth
-adapter: the Wi-Fi and Bluetooth chip is on USB, not modelled yet). The RK3576's USB, network,
-UFS, display outputs and more come next. [RESEARCH.md](RESEARCH.md) is the survey this
-starts from:
+adapter: the Wi-Fi and Bluetooth chip is on USB, not modelled yet). The RK3576's USB,
+network, display outputs and more come next. [RESEARCH.md](RESEARCH.md) is the survey
+this starts from:
 the device, what Flipper Devices publishes, and what emulating it takes.
 [PLAN.md](PLAN.md) is the order of work; the MCU comes first.
 [docs/BRINGUP_LOG.md](docs/BRINGUP_LOG.md) is what was found on the way.
@@ -83,7 +84,8 @@ the MCU switches its power on, and Flipper OS's interface replaces that screen.
 ./flipperoneemu run --usbip 3240 ... # ... its USB given to this PC: sudo scripts/usbip_attach.py
 scripts/fetch_os.py                  # a Flipper OS build: its kernel, initrd and device trees
 ./flipperoneemu run --linux ...      # ... Flipper OS on the RK3576, from the build's
-                                     # image on the device's microSD (devices/NAME/sd.img)
+                                     # image on the device's microSD (devices/NAME/sd.img);
+                                     # its UFS, devices/NAME/ufs.img, is blank
 ./flipperoneemu console [-n NAME] [CMD]  # Linux's console (the RK3576's UART0); Ctrl-] leaves
 scripts/fo_picoboot.py --port 3240 load FIRMWARE.uf2 --reboot
                                      # an update, as picotool makes one: after the
@@ -119,6 +121,9 @@ yet.
 | 0005 | target/arm: let a machine answer the calls QEMU's PSCI takes (power off and reset of one chip) |
 | 0006 | target/arm: read the generic timer's counters without the BQL |
 | 0007 | hw/sd/sd: move the card's data without a request per block or a check per byte |
+| 0008 | hw/ufs: answer DME_RESET and DME_ENABLE (Rockchip's UFS driver sends them) |
+| 0009 | hw/ufs: the link's lanes as a property (the RK3576's link has two) |
+| 0010 | hw/ufs: let WriteBooster's flush during hibernation be set |
 
 ## Layout
 

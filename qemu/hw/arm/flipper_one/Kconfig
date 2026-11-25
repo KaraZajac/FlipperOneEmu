@@ -14,3 +14,5 @@ config FLIPPER_ONE
     select SD
     select I2C
     select BITBANG_I2C
+    select PCI_EXPRESS_GENERIC_BRIDGE
+    select UFS_PCI

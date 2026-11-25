@@ -369,6 +369,13 @@ def linux_args(d, build):
         subprocess.run(["zstd", "-q", "-d", "--sparse", "-o", str(card),
                         str(zst)], check=True)
         os.truncate(card, 8 << 30)
+    # its UFS, the Flipper One's own 64 GB: blank (sparse) the first time,
+    # as one that nothing was installed on; the device's from then on
+    ufs = d / "ufs.img"
+    if not ufs.exists():
+        with open(ufs, "wb"):
+            pass
+        os.truncate(ufs, 64 * 10**9)
     return ["-kernel", str(ROOT / info["kernel"]), "-dtb", str(dtb),
             "-initrd", str(ROOT / info["initrd"]),
             # rw: the boot entries leave it out (Debian's initramfs then
@@ -380,7 +387,8 @@ def linux_args(d, build):
             # Flipper OS a third slower for nothing
             "-append", info["options"] + " rw console=ttyS0,1500000n8"
             " cpufreq.default_governor=performance",
-            "-drive", f"if=sd,format=raw,file={card}"]
+            "-drive", f"if=sd,format=raw,file={card}",
+            "-drive", f"if=none,id=ufs,format=raw,file={ufs}"]
 
 
 def png(path, width, height, rgb):
