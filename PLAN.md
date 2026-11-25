@@ -133,7 +133,7 @@ screen and its CLI.
       USB-C port (the virtual PC, through USB20_SEL) enumerates Flipper OS's gadget,
       its serial port on usb.sock, all of it over USB/IP (2026-11-25); the board's
       hubs and the MT7921
-- ☐ M.2 and PCIe, audio (NAU8822), HDMI, the RTC, the power chips on I2C2
+- ☐ M.2 and PCIe, audio (NAU8822), HDMI (the RTC: M3; the main bus's chips: M2)
 - ☐ Wi-Fi (the MT7921 on USB)
 
 ## Not planned

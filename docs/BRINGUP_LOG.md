@@ -1204,3 +1204,9 @@ register headers.
         and it is configured again.
       The Linux check plugs a computer in, checks the enumeration, the state Linux
       sees, a line each way over ttyGS0, and the unplugging (31 checks).
+    - **OS-02, confirmed.** With a computer able to reach the gadget, the bug's
+      account could be checked: in 13 boots without the Linux check's mask, the 13th
+      hung (its three gettys started, no login after 340 s). The panel link's `usb 2`
+      then had the gadget configured, and the console logged in 2 s later, with all
+      three gettys running. So the gadget's getty held the console's lock until a
+      computer configured the gadget, as entry 63 read it.

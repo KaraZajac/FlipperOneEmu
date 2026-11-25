@@ -126,9 +126,12 @@ keeps its row, with the build that fixed it.
   blocks in its first write to ttyGS0, which is a blocking write, and keeps the lock.
   The ttyS0 and tty1 gettys wait for the lock with no timeout. If their setup took
   the lock first, they start, and only the flipserial0 getty hangs, unseen. So the
-  order of three processes decides: here about one boot in six.
+  order of three processes decides: here 2 boots of 19.
 - **When:** any boot with no computer on the USB-C port while the RK3576 has it.
-  Until a computer configures the gadget nothing frees the lock.
+  Until a computer configures the gadget nothing frees the lock. A computer does:
+  in a boot that had hung for 340 s, plugging one in (the panel link's `usb 2`)
+  brought the console's login 2 s later, as the gadget was configured, and all
+  three gettys ran.
 - **To see it:** boot Flipper OS in the emulator (`run --linux`) a few times. In a
   boot that hangs, all three gettys' processes are still named `(agetty)` (forked,
   never executed). Their kernel stacks, read from QEMU:
@@ -138,13 +141,12 @@ keeps its row, with the build that fixed it.
   Agetty's own strings are nowhere in the guest's memory, as they are in a boot that
   logs in.
 - **Seen on:** Flipper OS build 2501 (systemd from Debian 13), in the emulator, since
-  the emulator gave USB0 the device role a gadget binds to (with no computer on it:
-  the emulated computer is still the MCU's). Not tried on a real Flipper One, where
-  a boot with nothing on the USB-C port should be the same.
+  the emulator gave USB0 the device role a gadget binds to. Not tried on a real
+  Flipper One, where a boot with nothing on the USB-C port should be the same.
 - **A fix, for Flipper OS:** start the gadget's getty only once a host has configured
   the gadget, for example from a udev rule on the ACM function's connection rather
   than on the tty's appearance. Or give that service `TTYReset=no` and
   `TTYVHangup=no`, which might be enough, but that is not verified here. The
   emulator's Linux check masks the service on the kernel's command line
   (`systemd.mask=serial-getty@flipserial0.service`, `run --kernel-args`).
-- **Log:** entry 63.
+- **Log:** entries 63 and 64.
