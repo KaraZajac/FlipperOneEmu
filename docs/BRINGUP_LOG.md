@@ -1344,3 +1344,25 @@ register headers.
       3.3 s for 8 × 50 at once. Login from the Linux check's kept card took 81 s
       once and 155 s another time, against 155 to 169 s before.
     The smoke test and the Linux check pass.
+
+68. **The internal microphone.** The sound card's routing has the board's internal
+    microphone on the codec's LMICP/LMICN, and the headset's on RMICP. Capture
+    recorded silence: SAI2 filled its RX FIFO with zeros. Now:
+    - **The SAI's receive side** takes its frames from a source, as the transmit
+      side gives them to a sink. It packs them as RXCR says: 16-bit samples two to
+      a word, the first in the low half.
+    - **The codec's ADC** (`nau8822_adc`) is that source. Its left channel is a WAV
+      file (`run --mic FILE.wav`, the codec's "mic" property: 16-bit PCM, its first
+      channel, any rate, looped). It is taken as what the ADC gives at the codec's
+      defaults: the input PGA at 0 dB, its +20 dB boost, the ADC at 0 dB. On that
+      come the PGA's gain, the boost and the ADC's volume as Linux sets them.
+      - **Silent** while that path is powered off (R2: the PGA, the boost stage,
+        the ADC), not connected (R44), muted, or at volume 0.
+      - **Restarted** from the file's beginning whenever the left ADC is powered
+        on, so each recording starts there.
+      - **The right channel**, the headset's microphone, stays silent.
+    arecord in Flipper OS gets the file as it is: a 440 Hz tone at a peak of 0.04999
+    (−26 dBFS) records at 439 Hz by sox's estimate and a peak of 0.049988. With
+    amixer's PGA at +9 dB the peak is 0.14087, 2.818 times as much. The Linux check
+    records 2 s from the file it gives `--mic`: 440 Hz at its level, and nothing on
+    the right channel (34 checks).

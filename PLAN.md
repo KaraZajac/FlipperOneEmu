@@ -134,7 +134,8 @@ screen and its CLI.
       its serial port on usb.sock, all of it over USB/IP (2026-11-25); the board's
       hubs and the MT7921
 - ◐ Audio: the SAIs (0, 2, 6) and the NAU8822: Flipper OS's sound card plays, out of
-      QEMU's audio (`run --audio`) (2026-11-25); the microphones; this PC's own
+      QEMU's audio (`run --audio`) (2026-11-25); the internal microphone, from a WAV
+      file (`run --mic`) (2026-11-25); the headset's microphone; this PC's own
       sound (QEMU with a PipeWire backend)
 - ☐ M.2 and PCIe, HDMI (the RTC: M3; the main bus's chips: M2)
 - ☑ Speed while FlipCTL draws: the display link's bursts go to the MCU's PIO as a

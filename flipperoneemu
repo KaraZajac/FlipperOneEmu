@@ -142,6 +142,11 @@ def cmd_run(args):
              if args.audio.endswith(".wav") else args.audio)
     cmd += ["-audiodev", f"{audio},id=snd0,out.frequency=48000",
             "-global", "nau8822.audiodev=snd0"]
+    # what the codec's internal microphone hears: a WAV file, looped
+    if getattr(args, "mic", None):
+        if not os.path.isfile(args.mic):
+            die(f"{args.mic}: no such file")
+        cmd += ["-global", f"nau8822.mic={os.path.abspath(args.mic)}"]
     if args.detach:
         with open(d / "qemu.out", "wb") as out:
             p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=out,
@@ -519,6 +524,10 @@ def main():
                                 "(the default), FILE.wav, or an audio driver "
                                 "this QEMU has (qemu-system-aarch64 "
                                 "-audiodev help)")
+            p.add_argument("--mic", metavar="FILE.wav",
+                           help="what the board's internal microphone hears: "
+                                "a WAV file (16-bit PCM), looped; silence "
+                                "without one")
         if name in ("gui", "shot"):
             p.add_argument("--zoom", type=int)
         if name == "gui":

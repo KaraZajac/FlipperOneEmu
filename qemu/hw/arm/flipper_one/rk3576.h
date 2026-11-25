@@ -215,13 +215,16 @@ extern const struct FoUsbDevOps rk_dwc3_usb_ops;
 /* rk_sai.c: a SAI (serial audio interface): FIFOs between its DMAC and an
  * I2S link. As the link's master its frame clock is its own; as a slave
  * (SAI2, the codec's) the codec gives it (rk_sai_lrck). The frames it sends
- * go to its sink, the codec's DAC; it receives silence. */
+ * go to its sink, the codec's DAC; those it receives come from its source,
+ * the codec's ADC (silence without one). */
 #define TYPE_RK_SAI "rk-sai"
 OBJECT_DECLARE_SIMPLE_TYPE(RkSaiState, RK_SAI)
 #define RK_SAI_FIFO     1024            /* words, each way */
 
 /* what takes the frames a SAI sends: @frames of them, S16 stereo */
 typedef void RkSaiSink(void *opaque, const int16_t *lr, int frames);
+/* what gives the frames a SAI receives: @frames of them into @lr */
+typedef void RkSaiSource(void *opaque, int16_t *lr, int frames);
 
 struct RkSaiState {
     SysBusDevice parent_obj;
@@ -241,6 +244,9 @@ struct RkSaiState {
     int lrck_hz;                        /* a slave's frame clock (0: none) */
     RkSaiSink *sink;
     void *sink_opaque;
+    RkSaiSource *source;
+    void *source_opaque;
+    uint16_t rx_low;                    /* (a word's first half, as it came) */
     bool verbose;                       /* (property, any time: its ticks
                                            and controls in QEMU's log) */
     int tx_in;                          /* (... words come since a tick) */
@@ -250,6 +256,7 @@ struct RkSaiState {
  * none) */
 void rk_sai_lrck(void *sai, int hz);
 void rk_sai_set_sink(RkSaiState *s, RkSaiSink *sink, void *opaque);
+void rk_sai_set_source(RkSaiState *s, RkSaiSource *source, void *opaque);
 
 /* rk_gmac.c: an Ethernet MAC (DWC Ethernet QoS 4.20a), with the board's
  * RTL8211F PHY on its MDIO bus */

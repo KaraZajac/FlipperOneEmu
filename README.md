@@ -44,13 +44,14 @@ the RK3576, as on the device (the MCU switches the port's USB to it with its rai
 and enumerates Flipper OS's USB gadget at high speed: its serial port's login on
 `devices/NAME/usb.sock`, and over USB/IP the whole gadget on this PC: its network
 (NCM, with a DHCP server on Flipper OS's side), MTP and the serial port. Its sound card
-(the NAU8822 codec on SAI2) plays, at 48 kHz: to a WAV file, or nowhere (`run --audio`).
+(the NAU8822 codec on SAI2) plays, at 48 kHz: to a WAV file, or nowhere (`run --audio`);
+its internal microphone hears a WAV file (`run --mic`).
 It reaches its login in two to three minutes, the first boot included
 (TCG emulates eight cores). The MCU switches the RK3576 on and off as on the device:
 Flipper OS's power-off and reboot work, and so does the MCU's own Stop (now and then a
 power-off or reboot waits 90 s for BlueZ's `mpris-proxy`, which has no Bluetooth
 adapter: the Wi-Fi and Bluetooth chip is on USB, not modelled yet). The RK3576's
-display outputs, its microphones and more come next. [RESEARCH.md](RESEARCH.md) is the survey
+display outputs, the headset's microphone and more come next. [RESEARCH.md](RESEARCH.md) is the survey
 this starts from:
 the device, what Flipper Devices publishes, and what emulating it takes.
 [PLAN.md](PLAN.md) is the order of work; the MCU comes first.
@@ -99,6 +100,8 @@ scripts/fetch_os.py                  # a Flipper OS build: its kernel, initrd an
 ./flipperoneemu run --linux --audio FILE.wav ...  # ... the sound Flipper OS plays, into
                                      # a WAV file (or a driver this QEMU has: this PC's
                                      # sound needs pipewire-devel when QEMU is configured)
+./flipperoneemu run --linux --mic FILE.wav ...  # ... and what its internal microphone
+                                     # hears: a WAV file (16-bit PCM), looped
 ./flipperoneemu run --linux --kernel-args 'ARGS' ...  # ... with more on the kernel's
                                      # command line (systemd.mask=serial-getty@flipserial0.service
                                      # avoids Flipper OS's OS-02, docs/FIRMWARE_BUGS.md)

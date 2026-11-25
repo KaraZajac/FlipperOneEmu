@@ -227,11 +227,13 @@ void fo_usb_host_pullup(void *opaque, bool on);
 
 /* nau8822.c: the audio codec (I2C6): its frame clock, as the I2S link's
  * master, goes to @lrck (@opaque: the SAI); the frames the SAI sends come
- * to nau8822_dac (@opaque: the codec), S16 stereo */
+ * to nau8822_dac (@opaque: the codec), S16 stereo, and those it receives
+ * from nau8822_adc */
 #define TYPE_NAU8822 "nau8822"
 void nau8822_link(DeviceState *dev, void (*lrck)(void *opaque, int hz),
                   void *opaque);
 void nau8822_dac(void *opaque, const int16_t *lr, int frames);
+void nau8822_adc(void *opaque, int16_t *lr, int frames);
 
 /* iqs7211e.c: the finger on the touchpad (0 ... 1000 across and down) and
  * its pressure (0 ... 255), or none */

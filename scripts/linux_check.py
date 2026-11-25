@@ -31,7 +31,9 @@ Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
   Linux sees the computer go;
 - Flipper OS's sound card (the NAU8822 codec on SAI2) plays a tone of 2 s
   at 1 kHz, and the codec gives it out: the device's audio.wav, from QEMU's
-  wav backend (`run --audio`), has 2 s of 1 kHz;
+  wav backend (`run --audio`), has 2 s of 1 kHz; its internal microphone
+  hears the device's mic.wav (`run --mic`), 440 Hz, and arecord gets that
+  at its level (the headset's microphone: silence);
 - `systemctl reboot` starts the RK3576 again, and the kernel with it;
   `systemctl poweroff` switches it off (PSCI), after which the MCU cuts
   its rail; the MCU's CPU app switches it on again, and the kernel starts;
@@ -52,6 +54,7 @@ Screenshots go to --out.
 """
 import argparse
 import json
+import math
 import os
 import pathlib
 import re
@@ -63,12 +66,14 @@ import sys
 import tempfile
 import threading
 import time
+import wave
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import smoke_test as st                 # noqa: E402  (its checks and links)
 
 ROOT = st.ROOT
 TEMPLATE = ROOT / "build" / "linux-check"
+MIC_HZ, MIC_PEAK = 440, 1638            # the microphone's file: -26 dBFS
 KMSG = re.compile(r"^\[\s*\d+\.\d+\]")
 ESC = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
@@ -221,6 +226,17 @@ def wav_tone(path):
     return round(secs, 3), round(ups / secs, 1) if secs else 0
 
 
+def mic_wav(path):
+    """what the internal microphone hears: 3 s of MIC_HZ, mono, 48 kHz"""
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(48000)
+        w.writeframes(b"".join(
+            struct.pack("<h", round(MIC_PEAK * math.sin(
+                2 * math.pi * MIC_HZ * i / 48000))) for i in range(3 * 48000)))
+
+
 def copy_card(src, dst):
     subprocess.run(["cp", "--reflink=auto", "--sparse=always", str(src),
                     str(dst)], check=True)
@@ -351,6 +367,20 @@ def checks(check, d, out, first_boot, off, net):
     check("... and the codec gives it out: 2 s of 1 kHz",
           got is not None and 1.9 <= got[0] <= 2.1 and
           990 <= got[1] <= 1010, str(got))
+    # its internal microphone hears mic.wav (MIC_HZ at MIC_PEAK), which
+    # comes out of the ADC as it is at the codec's default gains; the
+    # headset's microphone hears nothing
+    rec = con.run("arecord -q -D hw:NAU8822 -f S16_LE -r 48000 -c 2 -d 2 "
+                  "/tmp/rec.wav && sox /tmp/rec.wav -n remix 1 stat 2>&1 && "
+                  "sox /tmp/rec.wav -n remix 2 stat 2>&1", 90) or []
+    stat = [float(m.group(1)) for line in rec for m in
+            [re.search(r"(?:Rough\s+frequency|Maximum amplitude):\s+"
+                       r"([\d.]+)", line)] if m]
+    check(f"... and its internal microphone records ({MIC_HZ} Hz from "
+          "--mic's file, at its level)",
+          len(stat) == 4 and abs(stat[1] - MIC_HZ) <= 5 and
+          abs(stat[0] - MIC_PEAK / 32768) < 0.005 and stat[2] < 0.001,
+          str(rec[-12:]))
 
     qmark = len(text_of(qlog))
     lmark = len(text_of(linux))
@@ -435,10 +465,11 @@ def main():
     # and the console's getty may then never start (Flipper OS's OS-02,
     # docs/FIRMWARE_BUGS.md; 2 boots of 19 here). The audio codec's sound
     # goes to the device's audio.wav.
+    mic_wav(d / "mic.wav")
     run = [sys.executable, str(st.LAUNCHER), "run", "-n", name, "--detach",
            "--linux", "--kernel-args",
            "systemd.mask=serial-getty@flipserial0.service",
-           "--audio", str(d / "audio.wav")] + \
+           "--audio", str(d / "audio.wav"), "--mic", str(d / "mic.wav")] + \
         (["--net"] if net else [])
     if subprocess.run(run).returncode:
         sys.exit("the device did not start")

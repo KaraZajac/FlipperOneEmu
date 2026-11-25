@@ -30,7 +30,8 @@
  *   sink as S16 stereo (the codec's DAC; with none, they go nowhere). A
  *   frame the FIFO does not have yet goes when it comes, up to 20 ms late:
  *   the DMAC's ring always has frames, so a short FIFO means only that the
- *   emulation is behind. RX gets silence at the same rate.
+ *   emulation is behind. RX gets the frames due from its source (the
+ *   codec's ADC; with none, silence), packed as RXCR says.
  *
  * Copyright (c) 2026, Kara Zajac
  * SPDX-License-Identifier: BSD-3-Clause
@@ -224,26 +225,53 @@ static int64_t sai_send(RkSaiState *s, int64_t frames)
     return frames;
 }
 
-/* @frames come in on the link: silence, into the RX FIFO while it has
- * room */
+/* a sample in, as RXCR says (16 bits: two to a word, the first in the low
+ * half; wider: one to a word, as the TX side takes them), into the RX FIFO
+ * while it has room */
+static void sai_rx_sample(RkSaiState *s, int vdw, int16_t v)
+{
+    uint32_t w;
+
+    if (vdw <= 16) {
+        s->rx_half = !s->rx_half;
+        if (s->rx_half) {
+            s->rx_low = v;              /* (the word's high half next) */
+            return;
+        }
+        w = s->rx_low | (uint32_t)(uint16_t)v << 16;
+    } else {
+        w = (uint32_t)((int32_t)v << (vdw - 16));
+        if (vdw < 32) {
+            w &= (1u << vdw) - 1;
+        }
+    }
+    if (s->rx_n < RK_SAI_FIFO) {
+        s->rx[(s->rx_head + s->rx_n++) % RK_SAI_FIFO] = w;
+    }
+}
+
+/* @frames come in on the link, from the source (silence without one): its
+ * left and right in the first two slots, silence in any more */
 static void sai_receive(RkSaiState *s, int frames)
 {
     uint32_t cr = s->regs[R(SAI_RXCR)];
     int slots = ((cr >> 11) & 0x7f) + 1, vdw = (cr & 0x1f) + 1;
-    int words = 0;
+    int16_t lr[2 * CHUNK];
 
-    for (int i = 0; i < frames * slots; i++) {
-        if (vdw <= 16) {
-            s->rx_half = !s->rx_half;
-            if (s->rx_half) {
-                continue;               /* (a word holds two) */
+    while (frames > 0) {
+        int n = MIN(frames, CHUNK);
+
+        if (s->source) {
+            s->source(s->source_opaque, lr, n);
+        } else {
+            memset(lr, 0, sizeof(lr));
+        }
+        for (int i = 0; i < n; i++) {
+            for (int k = 0; k < slots; k++) {
+                sai_rx_sample(s, vdw, k < 2 ? lr[2 * i + k] : 0);
             }
         }
-        words++;
-    }
-    words = MIN(words, RK_SAI_FIFO - s->rx_n);
-    for (int i = 0; i < words; i++) {
-        s->rx[(s->rx_head + s->rx_n++) % RK_SAI_FIFO] = 0;
+        frames -= n;
     }
 }
 
@@ -307,6 +335,12 @@ void rk_sai_set_sink(RkSaiState *s, RkSaiSink *sink, void *opaque)
 {
     s->sink = sink;
     s->sink_opaque = opaque;
+}
+
+void rk_sai_set_source(RkSaiState *s, RkSaiSource *source, void *opaque)
+{
+    s->source = source;
+    s->source_opaque = opaque;
 }
 
 /* ---------------------------------------------------- the registers */
