@@ -62,6 +62,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.link.haptic.connect(self.view.set_haptic)
         self.link.usb.connect(self._usb)
         self.link.headset.connect(self._headset)
+        self.link.hdmi.connect(self._hdmi)
         self.link.stopped.connect(self._stopped)
         self.link.power.connect(self._power)
         self.link.ambient.connect(self._ambient)
@@ -116,6 +117,19 @@ class MainWindow(QtWidgets.QMainWindow):
                              self._headset_button(w))
             a.setEnabled(False)
             self.button_actions.append(a)
+        hdmi = device.addMenu("The H&DMI port")
+        group = QtGui.QActionGroup(self)
+        self.hdmi_actions = []
+        for on, text in ((False, "&Nothing in it"), (True, "A &monitor")):
+            a = self._action(hdmi, text, lambda _=False, on=on:
+                             self.link.set_hdmi(on))
+            a.setCheckable(True)
+            a.setChecked(not on)
+            group.addAction(a)
+            self.hdmi_actions.append(a)
+        hdmi.addSeparator()
+        hdmi.addAction("Its picture: shot --hdmi, or run --vnc").setEnabled(
+            False)
         air = device.addMenu("The &temperature around it")
         group = QtGui.QActionGroup(self)
         self.ambient_actions = {}
@@ -207,6 +221,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.jack_actions[0 if what == "0" else 1].setChecked(True)
         for a in self.button_actions:
             a.setEnabled(what != "0")
+
+    def _hdmi(self, on):
+        self.hdmi_actions[1 if on else 0].setChecked(True)
 
     def _headset_button(self, what):
         """a press of the headset's button: held a moment, let go"""

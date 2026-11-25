@@ -77,7 +77,7 @@ is), with its LEDs where the device has them. Click its buttons, or use the keyb
 the arrows and Enter are the pad, Backspace or Esc is Back, F1 to F5 are the soft keys
 (Esc, View, Power, Edit, Run), Tab is App Switcher, Space is PTT; drag on the touchpad;
 Ctrl+U plugs a charger into the USB-C port, Ctrl+Shift+U a computer; the Device menu
-also sets the temperature around it (the battery's, and what the RK3576 warms from: at
+also plugs a monitor into the HDMI port, and sets the temperature around it (the battery's, and what the RK3576 warms from: at
 85 °C Linux slows its cores, at 110 °C it cannot run). It talks to the
 emulator over a front-panel link, [docs/PANEL_LINK.md](docs/PANEL_LINK.md), which any program can use.
 Another,

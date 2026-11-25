@@ -30,6 +30,7 @@ class PanelLink(QtCore.QObject):
                                         # 1 a charger, 2 a computer
     headset = QtCore.Signal(str)        # in the jack: "0", "1", or the
                                         # button held ("play", "volup", ...)
+    hdmi = QtCore.Signal(bool)          # a monitor in the HDMI port
     ambient = QtCore.Signal(float)      # around the device, in °C
     power = QtCore.Signal(bool)         # the board has its supply (the
                                         # charger's ship FET closed)
@@ -120,6 +121,11 @@ class PanelLink(QtCore.QObject):
         if self.up:
             self.send(f"headset {what}")
 
+    def set_hdmi(self, on):
+        """a monitor into the HDMI port, or out"""
+        if self.up:
+            self.send(f"hdmi {int(bool(on))}")
+
     def set_usb(self, what):
         """into the USB-C port: 0 nothing, 1 a charger, 2 a computer"""
         if self.up:
@@ -166,6 +172,8 @@ class PanelLink(QtCore.QObject):
             self.usb.emit(int(rest))
         elif word == "headset":
             self.headset.emit(rest.strip())
+        elif word == "hdmi":
+            self.hdmi.emit(rest.strip() == "1")
         elif word == "ambient":
             self.ambient.emit(float(rest))
         elif word == "power":
