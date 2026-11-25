@@ -122,7 +122,7 @@ def cmd_run(args):
            "-name", f"flipperone-{args.name}",
            "-d", "guest_errors", "-D", str(d / "qemu.log")]
     if args.linux is not None:
-        cmd += linux_args(d, args.linux)
+        cmd += linux_args(d, args.linux, args.kernel_args)
     if args.gdb:
         cmd += ["-gdb", f"tcp::{args.gdb}"]
     if args.net or args.ssh:
@@ -340,7 +340,7 @@ def terminal(args, sock, what, enter):
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old)
 
 
-def linux_args(d, build):
+def linux_args(d, build, more=""):
     """QEMU's arguments for Flipper OS's kernel on the RK3576: a build's (the
     newest fetched unless told), with the device tree of the board revision
     the MCU firmware is for, and its boot entry's options; the debug port's
@@ -392,7 +392,7 @@ def linux_args(d, build):
             # server, a write to the PMIC over I2C, dozens a second) made
             # Flipper OS a third slower for nothing
             "-append", info["options"] + " rw console=ttyS0,1500000n8"
-            " cpufreq.default_governor=performance",
+            " cpufreq.default_governor=performance" + (f" {more}" if more else ""),
             "-drive", f"if=sd,format=raw,file={card}",
             "-drive", f"if=none,id=ufs,format=raw,file={ufs}"]
 
@@ -494,6 +494,9 @@ def main():
             p.add_argument("--ssh", type=int, metavar="PORT",
                            help="... and this PC's PORT to Flipper OS's SSH "
                                 "(port 22): ssh -p PORT user@127.0.0.1")
+            p.add_argument("--kernel-args", metavar="ARGS", default="",
+                           help="more of the kernel's command line, after "
+                                "the boot entry's")
         if name in ("gui", "shot"):
             p.add_argument("--zoom", type=int)
         if name == "gui":

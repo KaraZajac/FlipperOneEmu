@@ -1053,3 +1053,90 @@ register headers.
     start, a few seconds here. How to log in is Flipper OS's business, since `user` has
     a password of its own: the console logs in by itself, and `passwd` there, or a key
     in `~/.ssh/authorized_keys`, opens SSH.
+
+## USB (2026-11-25)
+
+62. **The USB controllers, and the battery in Linux.** Both of the RK3576's DWC3 cores
+    read 0, and dwc3 said "this is not a DesignWare USB3 DRD Core". The FUSB302's Type-C
+    port waits for USB0's role switch, the charger's power supply waits for the Type-C
+    port's, and the battery's waits for the charger's. So Linux had no charger and no
+    battery, and FlipCTL had no power flow. A spec came first again, read from dwc3,
+    xhci-plat, the PHY drivers and tcpm. Then `rk_dwc3.c`, a dual-role DWC_usb3 3.30a
+    over QEMU's own xHCI:
+    - **The core.** GSNPSID 0x5533330a. GHWPARAMS give a dual-role core (MODE 2): with
+      MODE 1, USB0 would be forced to host and would never register the role switch.
+      DCTL's soft reset is done at once; Linux resets the core through it on both
+      ports. DSTS is halted while RUN_STOP is clear, commands are done at once, and
+      GEVNTCOUNT reads 0, since no event is written. So a gadget binds and runs, and
+      no host comes.
+    - **The host role.** QEMU's xHCI sits at each controller's offset 0, with one USB 2
+      and one USB 3 root port, one interrupter and 64 slots. A controller's other
+      registers read 0. Two things were in the way:
+      - **ERSTBA.** For DWC3, Linux writes it high dword first (its write-64-hi-lo
+        quirk), and QEMU loads the event ring on the high write, so it read the ring
+        from the new high half and the old low half. The first event would kill the
+        controller. QEMU patch 0011 adds "erstba-hi-lo": the low write loads it, as
+        on DWC3.
+      - **Slots.** sysbus-xhci's defaults for intrs and slots do not survive the
+        initialisation of the core it holds, which zeroes them; slots then reached
+        realize as 0 and were clamped to 1. The second device got "No Slots Available"
+        until both were set.
+    - **The USBDP combo PHY** (USB0's USB3 PHY): its PLL lock (PMA 0x350 bits 7 and 6)
+      and clock recovery (0xb84, 0x1b84) read as done. Linux polls them, and the first
+      fails the controller after 100 ms.
+    The result:
+    - USB1's xHCI has two root hubs, and USB0 sits in its device role. With no
+      role-switch-default-mode in the device tree, "none" is the device role too.
+    - The FUSB302's Type-C ports register, and so do the charger, the battery
+      (`bq28z620-0`, 79 %) and tcpm's source. FlipCTL's home screen fills in: the
+      battery's temperature beside the SoC's, the power flow (-3.18 W), and the charge
+      in its status bar.
+    - Flipper OS's gadget (NCM, MTP and ACM) binds to USB0's UDC: `flipusb0` and its
+      DHCP server are there, waiting for a computer. The computer on the USB-C port
+      is still the MCU's.
+    - A keyboard and a tablet plugged in from QEMU's monitor (`device_add usb-kbd`, on
+      `usb-bus.1`, USB1's) are enumerated behind the hub QEMU adds to the one root
+      port, and are input devices.
+    One side effect: the USBDP PHY gives the DP controller its aux bridge, so DP now
+    probes too, and its audio with it. As the audio stack starts, it probes that card
+    in two bursts, about 60 errors a boot, and then stops:
+    - "hdmi-audio-codec ... ASoC error (-22)": the DP codec will not prepare with no
+      sink, as it would refuse on a device with nothing on DP;
+    - "rockchip-sai ... Failed to idle FS": SAI6 is not modelled, and its FS-idle bit
+      never comes.
+    Linux now also has a seventh thermal zone, the battery's (25.1 °C). The Linux check
+    now picks the TSADC's six by their type, and checks USB0, USB1 and the battery
+    (27 checks). The UCSI error that remains
+    ("flipper-one-typec: Failed to locate of_node") is Flipper OS's own: the MCU driver
+    makes that cell from a child node of compatible "flipper,one-typec", which build
+    2501's device tree does not have.
+
+63. **A boot that never logged in (OS-02).** With USB in, one Linux check timed out
+    waiting for the login, and a loop of boots stalled once in six. The kernel was
+    fine:
+    - the MCU had seen CPU state 3;
+    - every core idled in PSCI's suspend, and TIMER0 was still re-armed;
+    - UART0 had read the input sent to it;
+    - a SysRq line came out at once.
+    The console's getty had started, though ("Started serial-getty@ttyS0") and never
+    written. Finding out why took a few tools, since the guest had no shell:
+    - **SysRq.** A break from QEMU's monitor (`chardev-send-break`) and SysRq `w`
+      showed nothing blocked. Flipper OS limits SysRq at run time (kernel.sysrq = 438),
+      so `sysrq_enabled` was set to 1 in guest RAM through gdb, at the physical address
+      that System.map and `kimage_voffset` give. A full `t` dump was then too big for
+      the log buffer.
+    - **Strings in RAM.** Searching the guest's RAM for agetty's own strings
+      (/proc/PID/mem over QEMU's RAM block) found none, where a good boot has them:
+      agetty had never been executed.
+    - **The tasks' stacks.** The `(agetty)` task names led to `task_struct`s, and their
+      saved fp (a pc in `__switch_to`) to stacks, read through the monitor with CPU 2's
+      page tables (`x`) and named from System.map. Two waited in `flock`; one in
+      `n_tty_write`, and its stack held ttyGS0's `tty_struct`.
+    That is Flipper OS's (OS-02 in docs/FIRMWARE_BUGS.md). systemd holds /dev/console's
+    lock while it sets up a getty's tty; the gadget's serial port has no room to write
+    until a computer connects to the gadget; so its getty's setup blocks with the lock,
+    and the ttyS0 and tty1 gettys wait for it. It is new here only because USB0 now has
+    the device role that the gadget binds to. The Linux check masks that one getty on
+    the kernel's command line, through the launcher's new `run --kernel-args`. The
+    tools are a recipe for the next hang with no shell: a break with SysRq, a search of
+    guest RAM, and stacks walked from `task_struct`s.

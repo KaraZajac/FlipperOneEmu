@@ -50,6 +50,11 @@
  *   SPI0      rk_spi.c, 0x2acf0000, SPI 116: the display link (the board
  *             takes what it sends)
  *   SDMMC     dw_mshc.c, 0x2a310000, SPI 251: the microSD slot's host
+ *   USB0-1    rk_dwc3.c, 0x23000000 and 0x23400000, SPIs 261 and 260: the
+ *             USB controllers (DWC3: USB0 the USB-C port's, dual-role;
+ *             USB1 the host of the board's hub), QEMU's xHCI in each
+ *   USBDP     0x2b010000: USB0's USB3/DP combo PHY, its registers kept,
+ *             its PLL locked and clock recovered whenever Linux looks
  *   GMAC0-1   rk_gmac.c, 0x2a220000 and 0x2a230000, SPIs 293 and 301: the
  *             Ethernet ports, each with the board's PHY; each takes the next
  *             -nic (its network), and has no link without one
@@ -112,6 +117,11 @@
 #define UFS_SPI         361
 #define GMAC_BASE       0x2a220000      /* GMAC0; GMAC1 0x10000 on */
 #define GMAC_SPI        293             /* GMAC0's macirq; GMAC1's 8 on */
+#define USB_BASE        0x23000000      /* USB0; USB1 0x400000 on */
+#define USB0_SPI        261
+#define USB1_SPI        260
+#define USBDP_BASE      0x2b010000
+#define USBDP_SIZE      0x10000
 #define TIMER0_BASE     0x2acc0000
 #define TIMER0_SPI      45
 #define UART0_BASE      0x2ad40000
@@ -336,6 +346,24 @@ static void otp_init(RK3576State *s)
     s->otp_ns[0x03] = 0x76;
     memcpy(s->otp_ns + 0x0a, id, sizeof(id));       /* id */
     rk_tsadc_otp_trims(s->otp_ns);
+}
+
+/* ------------------------------------------------------------ USBDP */
+
+/* the USB3/DP combo PHY's PMA (at 0x8000): its PLL locked and its clock
+ * recovered as soon as Linux looks (it polls them at each init) */
+static uint32_t usbdp_read(RkBlock *b, hwaddr off)
+{
+    uint32_t v = b->regs[off / 4];
+
+    switch (off) {
+    case 0x8350:
+        return v | 0xc0;                        /* LCPLL_LOCK_DONE, AFC_DONE */
+    case 0x8b84:
+    case 0x9b84:
+        return v | 1;                           /* CDR locked (lane 0, 1) */
+    }
+    return v;
 }
 
 /* -------------------------------------------------------------- UFS */
@@ -567,7 +595,10 @@ void rk3576_reset_devices(RK3576State *s)
     device_cold_reset(DEVICE(&s->sdmmc));       /* and its card */
     for (int n = 0; n < 2; n++) {
         device_cold_reset(DEVICE(&s->gmac[n]));     /* (and its PHY) */
+        device_cold_reset(DEVICE(&s->usb[n]));
+        device_cold_reset(DEVICE(&s->usb[n].xhci));
     }
+    memset(s->usbdp.regs, 0, USBDP_SIZE);
     device_cold_reset(s->ufs_pcie);             /* (the UFS host's PCI side:
                                                    the kernel resets the
                                                    host as it starts it) */
@@ -642,8 +673,10 @@ static void rk3576_init(Object *obj)
     object_initialize_child(obj, "sdmmc", &s->sdmmc, TYPE_DW_MSHC);
     for (int n = 0; n < 2; n++) {
         g_autofree char *name = g_strdup_printf("gmac%d", n);
+        g_autofree char *usb = g_strdup_printf("usb%d", n);
 
         object_initialize_child(obj, name, &s->gmac[n], TYPE_RK_GMAC);
+        object_initialize_child(obj, usb, &s->usb[n], TYPE_RK_DWC3);
     }
     for (int n = 0; n < RK3576_NI2C; n++) {
         g_autofree char *name = g_strdup_printf("i2c%d", n);
@@ -795,6 +828,21 @@ static void rk3576_realize(DeviceState *dev, Error **errp)
                                 sysbus_mmio_get_region(
                                     SYS_BUS_DEVICE(&s->sdmmc), 0));
     sysbus_connect_irq(SYS_BUS_DEVICE(&s->sdmmc), 0, rk3576_spi(s, 251));
+
+    /* the USB controllers, and USB0's combo PHY */
+    for (int n = 0; n < 2; n++) {
+        SysBusDevice *usb = SYS_BUS_DEVICE(&s->usb[n]);
+
+        if (!sysbus_realize(usb, errp)) {
+            return;
+        }
+        memory_region_add_subregion(sysmem, USB_BASE + n * 0x400000,
+                                    sysbus_mmio_get_region(usb, 0));
+        sysbus_connect_irq(usb, 0, rk3576_spi(s, n ? USB1_SPI : USB0_SPI));
+    }
+    rk_block_init(s, &s->usbdp, "rk3576.usbdp", USBDP_BASE, USBDP_SIZE,
+                  false);
+    s->usbdp.read = usbdp_read;
 
     /* the Ethernet ports: each takes the next -nic for it (none: no cable) */
     for (int n = 0; n < 2; n++) {

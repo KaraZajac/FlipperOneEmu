@@ -23,6 +23,7 @@ keeps its row, with the build that fixed it.
 | --- | --- | --- | --- | --- |
 | FW-01 | After a NACK on the main board's bus, that bus's state machine runs off its program, and every later transfer on the bus times out until the MCU restarts | dev 87f6cca3 | bus lost | no |
 | OS-01 | Past a thermal zone's last trip, Linux cannot set the TSADC's alarm ("Failed to set trips: -34") and leaves it armed below the temperature, so it goes off at every sample until the chip is off | Flipper OS 2501 | log errors, alarm left on | no |
+| OS-02 | With no computer on the USB gadget, the getty on its serial port (flipserial0) blocks while holding the console's lock, and now and then the debug UART's and tty1's gettys never start: no login | Flipper OS 2501 | no console login | no |
 
 ### FW-01: the main bus after a NACK, with words still queued
 
@@ -108,3 +109,42 @@ keeps its row, with the build that fixed it.
 - **A fix, for the kernel:** in `rockchip_thermal_set_trips()`, pass INT_MAX on as it
   is: `high == INT_MAX ? INT_MAX : high + sensor->trim_temp`.
 - **Log:** entry 58.
+
+### OS-02: the gadget's getty holds the console's lock
+
+- **What happens:** now and then the boot reaches user space but no login ever comes
+  on the debug UART (ttyS0), nor on tty1. The kernel runs on, and so do the services:
+  the MCU sees CPU state 3, and FlipCTL can draw. But the two gettys never start
+  agetty, and nothing answers on the console.
+- **Why:** Flipper OS's USB gadget (`usb-ncm-mtp-acm-gadget.service`) has an ACM
+  function, whose tty `ttyGS0` is named `flipserial0`. A getty is started on it,
+  `serial-getty@flipserial0.service`, beside those for ttyS0 and tty1. Before
+  systemd starts agetty for a getty service it sets the service's tty up, and holds
+  an exclusive `flock` on /dev/console while it does. The gadget's serial driver
+  (`u_serial`) gives a tty no room to write while no host is connected to the gadget
+  (`gs_write_room` is 0 until a host configures it). So the flipserial0 getty's setup
+  blocks in its first write to ttyGS0, which is a blocking write, and keeps the lock.
+  The ttyS0 and tty1 gettys wait for the lock with no timeout. If their setup took
+  the lock first, they start, and only the flipserial0 getty hangs, unseen. So the
+  order of three processes decides: here about one boot in six.
+- **When:** any boot with no computer on the USB-C port while the RK3576 has it.
+  Until a computer configures the gadget nothing frees the lock.
+- **To see it:** boot Flipper OS in the emulator (`run --linux`) a few times. In a
+  boot that hangs, all three gettys' processes are still named `(agetty)` (forked,
+  never executed). Their kernel stacks, read from QEMU:
+  - two in `__do_sys_flock` → `locks_lock_inode_wait`, holding no tty;
+  - one in `ksys_write` → `tty_write` → `n_tty_write` → `wait_woken`, on ttyGS0's
+    `tty_struct`.
+  Agetty's own strings are nowhere in the guest's memory, as they are in a boot that
+  logs in.
+- **Seen on:** Flipper OS build 2501 (systemd from Debian 13), in the emulator, since
+  the emulator gave USB0 the device role a gadget binds to (with no computer on it:
+  the emulated computer is still the MCU's). Not tried on a real Flipper One, where
+  a boot with nothing on the USB-C port should be the same.
+- **A fix, for Flipper OS:** start the gadget's getty only once a host has configured
+  the gadget, for example from a udev rule on the ACM function's connection rather
+  than on the tty's appearance. Or give that service `TTYReset=no` and
+  `TTYVHangup=no`, which might be enough, but that is not verified here. The
+  emulator's Linux check masks the service on the kernel's command line
+  (`systemd.mask=serial-getty@flipserial0.service`, `run --kernel-args`).
+- **Log:** entry 63.

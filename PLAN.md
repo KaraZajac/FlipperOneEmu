@@ -127,7 +127,10 @@ screen and its CLI.
 - ◐ Ethernet (GMAC, dwmac 4.20a, RTL8211F): both ports and their PHYs; the first on the
       host's network through passt (`run --net`), SSH from the host (`run --ssh PORT`)
       (2026-11-24); a network for the second port
-- ☐ USB: the gadget on USB-C1 (NCM, MTP, ACM) over USB/IP; the host controller and its hub
+- ◐ USB: both DWC3 cores (dual-role; QEMU's xHCI for the host role, patch 0011), the
+      USBDP PHY, the Type-C port, the charger and battery in Linux; devices plugged in
+      from the monitor (2026-11-25); the gadget's device side to a computer (the MCU's
+      virtual PC, through USB20_SEL); the board's hubs and the MT7921
 - ☐ M.2 and PCIe, audio (NAU8822), HDMI, the RTC, the power chips on I2C2
 - ☐ Wi-Fi (the MT7921 on USB)
 

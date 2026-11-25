@@ -16,7 +16,9 @@ Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
   a key pressed on the panel reaches it, through the MCU and the I2C link;
 - Linux reads the main board's chips over the bus it shares with the MCU:
   the INA219 on VSYS, the five INA4230s; its root is the microSD card, and
-  its UFS is a 64 GB disk; each Ethernet port has its RTL8211F, and with
+  its UFS is a 64 GB disk; USB0 is in its device role with its Type-C
+  port, USB1's root hubs are there, and the battery reads (its chain waits
+  on USB0's role switch); each Ethernet port has its RTL8211F, and with
   passt installed port 1 is on this PC's network (`run --net`): a link,
   an address by DHCP, a gateway that answers;
   the CPU clusters' clocks come from TF-A's SCMI server, and cpufreq has
@@ -27,6 +29,10 @@ Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
   its rail; the MCU's CPU app switches it on again, and the kernel starts;
 - no oops, panic or RCU stall in the kernel's log, and no crash in the
   MCU's.
+
+The getty on the USB gadget's serial port is masked on the kernel's command
+line (systemd.mask=), for Flipper OS's OS-02 (docs/FIRMWARE_BUGS.md): with
+no computer on the gadget it can keep the console's getty from starting.
 
 A first boot takes several minutes (Flipper OS sets itself up); the first
 run keeps its card as build/linux-check/sd.img, as it is after the checked
@@ -205,6 +211,19 @@ def checks(check, d, out, first_boot, off, net):
     check("its UFS: a 64 GB disk (sda) on the UFS host",
           bool(ufs) and ufs[0].strip() == "64000000000" and
           any(u.strip() == "ufshcd" for u in ufs[1:]), str(ufs))
+    usb = con.run("cat /sys/class/usb_role/23000000.usb-role-switch/role; "
+                  "ls /sys/class/udc /sys/class/typec | paste -sd' '; "
+                  "lsusb | grep -c 'root hub'")
+    check("USB: USB0 (the USB-C port's) in its device role, with its UDC and "
+          "Type-C port; USB1's root hubs",
+          bool(usb) and len(usb) == 3 and usb[0].strip() == "device" and
+          "23000000.usb" in usb[1] and "port0" in usb[1] and
+          usb[2].strip() == "2", str(usb))
+    bat = con.run("cat /sys/class/power_supply/bq28z620-0/capacity "
+                  "/sys/class/power_supply/bq28z620-0/status")
+    check("... so the charger and battery come up: Linux reads the gauge",
+          bool(bat) and len(bat) == 2 and bat[0].strip().isdigit() and
+          70 <= int(bat[0]) <= 90, str(bat))
     eth = con.run("for p in end0 end1; do echo $p "
                   "$(cat /sys/class/net/$p/phydev/phy_id) "
                   "$(cat /sys/class/net/$p/carrier 2>/dev/null || echo -); "
@@ -226,7 +245,9 @@ def checks(check, d, out, first_boot, off, net):
     check("the clusters' clocks over SCMI: cpufreq has both",
           bool(freq) and len(freq) == 2 and
           all(f.strip().isdigit() for f in freq), str(freq))
-    temps = con.run("cat /sys/class/thermal/thermal_zone*/temp")
+    temps = con.run("for z in /sys/class/thermal/thermal_zone*; do "
+                    "case $(cat $z/type) in *-thermal) cat $z/temp;; esac; "
+                    "done")                     # (not the battery's zone)
     check("six temperatures from the TSADC (its trims from the OTP)",
           bool(temps) and len(temps) == 6 and
           all(t.strip().isdigit() and 25000 <= int(t) < 85000
@@ -310,8 +331,14 @@ def main():
           flush=True)
     check = st.Checks()
     t0 = time.time()
+    # the getty on the USB gadget's serial port is masked: with no computer
+    # on the gadget, its setup blocks while it holds the console's lock,
+    # and the console's getty may then never start (Flipper OS's OS-02,
+    # docs/FIRMWARE_BUGS.md; about one boot in six)
     run = [sys.executable, str(st.LAUNCHER), "run", "-n", name, "--detach",
-           "--linux"] + (["--net"] if net else [])
+           "--linux", "--kernel-args",
+           "systemd.mask=serial-getty@flipserial0.service"] + \
+        (["--net"] if net else [])
     if subprocess.run(run).returncode:
         sys.exit("the device did not start")
     def off():

@@ -13,6 +13,7 @@
 #include "hw/i2c/i2c.h"
 #include "hw/sd/sd.h"
 #include "net/net.h"
+#include "hw/usb/hcd-xhci-sysbus.h"
 #include "target/arm/cpu.h"
 
 #define TYPE_RK3576 "rk3576"
@@ -161,6 +162,20 @@ struct DwMshcState {
 
 SDBus *dw_mshc_bus(DwMshcState *s);
 
+/* rk_dwc3.c: a USB controller (DWC3, dual-role), with QEMU's xHCI for its
+ * host role */
+#define TYPE_RK_DWC3 "rk-dwc3"
+OBJECT_DECLARE_SIMPLE_TYPE(RkDwc3State, RK_DWC3)
+
+struct RkDwc3State {
+    SysBusDevice parent_obj;
+    MemoryRegion mr;                    /* its 4 MiB */
+    MemoryRegion quiet;                 /* ... where nothing is */
+    MemoryRegion regs_mr;               /* ... the DWC3's own registers */
+    XHCISysbusState xhci;               /* ... and its xHCI's, at 0 */
+    uint32_t regs[0xb00 / 4];           /* 0xc100-0xcbff */
+};
+
 /* rk_gmac.c: an Ethernet MAC (DWC Ethernet QoS 4.20a), with the board's
  * RTL8211F PHY on its MDIO bus */
 #define TYPE_RK_GMAC "rk-gmac"
@@ -260,6 +275,9 @@ struct RK3576State {
     RkSpiState spi0;                    /* the display link */
     DwMshcState sdmmc;                  /* the microSD slot */
     RkGmacState gmac[2];                /* the Ethernet ports */
+    RkDwc3State usb[2];                 /* USB0 (the USB-C port's, OTG),
+                                           USB1 (host: the hub's) */
+    RkBlock usbdp;                      /* USB0's USB3/DP combo PHY */
     RkScmi scmi;                        /* TF-A's SCMI server */
     RkBlock otp;                        /* the OTP's controller */
     uint8_t otp_ns[0x100];              /* ... the part it reads */

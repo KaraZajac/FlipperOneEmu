@@ -16,3 +16,4 @@ config FLIPPER_ONE
     select BITBANG_I2C
     select PCI_EXPRESS_GENERIC_BRIDGE
     select UFS_PCI
+    select USB_XHCI_SYSBUS

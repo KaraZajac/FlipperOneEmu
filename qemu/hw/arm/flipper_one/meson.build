@@ -12,6 +12,7 @@ arm_common_ss.add(when: 'CONFIG_FLIPPER_ONE', if_true: files(
   'rk3x_i2c.c',
   'rk_spi.c',
   'rk_gmac.c',
+  'rk_dwc3.c',
   'dw_mshc.c',
   'rk806.c',
   'hym8563.c',

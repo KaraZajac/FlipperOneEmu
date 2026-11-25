@@ -36,7 +36,10 @@ their I2C link). Its CPU clusters' clocks come from TF-A's SCMI (cpufreq), its
 temperature sensors, calibrated from its OTP, read the chip warming as its cores run,
 and its 64 GB UFS (blank, as one that nothing was installed on) is a disk to Linux.
 Its two Ethernet ports have their PHYs, and with `--net` the first is on this PC's
-network: DHCP, DNS, and the internet through NAT.
+network: DHCP, DNS, and the internet through NAT. Its USB controllers come up (USB
+devices can be plugged into the second from QEMU's monitor), and with them its Type-C
+port, charger and battery: FlipCTL shows the charge, the power flow and both
+temperatures.
 It reaches its login in two to three minutes, the first boot included
 (TCG emulates eight cores). The MCU switches the RK3576 on and off as on the device:
 Flipper OS's power-off and reboot work, and so does the MCU's own Stop (now and then a
@@ -87,6 +90,9 @@ the MCU switches its power on, and Flipper OS's interface replaces that screen.
 scripts/fetch_os.py                  # a Flipper OS build: its kernel, initrd and device trees
 ./flipperoneemu run --linux --net ... # ... with its first Ethernet port on this PC's
                                      # network (NAT, through passt: installed with podman)
+./flipperoneemu run --linux --kernel-args 'ARGS' ...  # ... with more on the kernel's
+                                     # command line (systemd.mask=serial-getty@flipserial0.service
+                                     # avoids Flipper OS's OS-02, docs/FIRMWARE_BUGS.md)
 ./flipperoneemu run --linux --ssh 2222 ...  # ... and this PC's port 2222 to its SSH:
                                      # ssh -p 2222 user@127.0.0.1 (set a password with
                                      # passwd on its console first, which logs in itself)
@@ -94,6 +100,8 @@ scripts/fetch_os.py                  # a Flipper OS build: its kernel, initrd an
                                      # image on the device's microSD (devices/NAME/sd.img);
                                      # its UFS, devices/NAME/ufs.img, is blank
 ./flipperoneemu console [-n NAME] [CMD]  # Linux's console (the RK3576's UART0); Ctrl-] leaves
+socat - UNIX-CONNECT:devices/NAME/monitor.sock  # QEMU's monitor: device_add usb-kbd,bus=usb-bus.1
+                                     # plugs a keyboard into the RK3576's USB1
 scripts/fo_picoboot.py --port 3240 load FIRMWARE.uf2 --reboot
                                      # an update, as picotool makes one: after the
                                      # CLI's `power boot` (or --bootsel), a computer
@@ -131,6 +139,7 @@ yet.
 | 0008 | hw/ufs: answer DME_RESET and DME_ENABLE (Rockchip's UFS driver sends them) |
 | 0009 | hw/ufs: the link's lanes as a property (the RK3576's link has two) |
 | 0010 | hw/ufs: let WriteBooster's flush during hibernation be set |
+| 0011 | hw/usb/hcd-xhci: a property for an ERSTBA written high then low (as DWC3's) |
 
 ## Layout
 
