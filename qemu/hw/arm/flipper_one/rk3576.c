@@ -66,6 +66,8 @@
  *   VOP2      rk_vop2.c, 0x27d00000, SPIs 342 (with its IOMMU's), 379-381:
  *             the display controller; video port 0 (HDMI's) on a QEMU
  *             console, read through its IOMMU
+ *   DP0       0x27e40000: the DP controller as unimplemented registers, but
+ *             its CONFIG_REG1 (audio from I2S and S/PDIF)
  *   HDMI      rk_hdmi.c, 0x27da0000, SPI 341: the transmitter, its DDC
  *             master reading the monitor's EDID; the hotplug line in the IOC
  *             GRF (0x2604a400, SPI 367); the HDPTX PHY (0x2b000000) as kept
@@ -160,6 +162,7 @@
 #define HDPTX_BASE      0x2b000000
 #define HDPTX_SIZE      0x2000
 #define HDPTX_GRF_BASE  0x26032000
+#define DP0_BASE        0x27e40000
 #define TIMER0_BASE     0x2acc0000
 #define TIMER0_SPI      45
 #define UART0_BASE      0x2ad40000
@@ -521,6 +524,15 @@ static uint32_t hdptx_grf_read(RkBlock *b, hwaddr off)
         return b->regs[0] & BIT(7) ? 0xf : 0;
     }
     return b->regs[off / 4];
+}
+
+/* the DP controller (DW DP), as unimplemented registers but one: its
+ * CONFIG_REG1 says what it was built with, audio from I2S and S/PDIF
+ * (AUDIO_SELECT, bits 2:1, = 2); Linux checks that before it takes the
+ * DP0 sound card's S/PDIF */
+static uint32_t dp_read(RkBlock *b, hwaddr off)
+{
+    return off == 0x100 ? 2 << 1 : 0;
 }
 
 /* ------------------------------------------------------------ TIMER0 */
@@ -1201,6 +1213,8 @@ static void rk3576_realize(DeviceState *dev, Error **errp)
     rk_block_init(s, &s->hdptx_grf, "rk3576.hdptx-grf", HDPTX_GRF_BASE,
                   0x100, true);
     s->hdptx_grf.read = hdptx_grf_read;
+    rk_block_init(s, &s->dp0, "rk3576.dp0", DP0_BASE, 0x1000, false);
+    s->dp0.read = dp_read;
 
     /* the IOMMUs Flipper OS enables: the VOP's, and the video decoder's,
      * two banks each */

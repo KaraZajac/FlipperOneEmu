@@ -1495,3 +1495,21 @@ register headers.
     - a picture that is not black;
     - Linux seeing the monitor pulled out and plugged in again.
     All 40 checks pass, the reboot and the power cycle included.
+
+72. **DP0's sound card, corrected.** Entry 69 blamed DP0's failing card ("dw-dp
+    27e40000.dp: unsupported DAI 6") on Flipper OS, saying its device tree puts the
+    card on an S/PDIF DAI that the DP driver does not take. That was wrong.
+    - **The driver does take S/PDIF.** First it reads the controller's CONFIG_REG1,
+      whose AUDIO_SELECT (bits 2:1) says which audio interfaces the IP was built
+      with. The emulator's DP controller read 0 there, which means "I2S only".
+    - **What kept trying it** is WirePlumber, in the user session. As it starts, it
+      probes every PCM of every card: 60 prepares of DP0, all refused. DP0 is also
+      ALSA's card 0.
+    - **The fix.** The DP controller is still unimplemented registers, except
+      CONFIG_REG1, which now says I2S and S/PDIF (2). No more errors, neither at
+      boot nor at a restart of WirePlumber.
+    - **What follows from it.** WirePlumber now lists the card ("DisplayPort Digital
+      Output") and makes it the default sink, ahead of the NAU8822's analog output.
+      Nothing tells it that no DP monitor is there: simple-card gives the DP codec
+      no jack. The device would most likely do the same; that is Flipper OS's
+      policy, not the emulator's. The Linux check plays to `hw:NAU8822` directly.

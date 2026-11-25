@@ -455,6 +455,7 @@ struct RK3576State {
     RkBlock hpd;                        /* ... the hotplug line (IOC GRF), */
     bool hpd_level, hpd_pending;
     RkBlock hdptx, hdptx_grf;           /* ... the HDMI PHY and its GRF */
+    RkBlock dp0;                        /* the DP controller (its config) */
     DeviceState *vop_sys_or;            /* (the VOP's and its IOMMU's line) */
     RkIommuState vop_mmu;               /* the VOP's IOMMU (two banks) */
     RkIommuState vdec_mmu;              /* the video decoder's (two) */
