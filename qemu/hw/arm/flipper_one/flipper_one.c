@@ -706,6 +706,12 @@ static bool flipper_one_psci(ARMCPU *cpu, void *opaque)
     return true;
 }
 
+/* the RK3576's CRU resets it (its TSADC's TSHUT): as TF-A's SYSTEM_RESET */
+static void flipper_one_rk_cru_reset(void *opaque)
+{
+    fo_rk_power(opaque, RK_RESTART);
+}
+
 /* the RK3576's cores, with no kernel to start: reset, and off */
 static void flipper_one_rk3576_reset(void *opaque)
 {
@@ -762,6 +768,8 @@ static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
     rk_spi_set_out(&s->rk3576.spi0, flipper_one_spi0_out, s);
     s->rk3576.gpio_out = flipper_one_rk_gpio;
     s->rk3576.gpio_out_opaque = s;
+    s->rk3576.cru_reset = flipper_one_rk_cru_reset;
+    s->rk3576.cru_reset_opaque = s;
     i2c_slave_create_simple(rk3576_i2c_bus(&s->rk3576, 1), "rk806", 0x23);
     i2c_slave_create_simple(rk3576_i2c_bus(&s->rk3576, 8), "hym8563", 0x51);
     if (!ms->kernel_filename) {

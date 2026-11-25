@@ -177,6 +177,29 @@ void rk_scmi_reset(RkScmi *s);
 /* SMC 0x82000010: the message in the shared memory, answered there */
 void rk_scmi_call(RkScmi *s);
 
+/*
+ * rk3576_tsadc.c: the temperature sensor (six channels: the SoC, the big
+ * cores, the little cores, DDR, the NPU, the GPU), and how warm the chip
+ * is, from the cores that run
+ */
+#define RK3576_TSADC_CHANNELS   6
+typedef struct RkTsadc {
+    MemoryRegion mr;
+    struct RK3576State *soc;
+    qemu_irq irq;
+    QEMUTimer *timer;                   /* the samples, the chip's warmth */
+    uint32_t regs[0x400 / 4];
+    double ambient;                     /* °C, around it */
+    double temp[RK3576_TSADC_CHANNELS]; /* °C, at each sensor */
+    int64_t last_ns;                    /* ... as of then */
+} RkTsadc;
+void rk_tsadc_init(struct RK3576State *s, RkTsadc *t, hwaddr base,
+                   qemu_irq irq);
+/* its registers as at power-on (the chip's warmth stays) */
+void rk_tsadc_reset(RkTsadc *t);
+/* the sensors' trims, into the OTP's non-secure part */
+void rk_tsadc_otp_trims(uint8_t *otp);
+
 #define RK3576_NCPUS        8
 #define RK3576_NI2C         9           /* I2C0 ... I2C8 */
 #define RK3576_NGPIO        5           /* GPIO0 ... GPIO4 */           /* 4 Cortex-A53, then 4 Cortex-A72 */
@@ -198,6 +221,9 @@ struct RK3576State {
     RkSpiState spi0;                    /* the display link */
     DwMshcState sdmmc;                  /* the microSD slot */
     RkScmi scmi;                        /* TF-A's SCMI server */
+    RkBlock otp;                        /* the OTP's controller */
+    uint8_t otp_ns[0x100];              /* ... the part it reads */
+    RkTsadc tsadc;                      /* the temperature sensor */
     DeviceState *uart[2];               /* UART0, UART4 */
     DeviceState *dmac[3];
     MemoryRegion dmac_id[3];            /* the PL330s' IDs, where AMBA
@@ -205,6 +231,10 @@ struct RK3576State {
     /* the board is told of a GPIO pin's new level */
     void (*gpio_out)(void *opaque, int bank, int pin, bool level);
     void *gpio_out_opaque;
+    /* the CRU resets the chip (the TSADC's TSHUT): the board's to do, as
+     * PSCI's SYSTEM_RESET is */
+    void (*cru_reset)(void *opaque);
+    void *cru_reset_opaque;
     I2CBus *i2c2_bus;                   /* I2C2's bus, if it is shared */
     bool start_on;                      /* CPU 0 runs from the start (a
                                            kernel given), else all are off */

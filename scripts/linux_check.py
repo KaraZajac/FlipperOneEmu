@@ -17,7 +17,8 @@ Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
 - Linux reads the main board's chips over the bus it shares with the MCU:
   the INA219 on VSYS, the five INA4230s; its root is the microSD card;
   the CPU clusters' clocks come from TF-A's SCMI server, and cpufreq has
-  both clusters;
+  both clusters; the six thermal zones read the TSADC, with the trims the
+  OTP holds;
 - `systemctl reboot` starts the RK3576 again, and the kernel with it;
   `systemctl poweroff` switches it off (PSCI), after which the MCU cuts
   its rail; the MCU's CPU app switches it on again, and the kernel starts;
@@ -202,6 +203,11 @@ def checks(check, d, out, first_boot, off):
     check("the clusters' clocks over SCMI: cpufreq has both",
           bool(freq) and len(freq) == 2 and
           all(f.strip().isdigit() for f in freq), str(freq))
+    temps = con.run("cat /sys/class/thermal/thermal_zone*/temp")
+    check("six temperatures from the TSADC (its trims from the OTP)",
+          bool(temps) and len(temps) == 6 and
+          all(t.strip().isdigit() and 25000 <= int(t) < 85000
+              for t in temps), str(temps))
 
     qmark = len(text_of(qlog))
     lmark = len(text_of(linux))

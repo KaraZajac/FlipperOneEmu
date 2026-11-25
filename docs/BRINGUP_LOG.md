@@ -886,3 +886,48 @@ register headers.
     launcher boots with `cpufreq.default_governor=performance`, and the benchmark is
     back at 24 to 27 s. The clocks are still there to set: a governor can be chosen as
     on the device. The Linux check confirms both clusters' cpufreq (21 checks).
+
+## Temperatures (2026-11-24)
+
+57. **The temperature sensor, and the OTP it is calibrated from.** Linux had no thermal
+    zones: its TSADC driver reads each sensor's trim from the OTP before it starts the
+    sensor, and the OTP's controller was not modelled. The read timed out ("failed
+    reading trim of sensor 0", -ETIMEDOUT) and the probe failed. FlipCTL's home screen
+    has a Temperature heading. Now there are both:
+    - **The OTP** (0x2a580000). The non-secure controller reads a word at a time (the
+      address in AUTO_CTRL, then AUTO_EN; RD_DONE in INT_ST; DOUT0). Linux reads the
+      256 bytes from byte 0x700, which hold, as the device tree's cells name them:
+      - the CPU's code, 35 76;
+      - a 16-byte ID, here "FlipperOneEmu". Flipper's kernel derives the Ethernet
+        ports' addresses from it: the first six bytes of the SHA-256 of its hex;
+      - the six sensors' trims.
+      What nothing reads is 0.
+    - **The TSADC** (0x2ae70000, SPI 123: `rk3576_tsadc.c`). Six channels: the SoC, the
+      big cores, the little cores, DDR, the NPU and the GPU. In auto mode each channel's
+      9-bit code follows its temperature by the kernel's own table (285 at 25 °C, 350 at
+      85 °C, straight between). Each sensor reads a code or two off. Its trim says by
+      how much: the code it read at 30 °C, against a true sensor's 290. The kernel takes
+      that off again, at 923 m°C a code. A channel over its alarm code (COMP_INT) raises
+      the interrupt. One over its shutdown code (COMP_SHUT) resets the chip, as its CRU
+      does, if the TSHUT goes to the CRU (the board restarts the RK3576 as for PSCI's
+      SYSTEM_RESET); the TSHUT pin, the other way, is logged, since the board does not
+      wire it.
+    - **How warm the chip is.** Nominal, not measured, as the power monitors' currents
+      are:
+      - 25 °C around it, the battery's temperature too;
+      - the chip's own 0.4 W, plus each running core's share of the CPU rails'
+        currents: 0.26 W for an A72 and 0.09 W for an A53;
+      - 20 °C a watt over the ambient for the whole chip, and 8 °C more a watt of its own
+        for a cluster's sensor;
+      - a time constant of 10 s, with ten samples a second.
+      At rest that settles near 34 °C. Eight busy loops took the SoC's sensor from 39 to
+      61 °C and the A72s' from 41 to 69 °C in 35 s. Twenty seconds after they ended, the
+      sensors were back at 43 to 46 °C.
+    Linux now has six thermal zones, which hwmon shows as well, and cpufreq cooling for
+    both clusters. FlipCTL's home screen shows the temperature under its heading: 60.1 °C
+    just after a boot, which keeps the cores busy. The OTP's bytes read back through the
+    nvmem device as written. The
+    device tree names thermal zone 3 the GPU's and zone 5 DDR's. Its sensor nodes,
+    though, give channel 3 DDR's trim and channel 5 the GPU's, and the driver's comment
+    agrees with the trims. Here the two channels read alike. The Linux check reads all
+    six zones (22 checks).

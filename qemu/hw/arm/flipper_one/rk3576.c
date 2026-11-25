@@ -27,6 +27,14 @@
  *   RNG       0x2a410000: the TRNG: a request (CTRL bit 4) has 32 bytes
  *             ready at once (STATE bit 4, write 1 to clear), from QEMU's
  *             guest random source (-seed makes them the same each run)
+ *   OTP       0x2a580000: the non-secure controller's reads, a word at a
+ *             time (AUTO_CTRL's address, AUTO_EN; RD_DONE in INT_ST, write
+ *             1 to clear; DOUT0), of the 256 bytes from byte 0x700 that
+ *             Linux reads (the secure part below reads 0): the CPU's code
+ *             (3576), an ID of 16 bytes ("FlipperOneEmu": Linux derives
+ *             the Ethernet ports' addresses from it), the temperature
+ *             sensors' trims; what nothing reads is 0
+ *   TSADC     rk3576_tsadc.c, 0x2ae70000, SPI 123: six temperatures
  *   GPIO0-4   0x27320000, 0x2ae10000-0x2ae40000; SPIs 153, 157, 161, 165,
  *             169: Rockchip's v2 banks (VER_ID 0x010219c8; each register in
  *             two halves with write masks): outputs, inputs from the board
@@ -85,6 +93,11 @@
 #define PMU_SIZE        0x800
 #define RNG_BASE        0x2a410000
 #define RNG_SIZE        0x200
+#define OTP_BASE        0x2a580000
+#define OTP_SIZE        0x400
+#define OTP_NS_WORD     0x1c0           /* the non-secure part's first word */
+#define TSADC_BASE      0x2ae70000
+#define TSADC_SPI       123
 #define TIMER0_BASE     0x2acc0000
 #define TIMER0_SPI      45
 #define UART0_BASE      0x2ad40000
@@ -273,6 +286,42 @@ static void rng_wrote(RkBlock *b, hwaddr off, uint32_t old, uint32_t v)
     } else if (off == 0x14) {                       /* STATE: W1C */
         b->regs[off / 4] = old & ~v;
     }
+}
+
+/* -------------------------------------------------------------- OTP */
+
+#define OTP_AUTO_CTRL   0x04            /* the word's address in 31:16 */
+#define OTP_AUTO_EN     0x08
+#define OTP_DOUT0       0x20
+#define OTP_INT_ST      0x84
+#define OTP_RD_DONE     BIT(1)
+
+static void otp_wrote(RkBlock *b, hwaddr off, uint32_t old, uint32_t v)
+{
+    RK3576State *s = b->soc;
+
+    if (off == OTP_AUTO_EN && v & 1) {              /* a read: done at once */
+        uint32_t word = (b->regs[OTP_AUTO_CTRL / 4] >> 16) - OTP_NS_WORD;
+
+        b->regs[OTP_DOUT0 / 4] = word < sizeof(s->otp_ns) / 4 ?
+                                 ldl_le_p(s->otp_ns + word * 4) : 0;
+        b->regs[OTP_AUTO_EN / 4] = 0;
+        b->regs[OTP_INT_ST / 4] |= OTP_RD_DONE;
+    } else if (off == OTP_INT_ST) {
+        b->regs[off / 4] = old & ~v;
+    }
+}
+
+/* what the OTP's non-secure part holds, as the device tree's cells name
+ * it (rk3576.dtsi) */
+static void otp_init(RK3576State *s)
+{
+    static const char id[16] = "FlipperOneEmu";
+
+    s->otp_ns[0x02] = 0x35;                         /* cpu-code: 3576 */
+    s->otp_ns[0x03] = 0x76;
+    memcpy(s->otp_ns + 0x0a, id, sizeof(id));       /* id */
+    rk_tsadc_otp_trims(s->otp_ns);
 }
 
 /* ------------------------------------------------------------ TIMER0 */
@@ -491,6 +540,8 @@ void rk3576_reset_devices(RK3576State *s)
     memset(s->cru.regs, 0, CRU_SIZE);
     memset(s->pmu.regs, 0, PMU_SIZE);
     memset(s->rng.regs, 0, RNG_SIZE);
+    memset(s->otp.regs, 0, OTP_SIZE);
+    rk_tsadc_reset(&s->tsadc);
     for (int b = 0; b < RK3576_NGPIO; b++) {
         RkGpio *g = &s->gpio[b];
 
@@ -648,6 +699,10 @@ static void rk3576_realize(DeviceState *dev, Error **errp)
     s->pmu.read = pmu_read;
     rk_block_init(s, &s->rng, "rk3576.rng", RNG_BASE, RNG_SIZE, false);
     s->rng.wrote = rng_wrote;
+    rk_block_init(s, &s->otp, "rk3576.otp", OTP_BASE, OTP_SIZE, false);
+    s->otp.wrote = otp_wrote;
+    otp_init(s);
+    rk_tsadc_init(s, &s->tsadc, TSADC_BASE, rk3576_spi(s, TSADC_SPI));
 
     s->timer0.soc = s;
     s->timer0.irq = rk3576_spi(s, TIMER0_SPI);
