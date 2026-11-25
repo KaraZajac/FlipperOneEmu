@@ -24,6 +24,11 @@ Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
   the CPU clusters' clocks come from TF-A's SCMI server, and cpufreq has
   both clusters; the six thermal zones read the TSADC, with the trims the
   OTP holds;
+- a computer plugged into the USB-C port (the panel's `usb 2`) reaches
+  USB0, and enumerates Flipper OS's gadget (NCM, MTP, a serial port), which
+  Linux sees configured at high speed; a line goes each way over its
+  serial port (ttyGS0, the host's chardev at the other end); unplugged,
+  Linux sees the computer go;
 - `systemctl reboot` starts the RK3576 again, and the kernel with it;
   `systemctl poweroff` switches it off (PSCI), after which the MCU cuts
   its rail; the MCU's CPU app switches it on again, and the kernel starts;
@@ -32,7 +37,8 @@ Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
 
 The getty on the USB gadget's serial port is masked on the kernel's command
 line (systemd.mask=), for Flipper OS's OS-02 (docs/FIRMWARE_BUGS.md): with
-no computer on the gadget it can keep the console's getty from starting.
+no computer on the gadget it can keep the console's getty from starting
+(and the check uses that serial port itself).
 
 A first boot takes several minutes (Flipper OS sets itself up); the first
 run keeps its card as build/linux-check/sd.img, as it is after the checked
@@ -157,6 +163,38 @@ def template_ok():
         return False
 
 
+def gadget_serial(con, path):
+    """a line from Linux to the computer's end of the gadget's serial port,
+    and one back (the computer's end: the host's chardev, @path): (whether
+    both came, what did)"""
+    s = socket.socket(socket.AF_UNIX)
+    s.connect(str(path))                    # (the computer raises DTR)
+    s.settimeout(0.5)
+    try:
+        # one shell holds the tty open, so that its raw mode stays
+        con.run("rm -f /tmp/from-pc; (sudo sh -c 'exec 3<>/dev/ttyGS0; "
+                "stty raw -echo <&3; echo to-the-pc >&3; "
+                "timeout 30 head -c 11 <&3 > /tmp/from-pc' "
+                ">/dev/null 2>&1 &)")
+        got, end = b"", time.time() + 20
+        while b"to-the-pc" not in got and time.time() < end:
+            try:
+                got += s.recv(4096)
+            except socket.timeout:
+                pass
+        s.sendall(b"from-the-pc")
+        back = None
+        for _ in range(20):
+            back = con.run("cat /tmp/from-pc 2>/dev/null; echo")
+            if back and back[0] == "from-the-pc":
+                break
+            time.sleep(1)
+        return (b"to-the-pc" in got and bool(back) and
+                back[0] == "from-the-pc", f"{got[-40:]!r} / {back}")
+    finally:
+        s.close()
+
+
 def copy_card(src, dst):
     subprocess.run(["cp", "--reflink=auto", "--sparse=always", str(src),
                     str(dst)], check=True)
@@ -252,6 +290,26 @@ def checks(check, d, out, first_boot, off, net):
           bool(temps) and len(temps) == 6 and
           all(t.strip().isdigit() and 25000 <= int(t) < 85000
               for t in temps), str(temps))
+
+    # a computer on the USB-C port: with the Linux side on, the USB mux has
+    # its USB 2 on the RK3576's USB0, where Flipper OS's gadget is
+    qout = d / "qemu.out"
+    qmark = len(text_of(qout))
+    panel.send("usb 2")
+    check("a computer plugged in enumerates Flipper OS's USB gadget "
+          "(37C1:F12F: NCM, MTP, a serial port)",
+          wait_text(qout, r"USB: 37c1:f12f .*configured; its CDC ACM", 120,
+                    qmark), text_of(qout)[qmark:][-300:])
+    udc = "/sys/class/udc/23000000.usb"
+    state = con.run(f"cat {udc}/state {udc}/current_speed")
+    check("... configured, at high speed, as Linux sees it",
+          state == ["configured", "high-speed"], str(state))
+    check("... and its serial port (ttyGS0) carries a line each way",
+          *gadget_serial(con, d / "usb.sock"))
+    panel.send("usb 0")
+    check("unplugged: Linux sees the computer go",
+          st.until(lambda: con.run(f"cat {udc}/state") ==
+                   ["not attached"], 30))
 
     qmark = len(text_of(qlog))
     lmark = len(text_of(linux))

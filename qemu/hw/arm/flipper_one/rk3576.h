@@ -163,9 +163,23 @@ struct DwMshcState {
 SDBus *dw_mshc_bus(DwMshcState *s);
 
 /* rk_dwc3.c: a USB controller (DWC3, dual-role), with QEMU's xHCI for its
- * host role */
+ * host role; for its device role, the computer at the cable's end drives
+ * it through rk_dwc3_usb_ops (fo_usb.h; its opaque: the RkDwc3State), and
+ * pullup_fn tells that computer when D+ is pulled up or let go */
 #define TYPE_RK_DWC3 "rk-dwc3"
 OBJECT_DECLARE_SIMPLE_TYPE(RkDwc3State, RK_DWC3)
+
+/* a physical endpoint of its device role (n: 2 * number + IN) */
+typedef struct RkDwc3Ep {
+    uint64_t start;                     /* where its transfer started */
+    uint64_t cur;                       /* the TRB the transfer is at, */
+    uint32_t done;                      /* ... and the bytes of it moved */
+    uint32_t events;                    /* the events it gives (DEPCFG) */
+    uint16_t mps;                       /* its packets' size */
+    bool started, stalled;
+    bool nrdy;                          /* a XferNotReady given, until the
+                                           transfer it asked for starts */
+} RkDwc3Ep;
 
 struct RkDwc3State {
     SysBusDevice parent_obj;
@@ -174,7 +188,29 @@ struct RkDwc3State {
     MemoryRegion regs_mr;               /* ... the DWC3's own registers */
     XHCISysbusState xhci;               /* ... and its xHCI's, at 0 */
     uint32_t regs[0xb00 / 4];           /* 0xc100-0xcbff */
+    qemu_irq irq;                       /* the xHCI's, ORed with: */
+    bool xhci_irq;
+    /* the device role */
+    RkDwc3Ep ep[32];
+    uint32_t ev_off, ev_count;          /* the event buffer: where the next
+                                           goes; how much is in it */
+    uint32_t ev_wait[64];               /* events it has no room for yet */
+    int ev_nwait;
+    bool pulled;                        /* D+ pulled up, as last told */
+    bool connected;                     /* a host has reset it */
+    uint8_t addr;                       /* the address it answers */
+    bool ctl;                           /* a control transfer under way: */
+    bool ctl_in, ctl_set_address, ctl_data_done;
+    uint16_t ctl_len;
+    uint8_t setup[8];
+    bool setup_held;                    /* ... its SETUP, not yet given */
+    bool ep0_stalled;
+    void (*pullup_fn)(void *opaque, bool on);
+    void *pullup_opaque;
 };
+
+struct FoUsbDevOps;
+extern const struct FoUsbDevOps rk_dwc3_usb_ops;
 
 /* rk_gmac.c: an Ethernet MAC (DWC Ethernet QoS 4.20a), with the board's
  * RTL8211F PHY on its MDIO bus */

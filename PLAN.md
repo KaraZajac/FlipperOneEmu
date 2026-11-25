@@ -129,8 +129,10 @@ screen and its CLI.
       (2026-11-24); a network for the second port
 - ◐ USB: both DWC3 cores (dual-role; QEMU's xHCI for the host role, patch 0011), the
       USBDP PHY, the Type-C port, the charger and battery in Linux; devices plugged in
-      from the monitor (2026-11-25); the gadget's device side to a computer (the MCU's
-      virtual PC, through USB20_SEL); the board's hubs and the MT7921
+      from the monitor (2026-11-25); USB0's device role, high speed: a computer on the
+      USB-C port (the virtual PC, through USB20_SEL) enumerates Flipper OS's gadget,
+      its serial port on usb.sock, all of it over USB/IP (2026-11-25); the board's
+      hubs and the MT7921
 - ☐ M.2 and PCIe, audio (NAU8822), HDMI, the RTC, the power chips on I2C2
 - ☐ Wi-Fi (the MT7921 on USB)
 

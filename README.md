@@ -10,7 +10,7 @@ RP2350's own boot ROM, and the Flipper OS image.
 It is the sibling of [FlipperZeroEmu](https://github.com/KaraZajac/FlipperZeroEmu), which
 does the same for the Flipper Zero.
 
-**Status (2026-11-24): the whole Flipper One runs: its MCU firmware and Flipper OS,
+**Status (2026-11-25): the whole Flipper One runs: its MCU firmware and Flipper OS,
 with FlipCTL on the screen.** The RP2350's own boot ROM verifies
 the flash's partition table and starts the MCU firmware on the emulated chip. The
 firmware starts FreeRTOS, logs through its PIO UART, draws on the screen in the window
@@ -39,13 +39,17 @@ Its two Ethernet ports have their PHYs, and with `--net` the first is on this PC
 network: DHCP, DNS, and the internet through NAT. Its USB controllers come up (USB
 devices can be plugged into the second from QEMU's monitor), and with them its Type-C
 port, charger and battery: FlipCTL shows the charge, the power flow and both
-temperatures.
+temperatures. A computer plugged into the USB-C port while Flipper OS runs reaches
+the RK3576, as on the device (the MCU switches the port's USB to it with its rail),
+and enumerates Flipper OS's USB gadget at high speed: its serial port's login on
+`devices/NAME/usb.sock`, and over USB/IP the whole gadget on this PC: its network
+(NCM, with a DHCP server on Flipper OS's side), MTP and the serial port.
 It reaches its login in two to three minutes, the first boot included
 (TCG emulates eight cores). The MCU switches the RK3576 on and off as on the device:
 Flipper OS's power-off and reboot work, and so does the MCU's own Stop (now and then a
 power-off or reboot waits 90 s for BlueZ's `mpris-proxy`, which has no Bluetooth
-adapter: the Wi-Fi and Bluetooth chip is on USB, not modelled yet). The RK3576's USB,
-display outputs and more come next. [RESEARCH.md](RESEARCH.md) is the survey
+adapter: the Wi-Fi and Bluetooth chip is on USB, not modelled yet). The RK3576's
+display outputs, audio and more come next. [RESEARCH.md](RESEARCH.md) is the survey
 this starts from:
 the device, what Flipper Devices publishes, and what emulating it takes.
 [PLAN.md](PLAN.md) is the order of work; the MCU comes first.
@@ -87,6 +91,7 @@ the MCU switches its power on, and Flipper OS's interface replaces that screen.
 ./flipperoneemu run [-n NAME] [--detach] [--gdb PORT]   # a device without the window
 ./flipperoneemu run --bootsel ...    # ... started with BOOTSEL held: the boot ROM's USB boot
 ./flipperoneemu run --usbip 3240 ... # ... its USB given to this PC: sudo scripts/usbip_attach.py
+                                     # (with Flipper OS running, its USB gadget's)
 scripts/fetch_os.py                  # a Flipper OS build: its kernel, initrd and device trees
 ./flipperoneemu run --linux --net ... # ... with its first Ethernet port on this PC's
                                      # network (NAT, through passt: installed with podman)
@@ -100,6 +105,8 @@ scripts/fetch_os.py                  # a Flipper OS build: its kernel, initrd an
                                      # image on the device's microSD (devices/NAME/sd.img);
                                      # its UFS, devices/NAME/ufs.img, is blank
 ./flipperoneemu console [-n NAME] [CMD]  # Linux's console (the RK3576's UART0); Ctrl-] leaves
+./flipperoneemu console --usb ...    # ... Flipper OS's serial port on its USB gadget
+                                     # (a computer plugged in: Ctrl+Shift+U)
 socat - UNIX-CONNECT:devices/NAME/monitor.sock  # QEMU's monitor: device_add usb-kbd,bus=usb-bus.1
                                      # plugs a keyboard into the RK3576's USB1
 scripts/fo_picoboot.py --port 3240 load FIRMWARE.uf2 --reboot
@@ -114,7 +121,7 @@ scripts/fo_picoboot.py --port 3240 load FIRMWARE.uf2 --reboot
 ./flipperoneemu status | stop [-n NAME]
 scripts/smoke_test.py                # a throwaway device, checked: PASS or FAIL
 scripts/linux_check.py               # ... with Flipper OS too: boot, screen, keys, sensors,
-                                     # reboot, power-off (keeps a booted card in build/)
+                                     # USB, reboot, power-off (keeps a booted card in build/)
 ```
 
 A device is a folder, `devices/NAME`: the MCU's flash (made from the newest recovery

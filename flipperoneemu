@@ -14,8 +14,9 @@
     ./flipperoneemu shot FILE.png [-n NAME] [--zoom N]
     ./flipperoneemu where [-n NAME]      each core's PC, and the function there
     ./flipperoneemu cli [-n NAME] [COMMAND...]   the MCU firmware's CLI (UART1)
-    ./flipperoneemu console [-n NAME] [--uart4]  Linux's console (the RK3576's
-                                         UART0: the debug port; UART4: the MCU's)
+    ./flipperoneemu console [-n NAME] [--uart4|--usb]  Linux's console (the
+                                         RK3576's UART0: the debug port; UART4:
+                                         the MCU's; --usb: its USB gadget's)
 
 A device is a folder, devices/NAME (default "one"): the MCU's flash image
 (flash.bin, made from a recovery .uf2 the first time, and written to as the
@@ -268,6 +269,12 @@ def cmd_where(args):
     import re
     cpus = re.split(r"CPU#(\d+)", text)[1:]
     for cpu, regs in zip(cpus[::2], cpus[1::2]):
+        if not re.search(r"R15=", regs):        # the RK3576's (AArch64)
+            pc = re.search(r"\bPC=([0-9a-f]+)", regs)
+            lr = re.search(r"\bX30=([0-9a-f]+)", regs)
+            print(f"core {cpu}: pc {pc.group(1) if pc else '?'}  lr "
+                  f"{lr.group(1) if lr else '?'}  (the RK3576's)")
+            continue
         pc = int(re.search(r"R15=([0-9a-f]+)", regs).group(1), 16)
         lr = int(re.search(r"R14=([0-9a-f]+)", regs).group(1), 16)
         name = lambda a: next((f"{n}+{a - s:#x}" for s, e, n in funcs
@@ -277,7 +284,11 @@ def cmd_where(args):
 
 
 def cmd_console(args):
-    """Linux's console: the RK3576's UART0 (or UART4)"""
+    """Linux's console: the RK3576's UART0 (or UART4), or Flipper OS's serial
+    port on its USB gadget"""
+    if args.usb:
+        return terminal(args, "usb.sock", "Flipper OS's serial port on its "
+                        "USB gadget (a computer plugged in)", "\n")
     return terminal(args, "linux4.sock" if args.uart4 else "linux.sock",
                     "the RK3576's " + ("UART4" if args.uart4 else "UART0") +
                     ", Linux's console", "\n")
@@ -515,6 +526,9 @@ def main():
         if name == "console":
             p.add_argument("--uart4", action="store_true",
                            help="UART4, the line to the MCU, not UART0")
+            p.add_argument("--usb", action="store_true",
+                           help="Flipper OS's serial port on its USB gadget "
+                                "(a computer plugged in), not UART0")
     args = ap.parse_args()
     return globals()["cmd_" + args.cmd](args)
 

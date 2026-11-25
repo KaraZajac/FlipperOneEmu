@@ -1,18 +1,19 @@
 /*
- * A USB host on the other end of the Flipper One's cable: the PC the MCU's
- * USB device is plugged into
+ * A USB host on the other end of the Flipper One's cable: the PC its USB-C
+ * port is plugged into
  *
- * QEMU has no USB wire that leaves the machine, so this is the host: when
- * the cable's data lines reach the MCU (a computer's port is plugged in and
- * the board's USB mux has them on the MCU) and the device pulls D+ up, it
- * waits 100 ms, resets the bus for 10 ms, and enumerates what it finds as a
- * PC would: the device descriptor at address 0, SET_ADDRESS (1), the device
- * descriptor again, the configuration, the strings, SET_CONFIGURATION; and
- * reports it in QEMU's log. A CDC ACM function it bridges to a character
- * device (the launcher's devices/NAME/usb.sock): DTR and RTS up while a
- * program is connected there (the firmware's CLI starts its session then),
- * what the program writes to the bulk OUT endpoint, what the bulk IN
- * endpoint gives to the program.
+ * QEMU has no USB wire that leaves the machine, so this is the host. The
+ * cable's data lines reach one device controller (fo_usb.h), as the board
+ * says: the MCU's (rp2350_usb.c), or, when the main board's USB mux has
+ * them on the Linux side, the RK3576's USB0 (rk_dwc3.c). When the device
+ * pulls D+ up, it waits 100 ms, resets the bus for 10 ms, and enumerates
+ * what it finds as a PC would: the device descriptor at address 0,
+ * SET_ADDRESS (1), the device descriptor again, the configuration, the
+ * strings, SET_CONFIGURATION; and reports it in QEMU's log. A CDC ACM
+ * function it bridges to a character device (the launcher's
+ * devices/NAME/usb.sock): DTR and RTS up while a program is connected there
+ * (the firmware's CLI starts its session then), what the program writes to
+ * the bulk OUT endpoint, what the bulk IN endpoint gives to the program.
  *
  * It can also give the device to the PC's own kernel, over USB/IP (Linux's
  * usbip protocol, on the usbip chardev: the launcher's --usbip PORT): there
@@ -24,21 +25,22 @@
  * transfer above, a bulk or interrupt one on its endpoint, done when the
  * firmware gives or takes the data. Meanwhile the CDC bridge stands aside.
  *
- * It drives the controller (rp2350_usb.c) a transaction at a time, on a
- * timer of the virtual clock. The firmware relies on being fast next to the
- * bus: on the chip its interrupt handler has taken a packet (and, say, a
- * control transfer's end) long before the host sends the next; an emulated
- * CPU, on its own thread, can be slower than the bus's time. So the host
- * sends nothing while the controller's interrupt is still up (10 ms at
- * most), and otherwise one about every 20 µs while they are taken,
- * a NAKed one again after 50 µs, and a bulk IN endpoint that has nothing
- * looked at less and less often, down to every 2 ms, until something comes
- * from the program or the endpoint gives something again.
+ * It drives the controller a transaction at a time, on a timer of the
+ * virtual clock. The firmware relies on being fast next to the bus: on the
+ * chip its interrupt handler has taken a packet (and, say, a control
+ * transfer's end) long before the host sends the next; an emulated CPU, on
+ * its own thread, can be slower than the bus's time. So the host sends
+ * nothing while the device's CPU still has events to take (10 ms at most),
+ * and otherwise one about every 20 µs while they are taken, a NAKed one
+ * again after 50 µs, and a bulk IN endpoint that has nothing looked at less
+ * and less often, down to every 2 ms, until something comes from the
+ * program or the endpoint gives something again.
  *
  * Copyright (c) 2026, Kara Zajac
  * SPDX-License-Identifier: BSD-3-Clause
  */
 #include "qemu/osdep.h"
+#include "qemu/bswap.h"
 #include "qemu/error-report.h"
 #include "qemu/queue.h"
 #include "qemu/timer.h"
@@ -46,7 +48,7 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
 #include "flipper_one.h"
-#include "rp2350.h"
+#include "fo_usb.h"
 
 #define STEP_NS         20000
 #define NAK_NS          50000
@@ -80,9 +82,9 @@ typedef struct FoUsbHost {
     DeviceState parent_obj;
 
     CharFrontend cdc_chr, usbip_chr;
-    RP2350State *soc;
+    const FoUsbDevOps *ops;             /* the device the cable's data lines */
+    void *dev;                          /* reach (NULL: none) */
     QEMUTimer *timer;
-    bool cable;                         /* a computer's data lines are on it */
     int state;
     uint8_t addr;                       /* the device's, as the host uses it */
 
@@ -137,7 +139,7 @@ static void host_after(FoUsbHost *h, int64_t ns)
 }
 
 /* the transaction just done, kept for a report */
-static void trail(FoUsbHost *h, const char *what, int ep, RP2UsbResult r,
+static void trail(FoUsbHost *h, const char *what, int ep, FoUsbResult r,
                   int len)
 {
     static const char *const how[] = { "ACK", "NAK", "STALL", "-" };
@@ -166,18 +168,17 @@ static void ctl_start(FoUsbHost *h, uint8_t type, uint8_t req, uint16_t val,
  * the time it set), true when it ended (ctl_ok: how) */
 static bool ctl_step(FoUsbHost *h, int64_t *wait)
 {
-    RP2350State *s = h->soc;
     bool in = h->setup[0] & 0x80;
-    uint8_t zlp[64];
-    RP2UsbResult r = RP2_USB_TIMEOUT;
+    uint8_t pkt[FO_USB_MAX_PACKET];
+    FoUsbResult r = FO_USB_TIMEOUT;
     int n;
 
     *wait = STEP_NS;
     switch (h->ctl) {
     case C_SETUP:
-        r = rp2350_usb_setup(s, h->addr, h->setup);
+        r = h->ops->setup(h->dev, h->addr, h->setup);
         trail(h, "SETUP", 0, r, 8);
-        if (r != RP2_USB_ACK) {
+        if (r != FO_USB_ACK) {
             break;
         }
         h->ctl = h->ctl_len ? C_DATA : C_STATUS;
@@ -185,10 +186,13 @@ static bool ctl_step(FoUsbHost *h, int64_t *wait)
     case C_DATA:
         if (in) {
             n = 0;
-            r = rp2350_usb_in(s, h->addr, 0, h->ctl_buf + h->ctl_got, &n);
+            r = h->ops->in(h->dev, h->addr, 0, pkt, &n);
             trail(h, "IN", 0, r, n);
-            if (r == RP2_USB_ACK) {
-                h->ctl_got = MIN(h->ctl_got + n, h->ctl_len);
+            if (r == FO_USB_ACK) {
+                int take = MIN(n, h->ctl_len - h->ctl_got);
+
+                memcpy(h->ctl_buf + h->ctl_got, pkt, take);
+                h->ctl_got += take;
                 if (n < h->ep0_size || h->ctl_got >= h->ctl_len) {
                     h->ctl = C_STATUS;
                 }
@@ -196,9 +200,9 @@ static bool ctl_step(FoUsbHost *h, int64_t *wait)
             }
         } else {
             n = MIN(h->ep0_size, h->ctl_len - h->ctl_got);
-            r = rp2350_usb_out(s, h->addr, 0, h->ctl_buf + h->ctl_got, n);
+            r = h->ops->out(h->dev, h->addr, 0, h->ctl_buf + h->ctl_got, n);
             trail(h, "OUT", 0, r, n);
-            if (r == RP2_USB_ACK) {
+            if (r == FO_USB_ACK) {
                 h->ctl_got += n;
                 if (h->ctl_got >= h->ctl_len) {
                     h->ctl = C_STATUS;
@@ -206,25 +210,25 @@ static bool ctl_step(FoUsbHost *h, int64_t *wait)
                 return false;
             }
         }
-        if (r == RP2_USB_NAK) {
+        if (r == FO_USB_NAK) {
             *wait = NAK_NS;
             return false;
         }
         break;
     case C_STATUS:
         if (in) {
-            r = rp2350_usb_out(s, h->addr, 0, NULL, 0);
+            r = h->ops->out(h->dev, h->addr, 0, NULL, 0);
             trail(h, "status OUT", 0, r, 0);
         } else {
             n = 0;
-            r = rp2350_usb_in(s, h->addr, 0, zlp, &n);
+            r = h->ops->in(h->dev, h->addr, 0, pkt, &n);
             trail(h, "status IN", 0, r, n);
         }
-        if (r == RP2_USB_NAK) {
+        if (r == FO_USB_NAK) {
             *wait = NAK_NS;
             return false;
         }
-        if (r != RP2_USB_ACK) {
+        if (r != FO_USB_ACK) {
             break;
         }
         h->ctl = C_IDLE;
@@ -271,34 +275,58 @@ static void cdc_flush(FoUsbHost *h)
     }
 }
 
-/* the configuration's CDC ACM function: its comm interface, its data
- * interface's bulk endpoints */
+/* the configuration's descriptors, one at a time (@i: 0 to start) */
+static const uint8_t *config_next(FoUsbHost *h, int *i)
+{
+    const uint8_t *d;
+
+    if (*i + 2 > h->config_len || h->config[*i] < 2 ||
+        *i + h->config[*i] > h->config_len) {
+        return NULL;
+    }
+    d = h->config + *i;
+    *i += d[0];
+    return d;
+}
+
+/* the configuration's CDC ACM function: its comm interface (the first
+ * ACM one), and the bulk endpoints of the data interface its Union
+ * descriptor names (without one, the interface after it: a composite
+ * device can have other data interfaces, NCM's for one); and each
+ * endpoint's packet size */
 static void cdc_find(FoUsbHost *h)
 {
-    int cls = -1, itf = -1;
+    const uint8_t *d;
+    int cls = -1, itf = -1, data = -1, i = 0;
 
     h->cdc_comm = h->cdc_in = h->cdc_out = -1;
     h->n_itf = 0;
     memset(h->ep_mps, 0, sizeof(h->ep_mps));
     h->ep_mps[0][0] = h->ep_mps[1][0] = h->ep0_size;
-    for (int i = 0; i + 2 <= h->config_len && h->config[i] >= 2;
-         i += h->config[i]) {
-        const uint8_t *d = h->config + i;
-
+    while ((d = config_next(h, &i))) {
         if (d[1] == 5 && d[0] >= 7) {           /* ENDPOINT: its size */
             h->ep_mps[d[2] >> 7][d[2] & 0x0f] = MAX(d[4] | (d[5] & 7) << 8, 8);
-        }
-        if (d[1] == 4 && d[0] >= 9) {           /* INTERFACE */
+        } else if (d[1] == 4 && d[0] >= 9) {    /* INTERFACE */
             itf = d[2];
-            cls = d[5];
             if (d[3] == 0 && h->n_itf < 16) {   /* (not an alternate) */
                 memcpy(h->itf_class[h->n_itf++], d + 5, 3);
             }
-            if (cls == 0x02 && d[6] == 0x02 && h->cdc_comm < 0) {
+            if (d[5] == 0x02 && d[6] == 0x02 && h->cdc_comm < 0) {
                 h->cdc_comm = itf;              /* ACM */
+                data = itf + 1;
             }
-        } else if (d[1] == 5 && d[0] >= 7 && cls == 0x0a &&
-                   (d[3] & 3) == 2) {           /* a data interface's bulk */
+        } else if (d[1] == 0x24 && d[0] >= 5 && d[2] == 0x06 &&
+                   h->cdc_comm >= 0 && itf == h->cdc_comm) {
+            data = d[4];                        /* its Union */
+        }
+    }
+    i = 0;
+    while ((d = config_next(h, &i))) {
+        if (d[1] == 4 && d[0] >= 9) {
+            itf = d[2];
+            cls = d[5];
+        } else if (d[1] == 5 && d[0] >= 7 && itf == data && cls == 0x0a &&
+                   (d[3] & 3) == 2) {           /* its data interface's bulk */
             if (d[2] & 0x80) {
                 h->cdc_in = d[2] & 0x0f;
             } else {
@@ -399,7 +427,7 @@ static void usbip_put_device(FoUsbHost *h, GByteArray *b)
     g_byte_array_append(b, (uint8_t *)busid, sizeof(busid));
     put_be32(b, 1);                                 /* busnum */
     put_be32(b, 2);                                 /* devnum */
-    put_be32(b, 2);                                 /* USB_SPEED_FULL */
+    put_be32(b, h->ops ? h->ops->speed : 2);        /* USB_SPEED_FULL, _HIGH */
     put_be16(b, lduw_le_p(&h->dev_desc[8]));        /* idVendor */
     put_be16(b, lduw_le_p(&h->dev_desc[10]));       /* idProduct */
     put_be16(b, lduw_le_p(&h->dev_desc[12]));       /* bcdDevice */
@@ -481,13 +509,13 @@ static void usbip_drop_urbs(FoUsbHost *h)
 static bool usbip_transact(FoUsbHost *h, FoUsbUrb *u)
 {
     int mps = h->ep_mps[u->dir][u->ep] ?: 64;
-    uint8_t pkt[64];
-    RP2UsbResult r;
+    uint8_t pkt[FO_USB_MAX_PACKET];
+    FoUsbResult r;
     int n = 0;
 
     if (u->dir) {
-        r = rp2350_usb_in(h->soc, h->addr, u->ep, pkt, &n);
-        if (r == RP2_USB_ACK) {
+        r = h->ops->in(h->dev, h->addr, u->ep, pkt, &n);
+        if (r == FO_USB_ACK) {
             int take = MIN(n, (int)(u->len - u->done));
 
             memcpy(u->data + u->done, pkt, take);
@@ -504,8 +532,8 @@ static bool usbip_transact(FoUsbHost *h, FoUsbUrb *u)
                         !(u->len % mps);
 
         n = MIN(mps, (int)(u->len - u->done));
-        r = rp2350_usb_out(h->soc, h->addr, u->ep, u->data + u->done, n);
-        if (r == RP2_USB_ACK) {
+        r = h->ops->out(h->dev, h->addr, u->ep, u->data + u->done, n);
+        if (r == FO_USB_ACK) {
             u->done += n;
             if (!n) {
                 u->zlp_done = true;
@@ -517,7 +545,7 @@ static bool usbip_transact(FoUsbHost *h, FoUsbUrb *u)
             return true;
         }
     }
-    if (r == RP2_USB_STALL) {
+    if (r == FO_USB_STALL) {
         usbip_complete(h, u, ERR_EPIPE);
         return true;
     }
@@ -737,7 +765,7 @@ static void usbip_end(FoUsbHost *h)
         if (h->state != H_OFF) {            /* back to this computer: a reset */
             h->state = H_OFF;
             timer_del(h->timer);
-            rp2350_usb_detach(h->soc);
+            h->ops->detach(h->dev);
             host_look(h);
         }
     }
@@ -766,8 +794,7 @@ static void usbip_event(void *opaque, QEMUChrEvent event)
 /* the running device: a control transfer (DTR), else bulk OUT, else IN */
 static int64_t run_step(FoUsbHost *h)
 {
-    RP2350State *s = h->soc;
-    uint8_t buf[64];
+    uint8_t buf[FO_USB_MAX_PACKET];
     int64_t wait;
     int n;
 
@@ -787,9 +814,9 @@ static int64_t run_step(FoUsbHost *h)
         return STEP_NS;
     }
     if (h->to_dev->len) {
-        n = MIN(64, h->to_dev->len);
-        if (rp2350_usb_out(s, h->addr, h->cdc_out, h->to_dev->data, n) ==
-            RP2_USB_ACK) {
+        n = MIN(h->ep_mps[0][h->cdc_out] ?: 64, h->to_dev->len);
+        if (h->ops->out(h->dev, h->addr, h->cdc_out, h->to_dev->data, n) ==
+            FO_USB_ACK) {
             g_byte_array_remove_range(h->to_dev, 0, n);
             qemu_chr_fe_accept_input(&h->cdc_chr);
             return STEP_NS;
@@ -797,7 +824,7 @@ static int64_t run_step(FoUsbHost *h)
     }
     if (h->open && h->to_chr->len < 4096) {
         n = 0;
-        if (rp2350_usb_in(s, h->addr, h->cdc_in, buf, &n) == RP2_USB_ACK) {
+        if (h->ops->in(h->dev, h->addr, h->cdc_in, buf, &n) == FO_USB_ACK) {
             g_byte_array_append(h->to_chr, buf, n);
             cdc_flush(h);
             h->idle_ns = 0;
@@ -953,7 +980,7 @@ static bool host_waits(FoUsbHost *h)
 {
     int64_t now = now_ns();
 
-    if (rp2350_usb_irq_pending(h->soc)) {
+    if (h->ops->irq_pending(h->dev)) {
         if (!h->waiting_since) {
             h->waiting_since = now;
         }
@@ -977,7 +1004,7 @@ static void host_step(void *opaque)
 
     switch (h->state) {
     case H_ATTACHING:
-        rp2350_usb_bus_reset(h->soc);
+        h->ops->bus_reset(h->dev);
         h->state = H_RESETTING;
         host_after(h, RESET_NS);
         return;
@@ -1014,39 +1041,53 @@ static void host_step(void *opaque)
     }
 }
 
+/* the device has gone from the bus, or the bus from it */
+static void host_detach(FoUsbHost *h)
+{
+    h->state = H_OFF;
+    h->ctl = C_IDLE;
+    timer_del(h->timer);
+    h->ops->detach(h->dev);
+    g_byte_array_set_size(h->to_dev, 0);
+    if (h->imported) {                      /* the device left: the PC's
+                                               client has nothing more */
+        h->imported = false;
+        usbip_drop_urbs(h);
+        qemu_chr_fe_disconnect(&h->usbip_chr);
+    }
+}
+
 /* the cable's data lines and the device's pull-up: attached or not */
 static void host_look(FoUsbHost *h)
 {
-    bool attached = h->cable && rp2350_usb_pulled_up(h->soc);
+    bool attached = h->ops && h->ops->pulled_up(h->dev);
 
     if (attached && h->state == H_OFF) {
         h->state = H_ATTACHING;
         host_after(h, ATTACH_NS);
     } else if (!attached && h->state != H_OFF) {
-        h->state = H_OFF;
-        h->ctl = C_IDLE;
-        timer_del(h->timer);
-        rp2350_usb_detach(h->soc);
-        g_byte_array_set_size(h->to_dev, 0);
-        if (h->imported) {                  /* the device left: the PC's
-                                               client has nothing more */
-            h->imported = false;
-            usbip_drop_urbs(h);
-            qemu_chr_fe_disconnect(&h->usbip_chr);
-        }
+        host_detach(h);
     }
 }
 
-static void host_pullup(void *opaque, bool on)
+void fo_usb_host_pullup(void *opaque, bool on)
 {
-    host_look(opaque);
+    host_look(FO_USB_HOST(opaque));
 }
 
-void fo_usb_host_cable(DeviceState *dev, bool data)
+void fo_usb_host_connect(DeviceState *dev, const FoUsbDevOps *ops,
+                         void *opaque)
 {
     FoUsbHost *h = FO_USB_HOST(dev);
 
-    h->cable = data;
+    if (ops == h->ops && opaque == h->dev) {
+        return;
+    }
+    if (h->state != H_OFF) {
+        host_detach(h);                     /* (from the one it had) */
+    }
+    h->ops = ops;
+    h->dev = ops ? opaque : NULL;
     host_look(h);
 }
 
@@ -1102,15 +1143,6 @@ static void usb_host_realize(DeviceState *dev, Error **errp)
     }
 }
 
-void fo_usb_host_attach(DeviceState *dev, struct RP2350State *soc)
-{
-    FoUsbHost *h = FO_USB_HOST(dev);
-
-    h->soc = soc;
-    soc->usb.pullup_fn = host_pullup;
-    soc->usb.pullup_opaque = h;
-}
-
 static const Property usb_host_properties[] = {
     DEFINE_PROP_CHR("cdc", FoUsbHost, cdc_chr),
     DEFINE_PROP_CHR("usbip", FoUsbHost, usbip_chr),
@@ -1122,7 +1154,7 @@ static void usb_host_class_init(ObjectClass *oc, const void *data)
 
     dc->realize = usb_host_realize;
     dc->desc = "Flipper One: the computer at the other end of its USB "
-               "cable, with the MCU's CDC serial port on a chardev";
+               "cable, with the device's CDC serial port on a chardev";
     device_class_set_props(dc, usb_host_properties);
 }
 

@@ -14,6 +14,7 @@
 #include "hw/core/irq.h"
 #include "qemu/timer.h"
 #include "qom/object.h"
+#include "fo_usb.h"
 
 #define TYPE_RP2350 "rp2350"
 OBJECT_DECLARE_SIMPLE_TYPE(RP2350State, RP2350)
@@ -78,10 +79,6 @@ typedef struct RP2Usb {
     void (*pullup_fn)(void *opaque, bool on);
     void *pullup_opaque;
 } RP2Usb;
-
-typedef enum {
-    RP2_USB_ACK, RP2_USB_NAK, RP2_USB_STALL, RP2_USB_TIMEOUT,
-} RP2UsbResult;
 
 /* SIO: as each core sees it (CPUID, its FIFO) */
 #define RP2_FIFO_DEPTH 8
@@ -467,12 +464,15 @@ void rp2350_usb_vbus(RP2350State *s, bool vbus);
 void rp2350_usb_bus_reset(RP2350State *s);
 void rp2350_usb_suspend(RP2350State *s, bool suspended);
 void rp2350_usb_detach(RP2350State *s);
-RP2UsbResult rp2350_usb_setup(RP2350State *s, uint8_t addr,
-                              const uint8_t pkt[8]);
-RP2UsbResult rp2350_usb_out(RP2350State *s, uint8_t addr, int ep,
-                            const uint8_t *data, int len);
-RP2UsbResult rp2350_usb_in(RP2350State *s, uint8_t addr, int ep,
-                           uint8_t *data, int *len);
+FoUsbResult rp2350_usb_setup(RP2350State *s, uint8_t addr,
+                             const uint8_t pkt[8]);
+FoUsbResult rp2350_usb_out(RP2350State *s, uint8_t addr, int ep,
+                           const uint8_t *data, int len);
+FoUsbResult rp2350_usb_in(RP2350State *s, uint8_t addr, int ep,
+                          uint8_t *data, int *len);
+/* ... all of it as the computer's side drives a device (fo_usb.h), with
+ * the RP2350State as its opaque */
+extern const FoUsbDevOps rp2350_usb_ops;
 
 /* rp2350_pwm.c: a pin's duty, 0 to 65535 (-1: the pin is not PWM's) */
 void rp2350_pwm_realize(RP2350State *s);

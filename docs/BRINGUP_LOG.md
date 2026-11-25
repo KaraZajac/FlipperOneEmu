@@ -1140,3 +1140,67 @@ register headers.
     the kernel's command line, through the launcher's new `run --kernel-args`. The
     tools are a recipe for the next hang with no shell: a break with SysRq, a search of
     guest RAM, and stacks walked from `task_struct`s.
+
+64. **A computer on Flipper OS's USB.** The MCU firmware raises USB20_SEL with the Linux
+    side's rail, so on the device a computer plugged into the USB-C port while Flipper
+    OS runs reaches the RK3576's USB0, not the MCU. Here it reached nothing. Now:
+    - **The virtual PC drives either device.** `usb_host.c` drives a device controller
+      through `fo_usb.h`: its pull-up, whether its CPU still has events to take, a bus
+      reset, a detach, and SETUP, OUT and IN transactions answered with ACK, NAK, STALL
+      or nothing. The MCU's USB is one; the board switches the PC between it and USB0
+      as USB20_SEL changes. The PC itself:
+      - takes packets of up to 1024 bytes (it had 64; high speed's bulk is 512) and
+        sends OUT packets of the endpoint's size;
+      - finds a CDC ACM function by its Union descriptor (Flipper OS's NCM data
+        interface is class 0x0A too, and its endpoints were being taken);
+      - says high speed over USB/IP for USB0.
+    - **USB0's device role** (`rk_dwc3.c`), from a spec read in the 7.4-rc4 dwc3
+      driver:
+      - **Events.** They go into event buffer 0 as the core writes them, word by word.
+        GEVNTCOUNT counts their bytes, and the driver's writes subtract. The interrupt
+        is up while that is not 0 and not masked, ORed with the xHCI's.
+      - **Commands.** Endpoint commands are done as they are written, and End
+        Transfer's completion event comes when CMDIOC asks for it; without it, an
+        endpoint is dead after its next disable.
+      - **TRBs.** They are walked in memory: link and chained TRBs, a short packet
+        ending a chain. A TRB done gets its size and control written back, never its
+        buffer's address, since the SETUP packet is written there.
+      - **EP0.** A SETUP is always ACKed, into its SETUP TRB. A data or status stage
+        that finds no TRB gives one Transfer Not Ready, which is how the driver knows
+        to start the status stage. SET_ADDRESS takes effect once its status stage is
+        done.
+      - **Speed.** DSTS says high speed. Its 4 (SuperSpeed) would have made the driver
+        set EP0's packet size to 512, and the device descriptor's bMaxPacketSize0 to 9.
+    - **Two bugs on the way, both the model's.** They were found with the guest's
+      dwc3 trace events, enabled before the computer was plugged in, and the PC's
+      state read with gdb (its last 16 transactions).
+      - **Enumeration stopped at SET_CONFIGURATION's status stage.** The PC NAKed its
+        status IN 1.2 million times, while Linux said "configured". The PC waits at
+        most 10 ms for the driver after an event. Under TCG the driver's interrupt
+        thread can take longer, so the PC sent the SETUP before the driver had given
+        EP0 a SETUP TRB. The model held the SETUP, and the status IN then raised
+        Transfer Not Ready ahead of the SETUP's Transfer Complete. The driver ignores
+        one that comes before it expects it, and the hardware raises it once. Now a
+        token to EP0 while a SETUP is held is NAKed with no event, and a held SETUP
+        counts as an event still to take, so the PC waits for it.
+      - **A replug in that state left EP0 stalled.** The driver had abandoned the
+        transfer and stalled EP0, and the stall outlived the SETUP given after it.
+        Now a SETUP given clears the stall. Also, a detach in the middle of a control
+        transfer now raises the status stage's Transfer Not Ready the host would have
+        raised. That way the driver's disconnect ends the transfer and gives EP0 its
+        SETUP TRB again; otherwise it waits for the status stage forever.
+    - **The result.** `37c1:f12f "Flipper FZCO" "Flipper One Composite Device"`, at
+      high speed: NCM, MTP (FunctionFS) and ACM.
+      - **Its serial port.** It is on usb.sock: Debian's getty, with its login prompt.
+      - **USB/IP**, as the PC's kernel would take it (scripts/fo_usbip.py in
+        userspace):
+        - the device list says high speed;
+        - a SET_CONFIGURATION on the configured gadget restarts its functions;
+        - the ACM function gives the login prompt;
+        - over NCM (alternate 1, NTB16 both ways), Flipper OS's dnsmasq offers 10.0.0.2
+          (its own end is 10.0.0.1). It answers once flipusb0 has its address, about
+          3 s after the link comes up, so a DHCP client's retries are needed.
+      - **Unplugged and plugged in again.** Disconnect, then Reset and Connect Done,
+        and it is configured again.
+      The Linux check plugs a computer in, checks the enumeration, the state Linux
+      sees, a line each way over ttyGS0, and the unplugging (31 checks).

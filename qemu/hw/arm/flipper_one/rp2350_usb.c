@@ -362,8 +362,8 @@ static uint16_t buf_half(uint32_t ctrl, int half)
 }
 
 /* the endpoint stalls, or NAKs (and says so, if asked) */
-static RP2UsbResult usb_refuse(RP2350State *s, int ep, bool out, UsbBuf *b,
-                               uint32_t ctrl)
+static FoUsbResult usb_refuse(RP2350State *s, int ep, bool out, UsbBuf *b,
+                              uint32_t ctrl)
 {
     RP2Usb *u = &s->usb;
     bool stall = ctrl & BUF_STALL;
@@ -376,22 +376,22 @@ static RP2UsbResult usb_refuse(RP2350State *s, int ep, bool out, UsbBuf *b,
             u->ep_status_stall_nak |= 1u << (ep * 2 + out);
             usb_irq(s);
         }
-        return RP2_USB_STALL;
+        return FO_USB_STALL;
     }
     if ((ep == 0 && u->nak_int_ep0) || (ep && (b->epc & EPC_INT_ON_NAK))) {
         u->ep_status_stall_nak |= 1u << (ep * 2 + out);
         usb_irq(s);
     }
-    return RP2_USB_NAK;
+    return FO_USB_NAK;
 }
 
-RP2UsbResult rp2350_usb_setup(RP2350State *s, uint8_t addr,
-                              const uint8_t pkt[8])
+FoUsbResult rp2350_usb_setup(RP2350State *s, uint8_t addr,
+                             const uint8_t pkt[8])
 {
     RP2Usb *u = &s->usb;
 
     if (!usb_device_mode(s, addr)) {
-        return RP2_USB_TIMEOUT;
+        return FO_USB_TIMEOUT;
     }
     memcpy(usb_dp(s), pkt, 8);
     memory_region_set_dirty(&s->usb_dpram, 0, 8);
@@ -399,24 +399,24 @@ RP2UsbResult rp2350_usb_setup(RP2350State *s, uint8_t addr,
     u->ep_stall_arm = 0;            /* a SETUP disarms EP0's stall */
     u->next_buf[0] = u->next_buf[1] = 0;
     usb_irq(s);
-    return RP2_USB_ACK;
+    return FO_USB_ACK;
 }
 
-RP2UsbResult rp2350_usb_out(RP2350State *s, uint8_t addr, int ep,
-                            const uint8_t *data, int len)
+FoUsbResult rp2350_usb_out(RP2350State *s, uint8_t addr, int ep,
+                           const uint8_t *data, int len)
 {
     UsbBuf b;
     uint32_t ctrl;
     uint16_t half;
 
     if (!usb_device_mode(s, addr) || ep < 0 || ep > 15) {
-        return RP2_USB_TIMEOUT;
+        return FO_USB_TIMEOUT;
     }
     if (s->usb.ep_abort >> (ep * 2 + 1) & 1) {
-        return RP2_USB_NAK;                     /* taken back: wait */
+        return FO_USB_NAK;                     /* taken back: wait */
     }
     if (!usb_buf(s, ep, true, &b)) {
-        return RP2_USB_TIMEOUT;
+        return FO_USB_TIMEOUT;
     }
     ctrl = dp_read32(s, b.ctrl_off);
     half = buf_half(ctrl, b.half);
@@ -429,24 +429,24 @@ RP2UsbResult rp2350_usb_out(RP2350State *s, uint8_t addr, int ep,
     half = (half & ~(BUF_AVAIL | BUF_LEN)) | BUF_FULL | len;
     dp_write_half(s, b.ctrl_off, b.half, half);
     usb_buf_done(s, ep, true, &b);
-    return RP2_USB_ACK;
+    return FO_USB_ACK;
 }
 
-RP2UsbResult rp2350_usb_in(RP2350State *s, uint8_t addr, int ep,
-                           uint8_t *data, int *len)
+FoUsbResult rp2350_usb_in(RP2350State *s, uint8_t addr, int ep,
+                          uint8_t *data, int *len)
 {
     UsbBuf b;
     uint32_t ctrl;
     uint16_t half;
 
     if (!usb_device_mode(s, addr) || ep < 0 || ep > 15) {
-        return RP2_USB_TIMEOUT;
+        return FO_USB_TIMEOUT;
     }
     if (s->usb.ep_abort >> (ep * 2) & 1) {
-        return RP2_USB_NAK;                     /* taken back: wait */
+        return FO_USB_NAK;                     /* taken back: wait */
     }
     if (!usb_buf(s, ep, false, &b)) {
-        return RP2_USB_TIMEOUT;
+        return FO_USB_TIMEOUT;
     }
     ctrl = dp_read32(s, b.ctrl_off);
     half = buf_half(ctrl, b.half);
@@ -458,7 +458,7 @@ RP2UsbResult rp2350_usb_in(RP2350State *s, uint8_t addr, int ep,
     half &= ~(BUF_AVAIL | BUF_FULL);
     dp_write_half(s, b.ctrl_off, b.half, half);
     usb_buf_done(s, ep, false, &b);
-    return RP2_USB_ACK;
+    return FO_USB_ACK;
 }
 
 /* ------------------------------------------------------------ registers */
@@ -630,3 +630,54 @@ void rp2350_usb_reset(RP2350State *s)
     usb_pullup_check(s);
     qemu_set_irq(u->irq, 0);
 }
+
+/* ------------------------------------------- as the computer's side sees it */
+
+static bool usb_op_pulled_up(void *opaque)
+{
+    return rp2350_usb_pulled_up(opaque);
+}
+
+static bool usb_op_irq_pending(void *opaque)
+{
+    return rp2350_usb_irq_pending(opaque);
+}
+
+static void usb_op_bus_reset(void *opaque)
+{
+    rp2350_usb_bus_reset(opaque);
+}
+
+static void usb_op_detach(void *opaque)
+{
+    rp2350_usb_detach(opaque);
+}
+
+static FoUsbResult usb_op_setup(void *opaque, uint8_t addr,
+                                const uint8_t pkt[8])
+{
+    return rp2350_usb_setup(opaque, addr, pkt);
+}
+
+static FoUsbResult usb_op_out(void *opaque, uint8_t addr, int ep,
+                              const uint8_t *data, int len)
+{
+    return rp2350_usb_out(opaque, addr, ep, data, len);
+}
+
+static FoUsbResult usb_op_in(void *opaque, uint8_t addr, int ep,
+                             uint8_t *data, int *len)
+{
+    return rp2350_usb_in(opaque, addr, ep, data, len);
+}
+
+const FoUsbDevOps rp2350_usb_ops = {
+    .speed = 2,                         /* full speed */
+    .pulled_up = usb_op_pulled_up,
+    .irq_pending = usb_op_irq_pending,
+    .bus_reset = usb_op_bus_reset,
+    .detach = usb_op_detach,
+    .setup = usb_op_setup,
+    .out = usb_op_out,
+    .in = usb_op_in,
+};

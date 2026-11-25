@@ -168,11 +168,20 @@ static void flipper_one_headset(FlipperOneState *s, int what)
     rp2350_pins_update(&s->mcu, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
 }
 
-/* the MCU's USB reaches the computer: one is plugged in, and the USB mux
- * (USB20_SEL, the main expander's pin 8, low) has it on the MCU */
+/* what a computer plugged in reaches: the USB mux (USB20_SEL, the main
+ * expander's pin 8, which the MCU firmware raises with the Linux side's
+ * rail) puts its USB 2 lines on the MCU's USB while low, on the RK3576's
+ * USB0 (the Type-C port's controller) while high */
 static void flipper_one_usb_data(FlipperOneState *s)
 {
-    fo_usb_host_cable(s->usb_host, s->usb == 2 && !s->usb20_sel);
+    if (s->usb != 2) {
+        fo_usb_host_connect(s->usb_host, NULL, NULL);
+    } else if (!s->usb20_sel) {
+        fo_usb_host_connect(s->usb_host, &rp2350_usb_ops, &s->mcu);
+    } else {
+        fo_usb_host_connect(s->usb_host, &rk_dwc3_usb_ops,
+                            &s->rk3576.usb[0]);
+    }
 }
 
 /*
@@ -769,6 +778,9 @@ static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
     sysbus_realize(SYS_BUS_DEVICE(&s->rk3576), &error_fatal);
     memory_region_add_subregion(get_system_memory(), RK3576_DRAM_BASE,
                                 ms->ram);
+    /* its USB0's gadget pulls D+ up for the computer plugged in */
+    s->rk3576.usb[0].pullup_fn = fo_usb_host_pullup;
+    s->rk3576.usb[0].pullup_opaque = s->usb_host;
     /* the MCU on I2C0, its PMIC on I2C1, its real-time clock on I2C8 */
     s->link = (RkI2cTarget){
         .start = flipper_one_link_start, .write = flipper_one_link_write,
@@ -972,16 +984,17 @@ static void flipper_one_init(MachineState *ms)
     s->usb_mux = i2c_slave_create_simple(s->main_bus.bus, "hd3ss3220", 0x47);
     fo_battery_start(&s->battery);
 
-    /* the MCU's USB: the mux (the main expander's pin 8), and the computer
-     * at the cable's end: -global flipper-one-usb-host.cdc=CHARDEV for the
-     * CDC serial port it finds */
+    /* the USB-C port's USB 2: the mux (the main expander's pin 8), and the
+     * computer at the cable's end: -global flipper-one-usb-host.cdc=CHARDEV
+     * for the CDC serial port it finds */
     qdev_connect_gpio_out_named(DEVICE(s->main_expander), "pins", 8,
                                 qemu_allocate_irq(flipper_one_usb20_sel, s,
                                                   0));
     s->usb_host = qdev_new(TYPE_FO_USB_HOST);
     object_property_add_child(OBJECT(ms), "usb-host", OBJECT(s->usb_host));
     qdev_realize_and_unref(s->usb_host, NULL, &error_fatal);
-    fo_usb_host_attach(s->usb_host, &s->mcu);
+    s->mcu.usb.pullup_fn = fo_usb_host_pullup;
+    s->mcu.usb.pullup_opaque = s->usb_host;
     rp2350_pin_listen(&s->mcu, 43, flipper_one_expander_reset, s);
     rp2350_pin_listen(&s->mcu, 38, flipper_one_expander_reset, s);
 

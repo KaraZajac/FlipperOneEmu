@@ -147,9 +147,11 @@ usb 0
 Into the USB-C port: a charger, a computer, or nothing. The charger is a USB-C one of
 5 V that offers 3 A (its Rp) and shorts D+ to D- (a dedicated charging port; the
 firmware's PD does not ask for more); the computer's port gives 5 V and 500 mA (a
-standard port), and its data lines: while the board's USB mux has them on the MCU (the
-Linux side off), the computer enumerates the MCU's USB device, and its CDC serial port
-is `devices/NAME/usb.sock`. The charger chip sees either (and takes 300 ms to know which
+standard port), and its data lines. The board's USB mux has them on the MCU while the
+Linux side is off: the computer enumerates the MCU's USB device. While it is on (the
+MCU firmware switches the mux with its rail) they reach the RK3576's USB0: the computer
+enumerates Flipper OS's USB gadget. Either way, the CDC serial port it finds is
+`devices/NAME/usb.sock`. The charger chip sees either (and takes 300 ms to know which
 it is), the battery charges, the USB-C chips see their partner. What is plugged in
 stays when the program goes. The window's Device menu has them (Ctrl+U, Ctrl+Shift+U).
 

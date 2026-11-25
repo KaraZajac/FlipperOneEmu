@@ -216,11 +216,14 @@ void fo_leds_power(FoLeds *l, int chain, bool on);
 struct I2CSlave;
 void pcal6416_set_pins(struct I2CSlave *dev, uint16_t levels);
 
-/* usb_host.c: the computer at the other end of the MCU's USB: whether
- * its data lines reach the MCU's */
+/* usb_host.c: the computer at the other end of the USB-C cable: the device
+ * controller its data lines reach (@ops NULL: none); and, for a device's
+ * pull-up callback (@opaque: the host), its pull-up has changed */
 #define TYPE_FO_USB_HOST "flipper-one-usb-host"
-void fo_usb_host_attach(DeviceState *dev, struct RP2350State *soc);
-void fo_usb_host_cable(DeviceState *dev, bool data);
+struct FoUsbDevOps;
+void fo_usb_host_connect(DeviceState *dev, const struct FoUsbDevOps *ops,
+                         void *opaque);
+void fo_usb_host_pullup(void *opaque, bool on);
 
 /* iqs7211e.c: the finger on the touchpad (0 ... 1000 across and down) and
  * its pressure (0 ... 255), or none */
