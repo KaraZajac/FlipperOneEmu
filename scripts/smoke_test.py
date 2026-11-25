@@ -661,7 +661,12 @@ def log_checks(check, d):
     text = log_text(d)
     crash = CRASH.search(text)
     check("no crash in the log", not crash, crash and crash.group(0))
-    errors = [line for line in text.splitlines()
+    lines = text.splitlines()
+    if lines and not text.endswith(("\n", "\r")):
+        lines.pop()             # still being written: the firmware has just
+                                # started again, and its CPU app asks for its
+                                # slot then ("... but sel")
+    errors = [line for line in lines
               if "[E]" in line and not KNOWN_ERRORS.search(line)]
     check("no error in the log", not errors, "; ".join(errors[:3]))
 

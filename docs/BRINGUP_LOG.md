@@ -1522,3 +1522,31 @@ register headers.
     builds en-us too, and the launcher says so if it is missing. A minimal RFB
     client gets the handshake, the console's size and a frame: 640x480 and black
     with no signal.
+
+74. **The microSD card, at speed.** Flipper OS now boots with no failed unit. The
+    kernel's remaining complaints are ones the device would print too: no GPU
+    model, by plan; no UCSI in the MCU firmware, whose registers at 0x0500 are only
+    reserved, so flipper-one-typec gives up with -ENODEV; supplies the device
+    tree does not name. That left speed. Its root, the microSD card, was the slow
+    disk: raw 1 MiB reads at 33 MB/s, against 53 for the UFS and 65 for an NVMe.
+    - **Where the time went.** Sampling QEMU during the reads found the vCPUs
+      mostly idle, so the cost is per request. Inside the guest, mmc's
+      tracepoints time a 64 KiB request at 1.5-2.8 ms from start to done (median).
+      Most of that is the guest's own path under emulation. On a loaded host it
+      is 7-20 ms, and moving the interrupt to another CPU changes nothing. The
+      dw_mmc driver's "Interrupt latency" warnings are the same thing: its
+      watchdog finds CMD_DONE latched and the handler more than 10 ms away.
+    - **What the model added.** QEMU's card gave CMD18's data one byte per call,
+      and took CMD25's the same way. That is a million calls through its checks
+      for each megabyte, inside the controller's register write, with the BQL
+      held. QEMU patch 0014: a call moves what is left of the block. A block's
+      start (its address checked, for a write its protection) and its end (the
+      block read or written, the count of blocks, the state) are as they were.
+    - **Now:** raw 1 MiB reads at 48 MB/s. 64 MiB written through the root file
+      system with fsync goes at 46 MB/s, and reads back with the same checksum
+      after the page cache is dropped. Small requests are as before: the guest's
+      own path dominates them.
+    - **The smoke test.** Its last check read the MCU's log while the firmware was
+      starting again, and once took the CPU app's half-written "... but sel" for
+      an error it does not know. It now leaves out a last line with no end yet.
+      (The MCU firmware here is now dev-25112026-2e3290e4, which passes.)

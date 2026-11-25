@@ -168,6 +168,7 @@ yet.
 | 0011 | hw/usb/hcd-xhci: a property for an ERSTBA written high then low (as DWC3's) |
 | 0012 | hw/dma/pl330: let the machine go on during a long transfer |
 | 0013 | target/arm: an exception return without the BQL when the PMU is idle |
+| 0014 | hw/sd/sd: a multi-block transfer's bytes a block at a time |
 
 ## Layout
 

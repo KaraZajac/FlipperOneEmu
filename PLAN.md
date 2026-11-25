@@ -103,7 +103,8 @@ screen and its CLI.
       cooling cools; the temperature around the device from the panel link and the
       window, the battery's too (2026-11-24)
 - ◐ Storage: microSD (dw-mshc, QEMU's SD card) with the published image: Flipper OS
-      boots to its login (2026-11-24); the 64 GB UFS, blank (QEMU's UFS host on a PCI
+      boots to its login (2026-11-24), the card's data a block at a time (patch
+      0014: 48 MB/s, as the UFS) (2026-11-25); the 64 GB UFS, blank (QEMU's UFS host on a PCI
       bus the kernel does not see, patches 0008-0010) (2026-11-24); then Flipper OS on
       the UFS, and U-Boot from the image (SPL, TF-A BL31, U-Boot proper, a BLS entry)
 - ◐ The MCU powers it: `VCC5V0_SYS_S5_EN` (the main expander's pin 12) switches it on

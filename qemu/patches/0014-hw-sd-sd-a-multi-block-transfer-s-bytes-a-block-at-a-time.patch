@@ -1,0 +1,84 @@
+From: FlipperOneEmu
+Subject: [PATCH] hw/sd/sd: a multi-block transfer's bytes a block at a time
+
+sd_read_data() and sd_write_data() gave and took one byte per call for
+CMD18 and CMD25, the transfers that carry nearly all of a card's data:
+a host controller's model that moves its data with sdbus_read_data()
+or sdbus_write_data() called the card a million times for a megabyte,
+each call through its checks and its trace point, with the BQL held.
+
+A call now moves what is left of the current block, at most, and the
+caller's loop comes back for the rest. What happens at a block's start
+(its address checked, and for a write its protection) and at its end
+(the block read or written, the count of blocks, the state) is as it
+was. A block that starts past the end of the card still gives or takes
+a single byte, as before: the error it sets makes the next call take
+the rest.
+
+---
+--- a/hw/sd/sd.c	2026-11-25 16:14:16.433060820 -0500
++++ b/hw/sd/sd.c	2026-11-25 16:14:16.479946584 -0500
+@@ -2796,25 +2796,27 @@
+ 
+     case 25:  /* CMD25:  WRITE_MULTIPLE_BLOCK */
+         /*
+-         * Only read one byte at a time. We will be called again with the
+-         * remaining.
++         * What is left of this block, at most: we will be called again with
++         * the rest, the next block's checks first.
+          */
+-        length = 1;
+-
+         if (sd->data_offset == 0) {
+             /* Start of the block - let's check the address is valid */
+             if (!address_in_range(sd, "WRITE_MULTIPLE_BLOCK",
+                                   sd->data_start, sd->blk_len)) {
++                length = 1;
+                 break;
+             }
+             if (sd->size <= SDSC_MAX_CAPACITY) {
+                 if (sd_wp_addr(sd, sd->data_start)) {
+                     sd->card_status |= WP_VIOLATION;
++                    length = 1;
+                     break;
+                 }
+             }
+         }
+-        sd->data[sd->data_offset++] = value[0];
++        length = MIN(length, sd->blk_len - sd->data_offset);
++        memcpy(sd->data + sd->data_offset, value, length);
++        sd->data_offset += length;
+         if (sd->data_offset >= sd->blk_len) {
+             /* TODO: Check CRC before committing */
+             sd->state = sd_programming_state;
+@@ -2953,16 +2955,14 @@
+ 
+     case 18:  /* CMD18:  READ_MULTIPLE_BLOCK */
+         /*
+-         * We will only read one byte at a time. We will be called again with
+-         * the remaining buffer.
++         * What is left of this block, at most: we will be called again with
++         * the rest of the buffer, the next block's checks first.
+          */
+-        length = 1;
+-
+         if (sd->data_offset == 0) {
+             if (!address_in_range(sd, "READ_MULTIPLE_BLOCK",
+                                   sd->data_start, io_len)) {
+                 *value = dummy_byte;
+-                return length;
++                return 1;
+             }
+             partition_access = sd->ext_csd[EXT_CSD_PART_CONFIG]
+                     & EXT_CSD_PART_CONFIG_ACC_MASK;
+@@ -2972,7 +2972,9 @@
+                 sd_blk_read(sd, sd->data_start, io_len);
+             }
+         }
+-        *value = sd->data[sd->data_offset++];
++        length = MIN(length, io_len - sd->data_offset);
++        memcpy(value, sd->data + sd->data_offset, length);
++        sd->data_offset += length;
+ 
+         if (sd->data_offset >= io_len) {
+             sd->data_start += io_len;
