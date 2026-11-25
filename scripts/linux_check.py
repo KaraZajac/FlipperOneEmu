@@ -16,11 +16,12 @@ Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
   a key pressed on the panel reaches it, through the MCU and the I2C link;
 - Linux reads the main board's chips over the bus it shares with the MCU:
   the INA219 on VSYS, the five INA4230s; its root is the microSD card, and
-  its UFS is a 64 GB disk; USB0 is in its device role with its Type-C
-  port, USB1's root hubs are there, and the battery reads (its chain waits
-  on USB0's role switch); each Ethernet port has its RTL8211F, and with
-  passt installed port 1 is on this PC's network (`run --net`): a link,
-  an address by DHCP, a gateway that answers;
+  its UFS is a 64 GB disk; an NVMe in the M.2 slot (PCIe0, `run --nvme`)
+  is a 256 GB one, and 4 MiB written to it read back the same; USB0 is in
+  its device role with its Type-C port, USB1's root hubs are there, and the
+  battery reads (its chain waits on USB0's role switch); each Ethernet port
+  has its RTL8211F, and with passt installed port 1 is on this PC's network
+  (`run --net`): a link, an address by DHCP, a gateway that answers;
   the CPU clusters' clocks come from TF-A's SCMI server, and cpufreq has
   both clusters; the six thermal zones read the TSADC, with the trims the
   OTP holds;
@@ -50,8 +51,10 @@ A first boot takes several minutes (Flipper OS sets itself up); the first
 run keeps its card as build/linux-check/sd.img, as it is after the checked
 power-off, and later runs start from a copy of it (a reflink where the
 filesystem has them), for the same Flipper OS build. --fresh does a first
-boot anyway, and keeps that card instead. Exit status 0 = pass.
-Screenshots go to --out.
+boot anyway, and keeps that card instead. On a slow PC (busy, or its clock
+down) the waits after the first login stretch as much as that boot did
+over 200 s (400 s for a first boot). Exit status 0 = pass. Screenshots go
+to --out.
 """
 import argparse
 import json
@@ -246,6 +249,7 @@ def copy_card(src, dst):
 def checks(check, d, out, first_boot, off, net):
     boot_s = 1200 if first_boot else 600
     linux, qlog, mcu = d / "linux.log", d / "qemu.log", d / "mcu.log"
+    t0 = time.time()
 
     panel = st.Panel(d / "panel.sock")
     check("the RK3576 starts when the MCU switches its rail on",
@@ -260,10 +264,18 @@ def checks(check, d, out, first_boot, off, net):
     if not check("Flipper OS reaches its login",
                  wait_text(linux, r"login:", boot_s)):
         return None                     # (nothing after it can pass)
+    # a slow PC (busy, or its clock down) stretches the waits from here on
+    # as much as it stretched this boot (200 s at most, from the kept card,
+    # on an idle one): the check is of what works, not of how fast
+    took = time.time() - t0
+    slow = max(1.0, took / (400 if first_boot else 200))
+    if slow > 1:
+        print(f"      (a slow PC: the boot took {took:.0f} s, and the waits "
+              f"from here on are {slow:.1f} times as long)", flush=True)
     check("the MCU sees user space (CPU state 3)",
-          st.wait_log(d, r"CPU State: 3", 300))
+          st.wait_log(d, r"CPU State: 3", 300 * slow))
     check("FlipCTL draws on the Flipper's screen",
-          wait_text(linux, r"first frame on the panel", 300) and
+          wait_text(linux, r"first frame on the panel", 300 * slow) and
           st.until(lambda: panel.screen() != before, 30))
     time.sleep(5)
     panel.save(out / "flipctl.png")
@@ -276,7 +288,7 @@ def checks(check, d, out, first_boot, off, net):
     panel.tap("view")
 
     con = Console(d / "linux.sock")
-    check("its console answers", con.ready())
+    check("its console answers", con.ready(60 * slow))
     vsys = con.run("cat /sys/bus/i2c/devices/2-0045/hwmon/hwmon*/in1_input")
     check("Linux reads VSYS on the main bus (the INA219)",
           bool(vsys) and vsys[-1].strip().isdigit() and
@@ -292,6 +304,19 @@ def checks(check, d, out, first_boot, off, net):
     check("its UFS: a 64 GB disk (sda) on the UFS host",
           bool(ufs) and ufs[0].strip() == "64000000000" and
           any(u.strip() == "ufshcd" for u in ufs[1:]), str(ufs))
+    # PCIe0: the NVMe in the M.2 slot (`run --nvme`), behind the root port,
+    # a 256 GB disk; 4 MiB through it and back (its DMA, its MSI-X)
+    dev = "/sys/bus/pci/devices/0000:01:00.0"
+    nvme = con.run(f"cat {dev}/vendor {dev}/device /sys/block/nvme0n1/size")
+    check("PCIe0: an NVMe in the M.2 slot (1b36:0010), a 256 GB disk",
+          nvme == ["0x1b36", "0x0010", "500000000"], str(nvme))
+    rw = con.run("sudo dd if=/dev/urandom of=/tmp/r bs=1M count=4 "
+                 "2>/dev/null && sudo dd if=/tmp/r of=/dev/nvme0n1 bs=1M "
+                 "oflag=direct 2>/dev/null && sudo dd if=/dev/nvme0n1 "
+                 "of=/tmp/r2 bs=1M count=4 iflag=direct 2>/dev/null && "
+                 "cmp /tmp/r /tmp/r2 && echo same", 120)
+    check("... and 4 MiB written to it read back the same", rw == ["same"],
+          str(rw))
     usb = con.run("cat /sys/class/usb_role/23000000.usb-role-switch/role; "
                   "ls /sys/class/udc /sys/class/typec | paste -sd' '; "
                   "lsusb | grep -c 'root hub'")
@@ -405,20 +430,21 @@ def checks(check, d, out, first_boot, off, net):
     lmark = len(text_of(linux))
     con.send("systemctl reboot")
     check("reboot: the RK3576 starts again",
-          wait_text(qlog, r"the RK3576 starts again", 180, qmark))
+          wait_text(qlog, r"the RK3576 starts again", 180 * slow, qmark))
     check("... and the kernel with it",
-          wait_text(linux, r"Booting Linux", 60, lmark))
+          wait_text(linux, r"Booting Linux", 60 * slow, lmark))
     lmark = len(text_of(linux))
-    check("... to its login again", wait_text(linux, r"login:", 600, lmark)
-          and con.ready())
+    check("... to its login again",
+          wait_text(linux, r"login:", 600 * slow, lmark) and
+          con.ready(60 * slow))
 
     qmark = len(text_of(qlog))
     mmark = len(text_of(mcu))
     con.send("systemctl poweroff")
     check("power-off: the RK3576 is off (PSCI)",
-          wait_text(qlog, r"the RK3576 is off", 180, qmark))
+          wait_text(qlog, r"the RK3576 is off", 180 * slow, qmark))
     if check("... and the MCU cuts its rail",
-             wait_text(mcu, r"cutting its power", 60, mmark) and
+             wait_text(mcu, r"cutting its power", 60 * slow, mmark) and
              st.until(lambda: panel.rk3576[-1:] == [False], 10)):
         off()                           # (its card as Linux left it)
 
@@ -433,7 +459,7 @@ def checks(check, d, out, first_boot, off, net):
     check("the MCU's CPU app switches it on again",
           started and st.until(lambda: panel.rk3576[-1:] == [True], 10))
     check("... and the kernel starts",
-          wait_text(linux, r"Booting Linux", 60, lmark))
+          wait_text(linux, r"Booting Linux", 60 * slow, lmark))
     return con
 
 
@@ -488,8 +514,8 @@ def main():
     run = [sys.executable, str(st.LAUNCHER), "run", "-n", name, "--detach",
            "--linux", "--kernel-args",
            "systemd.mask=serial-getty@flipserial0.service",
-           "--audio", str(d / "audio.wav"), "--mic", str(d / "mic.wav")] + \
-        (["--net"] if net else [])
+           "--audio", str(d / "audio.wav"), "--mic", str(d / "mic.wav"),
+           "--nvme"] + (["--net"] if net else [])
     if subprocess.run(run).returncode:
         sys.exit("the device did not start")
     def off():

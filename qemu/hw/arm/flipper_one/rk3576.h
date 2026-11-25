@@ -375,6 +375,11 @@ struct RK3576State {
                                            looks: their regions' ends */
     RkSaiState sai[RK3576_NSAI];        /* SAI0, SAI2 (the codec's), SAI6
                                            (HDMI's): rk3576_sai() */
+    DeviceState *pcie;                  /* PCIe0, the M.2 slot's: QEMU's
+                                           DesignWare host, ... */
+    RkBlock pcie_apb;                   /* ... Rockchip's registers, */
+    uint8_t pcie_intx;                  /* ... INTA-D as the host has them */
+    MemoryRegion pcie_dma;              /* ... its devices' DMA: DRAM */
     /* the board is told of a GPIO pin's new level */
     void (*gpio_out)(void *opaque, int bank, int pin, bool level);
     void *gpio_out_opaque;

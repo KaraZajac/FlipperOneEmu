@@ -147,6 +147,18 @@ def cmd_run(args):
         if not os.path.isfile(args.mic):
             die(f"{args.mic}: no such file")
         cmd += ["-global", f"nau8822.mic={os.path.abspath(args.mic)}"]
+    # an NVMe SSD in the M.2 slot (PCIe0's root port, bus dw-pcie): its disk
+    # a raw image, the device's own nvme.img unless told (a blank 256 GB,
+    # sparse, the first time)
+    if getattr(args, "nvme", None) is not None:
+        img = pathlib.Path(args.nvme or d / "nvme.img").absolute()
+        if not img.exists():
+            with open(img, "wb"):
+                pass
+            os.truncate(img, 256 * 10**9)
+        cmd += ["-drive", f"if=none,id=nvme0,format=raw,file={img}",
+                "-device", "nvme,drive=nvme0,serial=FlipperOneEmu-M2,"
+                "bus=dw-pcie"]
     if args.detach:
         with open(d / "qemu.out", "wb") as out:
             p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=out,
@@ -533,6 +545,10 @@ def main():
                            help="what the board's internal microphone hears: "
                                 "a WAV file (16-bit PCM), looped; silence "
                                 "without one")
+            p.add_argument("--nvme", metavar="FILE.img", nargs="?", const="",
+                           help="an NVMe SSD in the M.2 slot, its disk a raw "
+                                "image (default devices/NAME/nvme.img: a "
+                                "blank 256 GB the first time)")
         if name in ("gui", "shot"):
             p.add_argument("--zoom", type=int)
         if name == "gui":

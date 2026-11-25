@@ -63,6 +63,12 @@
  *             193: the serial audio interfaces Flipper OS enables (SAI2:
  *             the codec's I2S link, SAI6: HDMI's); their DMA requests on
  *             DMAC0's 0/1, DMAC1's 0/1, DMAC2's 4/5
+ *   PCIe0     0x22000000 (DBI), 0x2a200000 (Rockchip's registers): the M.2
+ *             slot's root complex, QEMU's DesignWare host (a viewport iATU,
+ *             the iMSI-RX on SPI 283) with Rockchip's link state and INTx
+ *             (SPI 280) around it; its devices' DMA reaches DRAM 1:1. A
+ *             device in the slot goes on its root port's bus, dw-pcie
+ *             (the launcher's --nvme: -device nvme,bus=dw-pcie)
  *   UFS       0x2a2d0000, SPI 361: QEMU's UFS host (UFSHCI 4.0, no MCQ;
  *             QEMU patch 0008 for the UIC commands Rockchip's driver
  *             sends), on a PCI host that the kernel does not see; the
@@ -98,6 +104,9 @@
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_host.h"
 #include "hw/pci-host/gpex.h"
+#include "hw/pci-host/designware.h"
+#include "hw/pci/pci_bridge.h"
+#include "hw/core/boards.h"
 #include "rk3576.h"
 
 #define PERIPH_BASE     0x20000000
@@ -127,6 +136,11 @@
 #define USB1_SPI        260
 #define USBDP_BASE      0x2b010000
 #define USBDP_SIZE      0x10000
+#define PCIE0_DBI       0x22000000
+#define PCIE0_APB       0x2a200000
+#define PCIE0_APB_SIZE  0x10000
+#define PCIE0_SPI_LEGACY 280
+#define PCIE0_SPI_MSI   283
 #define TIMER0_BASE     0x2acc0000
 #define TIMER0_SPI      45
 #define UART0_BASE      0x2ad40000
@@ -385,6 +399,59 @@ BusState *rk3576_ufs_bus(RK3576State *s)
     return QLIST_FIRST(&DEVICE(s->ufs)->child_bus);
 }
 
+/* ------------------------------------------------------------ PCIe0 */
+
+/* whatever is in the M.2 slot, on the root port's bus */
+static bool pcie_has_device(RK3576State *s)
+{
+    DesignwarePCIEHost *h = DESIGNWARE_PCIE_HOST(s->pcie);
+    PCIBus *sec = pci_bridge_get_sec_bus(PCI_BRIDGE(&h->root));
+
+    return !QTAILQ_EMPTY(&BUS(sec)->children);
+}
+
+/* the legacy interrupt: INTA-D as the host raises them, less those masked
+ * (PCIE_CLIENT_INTR_MASK_LEGACY) */
+static void pcie_legacy_update(RK3576State *s)
+{
+    qemu_set_irq(rk3576_spi(s, PCIE0_SPI_LEGACY),
+                 (s->pcie_intx & ~s->pcie_apb.regs[0x01c / 4] & 0xf) != 0);
+}
+
+static void pcie_intx(void *opaque, int n, int level)
+{
+    RK3576State *s = opaque;
+
+    s->pcie_intx = deposit32(s->pcie_intx, n, 1, level);
+    pcie_legacy_update(s);
+}
+
+static uint32_t pcie_apb_read(RkBlock *b, hwaddr off)
+{
+    RK3576State *s = b->soc;
+
+    switch (off) {
+    case 0x008:                         /* INTR_STATUS_LEGACY */
+        return s->pcie_intx;
+    case 0x010:                         /* INTR_STATUS_MISC: nothing */
+    case 0x154:                         /* (RASDES: no L1 substates) */
+        return 0;
+    case 0x300:                         /* LTSSM_STATUS */
+        /* the link up and in L0 once the LTSSM runs (GENERAL_CON's bit 2),
+         * if the slot has a device: an empty slot has no link */
+        return (b->regs[0] & BIT(2)) && pcie_has_device(s) ? 0x00030011 : 0;
+    default:
+        return b->regs[off / 4];
+    }
+}
+
+static void pcie_apb_wrote(RkBlock *b, hwaddr off, uint32_t old, uint32_t v)
+{
+    if (off == 0x01c) {
+        pcie_legacy_update(b->soc);
+    }
+}
+
 /* ------------------------------------------------------------ TIMER0 */
 
 #define TMR_ENABLE      0x1
@@ -609,6 +676,9 @@ void rk3576_reset_devices(RK3576State *s)
         device_cold_reset(DEVICE(&s->usb[n].xhci));
     }
     memset(s->usbdp.regs, 0, USBDP_SIZE);
+    device_cold_reset(s->pcie);                 /* (and what is in its slot) */
+    memset(s->pcie_apb.regs, 0, PCIE0_APB_SIZE);
+    pcie_legacy_update(s);
     device_cold_reset(s->ufs_pcie);             /* (the UFS host's PCI side:
                                                    the kernel resets the
                                                    host as it starts it) */
@@ -720,6 +790,7 @@ static void rk3576_init(Object *obj)
 
         object_initialize_child(obj, name, &s->sai[i], TYPE_RK_SAI);
     }
+    qdev_init_gpio_in_named(DEVICE(obj), pcie_intx, "pcie0-intx", 4);
 }
 
 static void rk3576_realize(DeviceState *dev, Error **errp)
@@ -962,6 +1033,52 @@ static void rk3576_realize(DeviceState *dev, Error **errp)
         qdev_connect_gpio_out_named(DEVICE(sai), "dma", 1,
                                     qdev_get_gpio_in(dma, rk3576_sais[i].rx));
     }
+
+    /*
+     * PCIe0, the M.2 slot's (rockchip,rk3576-pcie, one lane): QEMU's
+     * DesignWare host, whose DBI (4 KiB: the root port's config space and
+     * its port logic, a viewport iATU, the iMSI-RX) is at the DBI's base,
+     * and whose outbound windows go where Linux programs them; Rockchip's
+     * registers around it (PCIE_CLIENT_*); the combo PHY and its GRF take
+     * what Linux writes as unimplemented registers do (it polls nothing).
+     */
+    s->pcie = qdev_new(TYPE_DESIGNWARE_PCIE_HOST);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(s->pcie), &error_fatal);
+    memory_region_add_subregion(sysmem, PCIE0_DBI, sysbus_mmio_get_region(
+                                    SYS_BUS_DEVICE(s->pcie), 0));
+    {
+        DesignwarePCIEHost *h = DESIGNWARE_PCIE_HOST(s->pcie);
+
+        /* the core's version, 5.40a: with none (0) Linux sets ATU_TD in
+         * each window's CR1, and QEMU's host then takes its memory windows
+         * for config ones */
+        pci_set_long(PCI_DEVICE(&h->root)->config + 0x8f8, 0x3534302a);
+        /* an iATU region's upper limit (0x924), read-only 0: regions of up
+         * to 4 GiB, as on a core built so. (QEMU keeps its port logic
+         * writable: the all-ones Linux probes it with stayed, the region
+         * limit came out 2^64 - 1, and each window's size, the smaller of
+         * that + 1 and the range's, 0) */
+        pci_set_long(PCI_DEVICE(&h->root)->config + 0x924, 0);
+        pci_set_long(PCI_DEVICE(&h->root)->wmask + 0x924, 0);
+        /* its devices' DMA: DRAM, 1:1, as the core passes through what no
+         * inbound window takes (Linux programs none: no dma-ranges) */
+        memory_region_init_alias(&s->pcie_dma, OBJECT(s), "rk3576.pcie0-dma",
+                                 sysmem, RK3576_DRAM_BASE,
+                                 current_machine->ram_size);
+        memory_region_add_subregion_overlap(&h->pci.address_space_root,
+                                            RK3576_DRAM_BASE, &s->pcie_dma,
+                                            -2);
+    }
+    for (int i = 0; i < 4; i++) {               /* INTA-D, then MSI */
+        sysbus_connect_irq(SYS_BUS_DEVICE(s->pcie), i,
+                           qdev_get_gpio_in_named(dev, "pcie0-intx", i));
+    }
+    sysbus_connect_irq(SYS_BUS_DEVICE(s->pcie), 4,
+                       rk3576_spi(s, PCIE0_SPI_MSI));
+    rk_block_init(s, &s->pcie_apb, "rk3576.pcie0-client", PCIE0_APB,
+                  PCIE0_APB_SIZE, true);
+    s->pcie_apb.read = pcie_apb_read;
+    s->pcie_apb.wrote = pcie_apb_wrote;
 
     create_unimplemented_device("rk3576", PERIPH_BASE, PERIPH_SIZE);
 }

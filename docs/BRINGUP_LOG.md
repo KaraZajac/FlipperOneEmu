@@ -1391,3 +1391,42 @@ register headers.
       at snd_soc_dai_prepare() on spdif-hifi". The device tree puts that card on
       the DP codec's S/PDIF DAI (6 is HDMI_SPDIF), which this dw-dp driver does
       not take. What retries it is still to be found.
+
+70. **PCIe0 and the M.2 slot: an NVMe.** Flipper OS's device tree enables PCIe0
+    (rockchip,rk3576-pcie: a DesignWare core, one lane) with its PHY on combo PHY 0.
+    PCIe1 and both SATA ports are off. A spec came first, read from
+    pcie-dw-rockchip, the DesignWare host core and the naneng combo PHY, checked
+    against the target kernel's binary. QEMU's DesignWare host (i.MX7's) fits with
+    a few things around it:
+    - **Rockchip's registers** (PCIE_CLIENT_*, at 0x2a200000):
+      - **LTSSM_STATUS** says link up, in L0 (0x00030011), once GENERAL_CON's LTSSM
+        enable is set and the slot has a device. An empty slot has no link, and
+        Linux then finds an empty bus.
+      - **INTx.** The legacy status is INTA-D as QEMU's host raises them, and the
+        legacy interrupt (SPI 280) is those not masked. The iMSI-RX goes to SPI 283.
+      - **The PHY** and its GRF take writes as unimplemented registers; nothing
+        is polled for PCIe.
+    - **The core's version register** (0x8F8) says 5.40a. At 0, Linux sets ATU_TD
+      in each window's CR1, and QEMU's host then takes its memory windows for
+      config windows.
+    - **The devices' DMA** reaches DRAM 1:1, as the core passes through what no
+      inbound window takes. With no dma-ranges, Linux programs none, and QEMU's
+      host had no path to memory at all.
+    - **A bug the first boot showed.** QEMU keeps the port-logic registers
+      writable, so the iATU's UPPER_LIMIT (0x924) kept the all-ones Linux probes
+      it with. The region limit came out as 2^64 − 1, and the size of each window
+      (the smaller of that + 1 and the range's) as 0. The MEM window failed with
+      −22, and the controller with it. UPPER_LIMIT is now read-only 0: windows of
+      up to 4 GiB, which all of Flipper OS's are.
+    `run --nvme [FILE]` puts QEMU's NVMe in the slot (`bus=dw-pcie`). Its disk is
+    a raw image, by default the device's nvme.img: a blank 256 GB, sparse, the
+    first time. Linux finds the root port (16c3:abcd) and the NVMe behind it
+    (1b36:0010), and `/dev/nvme0n1` is a 256 GB disk. Its queues take their
+    interrupts as MSI-X through the iMSI-RX, and 4 MiB written with O_DIRECT read
+    back the same. The Linux check does the same (37 checks).
+    - **The Linux check on a busy PC.** With this PC's other work running, Flipper
+      OS took 565 s to its login (60 to 160 s on an idle one), and the reboot's
+      second login missed its fixed 600 s. The check now times the first boot
+      and stretches every later wait by as much as that boot was over 200 s
+      (400 s for a first boot): 2.8 times here, and only the console's 60 s
+      "shell answers" was still fixed (now stretched too).

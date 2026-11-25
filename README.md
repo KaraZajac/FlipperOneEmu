@@ -46,7 +46,7 @@ and enumerates Flipper OS's USB gadget at high speed: its serial port's login on
 (NCM, with a DHCP server on Flipper OS's side), MTP and the serial port. Its sound card
 (the NAU8822 codec on SAI2) plays, at 48 kHz: to a WAV file, or nowhere (`run --audio`);
 its microphones (the internal one, and a headset's in the jack) hear a WAV file
-(`run --mic`).
+(`run --mic`). An NVMe SSD can be put in its M.2 slot (`run --nvme`), on PCIe0.
 It reaches its login in two to three minutes, the first boot included
 (TCG emulates eight cores). The MCU switches the RK3576 on and off as on the device:
 Flipper OS's power-off and reboot work, and so does the MCU's own Stop (now and then a
@@ -103,6 +103,9 @@ scripts/fetch_os.py                  # a Flipper OS build: its kernel, initrd an
                                      # sound needs pipewire-devel when QEMU is configured)
 ./flipperoneemu run --linux --mic FILE.wav ...  # ... and what its internal microphone
                                      # hears: a WAV file (16-bit PCM), looped
+./flipperoneemu run --linux --nvme [FILE.img] ...  # ... an NVMe SSD in the M.2 slot,
+                                     # its disk a raw image (devices/NAME/nvme.img: a
+                                     # blank 256 GB, sparse, unless told)
 ./flipperoneemu run --linux --kernel-args 'ARGS' ...  # ... with more on the kernel's
                                      # command line (systemd.mask=serial-getty@flipserial0.service
                                      # avoids Flipper OS's OS-02, docs/FIRMWARE_BUGS.md)
