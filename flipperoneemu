@@ -261,7 +261,8 @@ def cmd_gui(args):
     return subprocess.call([sys.executable, str(SCRIPTS / "fo_gui.py"), "-n",
                             args.name] + (["--zoom", str(args.zoom)]
                                           if args.zoom else []) +
-                           (["--linux"] if args.linux else []))
+                           (["--linux"] if args.linux else []) +
+                           (["--uboot"] if args.uboot else []))
 
 
 def cmd_log(args):
@@ -600,6 +601,9 @@ def main():
         if name == "gui":
             p.add_argument("--linux", action="store_true",
                            help="start Flipper OS on the RK3576 too")
+            p.add_argument("--uboot", action="store_true",
+                           help="... through U-Boot: its boot menu on the "
+                                "screen (up, down, OK)")
         if name == "shot":
             p.add_argument("file")
             p.add_argument("--hdmi", action="store_true",

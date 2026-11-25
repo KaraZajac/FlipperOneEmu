@@ -34,10 +34,11 @@ LAUNCHER = ROOT / "flipperoneemu"
 
 
 class MainWindow(QtWidgets.QMainWindow):
-    def __init__(self, name, zoom=2, start=True, linux=False):
+    def __init__(self, name, zoom=2, start=True, linux=False, uboot=False):
         super().__init__()
         self.name = name
-        self.linux = linux              # Flipper OS on the RK3576 too
+        self.linux = linux or uboot     # Flipper OS on the RK3576 too
+        self.uboot = uboot              # ... through U-Boot's boot menu
         self.dir = ROOT / "devices" / name
         self.state = "connecting"
         self.setWindowTitle(f"{name}: Flipper One (FlipperOneEmu)")
@@ -175,7 +176,9 @@ class MainWindow(QtWidgets.QMainWindow):
                               stdin=subprocess.DEVNULL)
 
     def start(self):
-        r = self._launch("run", "--detach", *(["--linux"] if self.linux else []))
+        r = self._launch("run", "--detach",
+                         *(["--linux"] if self.linux else []),
+                         *(["--uboot"] if self.uboot else []))
         if r.returncode:
             self._say((r.stderr or r.stdout).strip().splitlines()[-1]
                       if (r.stderr or r.stdout).strip() else "could not start")
@@ -327,6 +330,9 @@ def main():
     ap.add_argument("--linux", action="store_true",
                     help="start Flipper OS on the RK3576 too (the device's "
                          "microSD card; scripts/fetch_os.py first)")
+    ap.add_argument("--uboot", action="store_true",
+                    help="... through U-Boot, as on the device: its boot menu "
+                         "on the screen, the pad to pick an entry")
     ap.add_argument("--no-start", action="store_true",
                     help="do not start the device; wait for it")
     ap.add_argument("--shot", metavar="FILE.png",
@@ -337,7 +343,7 @@ def main():
     app = QtWidgets.QApplication(sys.argv[:1])
     app.setApplicationName("FlipperOneEmu")
     w = MainWindow(args.name, args.zoom, start=not args.no_start,
-                   linux=args.linux)
+                   linux=args.linux, uboot=args.uboot)
     w.show()
     if args.shot:
         def shoot():
