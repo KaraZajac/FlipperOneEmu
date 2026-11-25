@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 """Headless check of the whole device: does Flipper OS run beside the MCU?
 
-    scripts/linux_check.py [--keep] [--fresh] [--out DIR]
+    scripts/linux_check.py [--keep] [--fresh] [--uboot] [--out DIR]
 
 Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
 (removed at the end unless --keep), and checks it through its sockets:
@@ -49,6 +49,18 @@ The getty on the USB gadget's serial port is masked on the kernel's command
 line (systemd.mask=), for Flipper OS's OS-02 (docs/FIRMWARE_BUGS.md): with
 no computer on the gadget it can keep the console's getty from starting
 (and the check uses that serial port itself).
+
+With --uboot it checks the boot through U-Boot instead, as on the device
+(`run --uboot`), from the kept card: the machine loads U-Boot from the
+card's u-boot.itb as SPL would, and U-Boot sees the board's revision and
+the 4 GiB of DRAM the DDR blob left word of; it finds the card's boot
+entries and shows its boot menu on the Flipper's screen; the Flipper's
+keys pick the Minimal profile of the build's kernel, and U-Boot boots it
+with the entry's own options, a seed for KASLR (from the TRNG) and all of
+the DRAM past TF-A's 2 MiB; Flipper OS reaches its login; and a reboot
+comes back to U-Boot's menu, and from there to the kernel again. A
+computer is on the USB-C port from the start: the boot entry's options
+mask no getty (OS-02).
 
 A first boot takes several minutes (Flipper OS sets itself up); the first
 run keeps its card as build/linux-check/sd.img, as it is after the checked
@@ -510,6 +522,110 @@ def checks(check, d, out, first_boot, off, net):
     return con
 
 
+# U-Boot's boot menu on the Flipper's screen: its first entry's rows from row
+# 18, 8 rows each, the entry selected drawn light on dark
+MENU_ROW0, MENU_ROWS = 18, 8
+
+
+def uboot_selected(panel):
+    """the entry U-Boot's boot menu shows selected (1 ...), or None"""
+    px = panel.screen()
+    for k in range(1, 14):
+        y = MENU_ROW0 + MENU_ROWS * (k - 1)
+        if y + MENU_ROWS > st.H - 18:
+            break
+        if all(sum(px[r * st.LCD_W + x] < 128 for x in range(120, 250)) > 78
+               for r in (y + 1, y + MENU_ROWS - 2)):
+            return k
+    return None
+
+
+def uboot_pick(panel, linux, want, mark, shot=None):
+    """U-Boot's boot menu, after @mark in the console's log: the entry whose
+    file is @want's picked with the pad, and OK. The selection is read off the
+    Flipper's screen after each key: U-Boot polls the keys between redraws of
+    the screen, which are slow here, so it can miss a short press or repeat a
+    long one. Its number and the screen as the menu showed it (saved to
+    @shot), or None"""
+    if not wait_text(linux, r"bootflows, \d+ valid", 600, mark):
+        return None
+    listed = re.findall(r"^\s*(\d+)\s+bls\s+ready\s.*/loader/entries/(\S+)$",
+                        text_of(linux)[mark:].replace("\r", ""), re.M)
+    seq = next((int(n) for n, f in listed if want in f), None)
+    if seq is None:
+        return None
+    end = time.time() + 120
+    while True:
+        cur = uboot_selected(panel)
+        if cur == seq:
+            break
+        if time.time() > end:
+            return None
+        if cur is not None:
+            panel.tap("down" if cur < seq else "up", 0.25)
+        moved = time.time() + 6
+        while time.time() < moved and uboot_selected(panel) == cur:
+            time.sleep(0.2)
+    time.sleep(0.5)
+    screen = panel.screen()
+    if shot:
+        panel.save(shot)
+    for _ in range(3):                  # (OK, until U-Boot has it)
+        panel.tap("ok", 0.25)
+        if wait_text(linux, r"Selected: ", 15, mark):
+            break
+    return seq, screen
+
+
+def uboot_checks(check, d, out):
+    linux, qlog = d / "linux.log", d / "qemu.log"
+    info = json.loads((ROOT / "firmware" / "os" / str(os_build()) /
+                       "os.json").read_text())
+    want = f"flipperos-{info['profile']}-{info['version']}+"
+    panel = st.Panel(d / "panel.sock")
+    panel.send("usb 2")                 # (a computer: OS-02)
+    check("SPL's part: U-Boot and its device tree from the card's u-boot.itb",
+          wait_text(qlog, r"SPL: U-Boot at 0x40800000", 20) and
+          wait_text(qlog, r"the RK3576 starts", 20), text_of(qlog)[-300:])
+    check("U-Boot starts on the board's revision, with the DDR blob's word "
+          "on the DRAM (4 GiB)",
+          wait_text(linux, r"Model: Flipper One rev\. F0B0C1", 120) and
+          wait_text(linux, r"DRAM:\s+4 GiB", 30))
+    before = panel.screen()
+    picked = uboot_pick(panel, linux, want, 0, out / "uboot-menu.png")
+    check("its boot menu on the Flipper's screen, with the card's boot "
+          f"entries; the keys pick {info['profile']} {info['version']}",
+          picked is not None and picked[1] != before,
+          picked and f"entry {picked[0]}")
+    check("... and U-Boot boots it: its kernel, initrd and device tree from "
+          "the card's btrfs root",
+          wait_text(linux, re.escape(f"/@{info['profile']}/usr/lib/modules/"
+                                     f"{info['version']}/vmlinuz"), 120) and
+          wait_text(linux, r"Starting kernel", 300))
+    check("... the kernel with a seed for KASLR (U-Boot's, from the TRNG)",
+          wait_text(linux, r"KASLR enabled", 60))
+    check("... and all of the DRAM past TF-A's 2 MiB",
+          wait_text(linux, r"node\s+0: \[mem 0x0000000040200000-"
+                           r"0x000000013fffffff\]", 30))
+    if not check("Flipper OS reaches its login",
+                 wait_text(linux, r"login:", 1200)):
+        return None
+    con = Console(d / "linux.sock")
+    check("its console answers", con.ready(300))
+    cmdline = con.run("cat /proc/cmdline", 60) or [""]
+    check("its command line: the boot entry's options, as U-Boot gave them",
+          cmdline[0].strip() == info["options"], cmdline[0][:120])
+    qmark, lmark = len(text_of(qlog)), len(text_of(linux))
+    con.send("systemctl reboot")
+    check("reboot: the RK3576 starts again, at U-Boot",
+          wait_text(qlog, r"the RK3576 starts again", 300, qmark) and
+          wait_text(linux, r"U-Boot 20\d\d", 120, lmark))
+    check("... its menu again, and from there the kernel",
+          uboot_pick(panel, linux, want, lmark) is not None and
+          wait_text(linux, r"Booting Linux", 300, lmark))
+    return con
+
+
 def log_checks(check, d):
     k = text_of(d / "linux.log")
     bad = re.findall(r"Oops|Kernel panic|BUG: |Unable to handle kernel|"
@@ -528,6 +644,9 @@ def main():
     ap.add_argument("--fresh", action="store_true",
                     help="a first boot, from the build's image, whatever "
                     "card is kept; keep that one instead")
+    ap.add_argument("--uboot", action="store_true",
+                    help="the boot through U-Boot instead (run --uboot), "
+                    "from the kept card")
     ap.add_argument("--out", help="where the screenshots go "
                     "(default: a new folder in the system's temp)")
     args = ap.parse_args()
@@ -541,6 +660,8 @@ def main():
     if d.exists():
         sys.exit(f"{d} is there already")
     first_boot = args.fresh or not template_ok()
+    if args.uboot and first_boot:
+        sys.exit("--uboot: from a kept card (run the check without it first)")
     kept = TEMPLATE / "sd.img.new"
     d.mkdir(parents=True)
     if not first_boot:
@@ -559,10 +680,10 @@ def main():
     # goes to the device's audio.wav.
     mic_wav(d / "mic.wav")
     run = [sys.executable, str(st.LAUNCHER), "run", "-n", name, "--detach",
-           "--linux", "--kernel-args",
-           "systemd.mask=serial-getty@flipserial0.service",
+           "--linux"] + (["--uboot"] if args.uboot else [
+           "--kernel-args", "systemd.mask=serial-getty@flipserial0.service",
            "--audio", str(d / "audio.wav"), "--mic", str(d / "mic.wav"),
-           "--nvme", "--hdmi"] + (["--net"] if net else [])
+           "--nvme", "--hdmi"] + (["--net"] if net else []))
     if subprocess.run(run).returncode:
         sys.exit("the device did not start")
     def off():
@@ -572,7 +693,10 @@ def main():
             copy_card(d / "sd.img", kept)
 
     try:
-        checks(check, d, out, first_boot, off, net)
+        if args.uboot:
+            uboot_checks(check, d, out)
+        else:
+            checks(check, d, out, first_boot, off, net)
         log_checks(check, d)
     finally:
         subprocess.run([sys.executable, str(st.LAUNCHER), "stop", "-n", name],

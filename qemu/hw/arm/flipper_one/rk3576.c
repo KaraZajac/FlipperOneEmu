@@ -24,9 +24,16 @@
  *             repair and chain status say it is (0x570, 0x248; memory
  *             0x250; the NPU's 0x230); an idle request (0x110, 0x114) is
  *             acknowledged and idle at once (0x120, 0x128)
- *   RNG       0x2a410000: the TRNG: a request (CTRL bit 4) has 32 bytes
- *             ready at once (STATE bit 4, write 1 to clear), from QEMU's
- *             guest random source (-seed makes them the same each run)
+ *   PMU GRFs  0x26024000, 0x26026000: what is written is kept, through a
+ *             reset of the SoC but not a cut of its supply; their OS_REGs
+ *             (0x200-0x22c) whole: the reboot mode, and in PMU1's OS_REG2-3
+ *             what the DDR blob says of the DRAM (rk3576_ddr_blob)
+ *   RNG       0x2a410000: the TRNG: a request (CTRL bit 4: Linux's) has 32
+ *             bytes ready at once (TRNG_DATA, 0x50; STATE bit 4, write 1 to
+ *             clear), and so has one of the DRNG's (bit 3, DRNG_DATA at 0x70:
+ *             U-Boot's, the kernel's KASLR seed), from QEMU's guest random
+ *             source (-seed makes them the same each run); the other
+ *             requests (instantiate, reseed, test) are acknowledged at once
  *   OTP       0x2a580000: the non-secure controller's reads, a word at a
  *             time (AUTO_CTRL's address, AUTO_EN; RD_DONE in INT_ST, write
  *             1 to clear; DOUT0), of the 256 bytes from byte 0x700 that
@@ -100,6 +107,7 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 #include "qemu/osdep.h"
+#include "qemu/units.h"
 #include "qapi/error.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/irq.h"
@@ -131,6 +139,11 @@
 #define CRU_SIZE        0x50000
 #define PMU_BASE        0x27380000
 #define PMU_SIZE        0x800
+#define PMU0_GRF_BASE   0x26024000
+#define PMU1_GRF_BASE   0x26026000
+#define PMU_GRF_SIZE    0x1000
+#define PMU_GRF_OS_REG  0x200           /* OS_REG0-11: plain 32-bit words */
+#define PMU_GRF_OS_END  0x230
 #define RNG_BASE        0x2a410000
 #define RNG_SIZE        0x200
 #define OTP_BASE        0x2a580000
@@ -227,6 +240,71 @@ static void rk_block_init(RK3576State *s, RkBlock *b, const char *name,
     b->regs = g_new0(uint32_t, size / 4);
     memory_region_init_io(&b->mr, OBJECT(s), &rk_ops, b, name, size);
     memory_region_add_subregion(get_system_memory(), base, &b->mr);
+}
+
+/* ------------------------------------------------------ PMU's GRFs */
+
+/* their OS_REGs take the word written whole, the rest a GRF's halves */
+static void pmu_grf_wrote(RkBlock *b, hwaddr off, uint32_t old, uint32_t v)
+{
+    if (off >= PMU_GRF_OS_REG && off < PMU_GRF_OS_END) {
+        b->regs[off / 4] = v;
+    }
+}
+
+void rk3576_power_lost(RK3576State *s)
+{
+    memset(s->pmu0_grf.regs, 0, PMU_GRF_SIZE);
+    memset(s->pmu1_grf.regs, 0, PMU_GRF_SIZE);
+}
+
+/* (U-Boot's js_hash(), over an ATAG but its last word) */
+static uint32_t atag_hash(const uint8_t *p, size_t len)
+{
+    uint32_t h = 0x47c6a7e6;
+
+    for (size_t i = 0; i < len; i++) {
+        h ^= (h << 5) + p[i] + (h >> 2);
+    }
+    return h;
+}
+
+/*
+ * What Rockchip's DDR blob leaves when it has trained the DRAM:
+ *   PMU1_GRF's OS_REG2 and OS_REG3: the DRAM's geometry, as U-Boot's
+ *     rockchip_sdram_size() reads it: one channel of one rank, of DDR4's
+ *     kind (type 0), up to 4 GiB (U-Boot takes 3 GiB at most from it, what
+ *     is below 4 GiB: it places itself there);
+ *   an ATAG_DDR_MEM at the top of TF-A's 2 MiB (0x401fe000), the DRAM as
+ *     one bank: U-Boot gives the kernel all of it from there.
+ */
+#define ATAG_DDR_MEM    0x54410052
+#define ATAG_ADDR       (RK3576_DRAM_BASE + 2 * MiB - 8 * KiB)
+#define ATAG_WORDS      48              /* its header, and tag_ddr_mem's 46 */
+
+void rk3576_ddr_blob(RK3576State *s, uint64_t size)
+{
+    uint64_t mb = MIN(size, 4 * GiB) >> 20;
+    int n = mb ? 63 - clz64(mb) : 8;            /* log2 of it, rounded down */
+    int col = MAX(9, MIN(12, n + 14 - 16));     /* row + col = n + 14 */
+    int row = MAX(13, MIN(16, n + 14 - col));   /* (+ bk 3, bg 1, bw 2) */
+    uint32_t tag[ATAG_WORDS] = { 0 };
+
+    s->pmu1_grf.regs[(PMU_GRF_OS_REG + 8) / 4] = (row - 13) << 6 |
+                                                  (col - 9) << 9;
+    s->pmu1_grf.regs[(PMU_GRF_OS_REG + 12) / 4] = 0;
+    tag[0] = cpu_to_le32(ATAG_WORDS);
+    tag[1] = cpu_to_le32(ATAG_DDR_MEM);
+    tag[2] = cpu_to_le32(1);                    /* one bank: ... */
+    tag[4] = cpu_to_le32((uint32_t)RK3576_DRAM_BASE);   /* bank[0], its start */
+    tag[6] = cpu_to_le32((uint32_t)size);       /* bank[1], its size */
+    tag[7] = cpu_to_le32(size >> 32);
+    tag[ATAG_WORDS - 1] = cpu_to_le32(atag_hash((uint8_t *)tag,
+                                                (ATAG_WORDS - 1) * 4));
+    address_space_write(&address_space_memory, ATAG_ADDR,
+                        MEMTXATTRS_UNSPECIFIED, tag, sizeof(tag));
+    address_space_write(&address_space_memory, ATAG_ADDR + sizeof(tag),
+                        MEMTXATTRS_UNSPECIFIED, &(uint32_t){ 0 }, 4);
 }
 
 /* -------------------------------------------------------------- CRU */
@@ -344,10 +422,15 @@ static void rng_wrote(RkBlock *b, hwaddr off, uint32_t old, uint32_t v)
         uint32_t mask = v >> 16;
 
         b->regs[off / 4] = (old & ~mask) | (v & mask);
-        if (v & mask & BIT(4)) {                    /* REQ_TRNG */
+        if (v & mask & BIT(4)) {                    /* SW_TRNG_REQ: Linux's */
             qemu_guest_getrandom_nofail(&b->regs[0x50 / 4], 32);
-            b->regs[0x14 / 4] |= BIT(4);            /* TRNG_RDY */
         }
+        if (v & mask & BIT(3)) {                    /* SW_DRNG_REQ: U-Boot's */
+            qemu_guest_getrandom_nofail(&b->regs[0x70 / 4], 32);
+        }
+        b->regs[0x14 / 4] |= v & mask & 0x1f;       /* each one's ACK (an
+                                                       instantiation, reseed
+                                                       or test too) */
     } else if (off == 0x14) {                       /* STATE: W1C */
         b->regs[off / 4] = old & ~v;
     }
@@ -974,6 +1057,12 @@ static void rk3576_realize(DeviceState *dev, Error **errp)
 
     rk_block_init(s, &s->pmu, "rk3576.pmu", PMU_BASE, PMU_SIZE, true);
     s->pmu.read = pmu_read;
+    rk_block_init(s, &s->pmu0_grf, "rk3576.pmu0-grf", PMU0_GRF_BASE,
+                  PMU_GRF_SIZE, true);
+    s->pmu0_grf.wrote = pmu_grf_wrote;
+    rk_block_init(s, &s->pmu1_grf, "rk3576.pmu1-grf", PMU1_GRF_BASE,
+                  PMU_GRF_SIZE, true);
+    s->pmu1_grf.wrote = pmu_grf_wrote;
     rk_block_init(s, &s->rng, "rk3576.rng", RNG_BASE, RNG_SIZE, false);
     s->rng.wrote = rng_wrote;
     rk_block_init(s, &s->otp, "rk3576.otp", OTP_BASE, OTP_SIZE, false);

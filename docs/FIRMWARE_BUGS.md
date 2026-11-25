@@ -24,6 +24,7 @@ keeps its row, with the build that fixed it.
 | FW-01 | After a NACK on the main board's bus, that bus's state machine runs off its program, and every later transfer on the bus times out until the MCU restarts | dev 87f6cca3 | bus lost | no |
 | OS-01 | Past a thermal zone's last trip, Linux cannot set the TSADC's alarm ("Failed to set trips: -34") and leaves it armed below the temperature, so it goes off at every sample until the chip is off | Flipper OS 2501 | log errors, alarm left on | no |
 | OS-02 | With no computer on the USB gadget, the getty on its serial port (flipserial0) blocks while holding the console's lock, and now and then the debug UART's and tty1's gettys never start: no login | Flipper OS 2501 | no console login | no |
+| OS-03 | The image's boot entries for the 6.1.172 kernel (one per profile) cannot boot: their `vmlinuz` is the kernel's configuration, and their device-tree directory has no Flipper One tree. U-Boot lists them in its boot menu, and picking one fails ("Bad Linux ARM64 Image magic!") | Flipper OS 2501 | four of nine boot entries do not boot | no |
 
 ### FW-01: the main bus after a NACK, with words still queued
 
@@ -150,3 +151,37 @@ keeps its row, with the build that fixed it.
   emulator's Linux check masks the service on the kernel's command line
   (`systemd.mask=serial-getty@flipserial0.service`, `run --kernel-args`).
 - **Log:** entries 63 and 64.
+
+### OS-03: the 6.1.172 kernel's boot entries hold no kernel
+
+- **What happens:** the image's root holds, beside each profile's 7.4.0-rc4 kernel, a
+  6.1.172 one with a boot entry of its own (Boot Loader Specification type 1), so
+  U-Boot's boot menu has nine entries, four of them 6.1.172. Picking one of those
+  fails in U-Boot:
+  `Skipping fdtdir /@Minimal/usr/lib/linux-image-6.1.172 for failure retrieving dts`,
+  then `Bad Linux ARM64 Image magic!`, `Boot failed (err=-22)`, and U-Boot's shell.
+- **Why:** the entry (`/loader/entries/600-flipperos-Minimal-6.1.172+3-0.conf` in the
+  `boot` subvolume, and likewise for Desktop, TV Media Box and Router) names
+  `linux /@Minimal/usr/lib/modules/6.1.172/vmlinuz`. That file, 218,160 bytes, is not
+  a kernel but the kernel's configuration: it begins
+  `# Automatically generated file; DO NOT EDIT.` /
+  `# Linux/arm64 6.1.172 Kernel Configuration`. It is so in every profile's subvolume
+  (Minimal, Desktop and Router read). And the entry's `devicetreedir`,
+  `/@Minimal/usr/lib/linux-image-6.1.172`, has 489 device trees of other boards
+  (Rockchip's evaluation boards, among them RK3576 ones) and none of the Flipper
+  One's, so U-Boot finds no `rockchip/rk3576-flipper-one-rev-f0b0c1.dtb` there. The
+  entry's options also name `console=ttyFIQ0`, the console of Rockchip's vendor
+  kernels. Its packaging looks to have put the configuration where the image goes.
+- **What of the emulator is in its path:** U-Boot reads the files from the microSD
+  card's btrfs root through the emulated SD host. The 7.4.0-rc4 entries' files read
+  the same way are right: their kernel, a gzip, boots. And the 6.1.172 `vmlinuz` above
+  was read straight from the build's image with `btrfs restore` (as
+  `scripts/fetch_os.py` reads it), not through the emulator, with the same content.
+- **Seen on:** Flipper OS build 2501, in the emulator's boot through U-Boot
+  (`run --uboot`), and in the build's image itself. Not tried on a real Flipper One,
+  whose U-Boot is the image's own and should fail the same way.
+- **A fix, for Flipper OS:** install the 6.1.172 kernel's image as `vmlinuz` (and the
+  Flipper One's device trees for it), or leave its boot entries out of the image
+  until there is one.
+- **Log:** entry 75.
+

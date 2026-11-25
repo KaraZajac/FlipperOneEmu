@@ -122,6 +122,12 @@ scripts/fetch_os.py                  # a Flipper OS build: its kernel, initrd an
 ./flipperoneemu run --linux ...      # ... Flipper OS on the RK3576, from the build's
                                      # image on the device's microSD (devices/NAME/sd.img);
                                      # its UFS, devices/NAME/ufs.img, is blank
+./flipperoneemu run --linux --uboot ...  # ... through U-Boot from that card, as on the
+                                     # device: its boot menu on the Flipper's screen (the
+                                     # pad's up, down and OK pick a profile and kernel; hold
+                                     # a key a moment, U-Boot is slow here), the entry's own
+                                     # options; `s` on the console at power-on stops it at
+                                     # U-Boot's shell
 ./flipperoneemu console [-n NAME] [CMD]  # Linux's console (the RK3576's UART0); Ctrl-] leaves
 ./flipperoneemu console --usb ...    # ... Flipper OS's serial port on its USB gadget
                                      # (a computer plugged in: Ctrl+Shift+U)
@@ -169,6 +175,7 @@ yet.
 | 0012 | hw/dma/pl330: let the machine go on during a long transfer |
 | 0013 | target/arm: an exception return without the BQL when the PMU is idle |
 | 0014 | hw/sd/sd: a multi-block transfer's bytes a block at a time |
+| 0015 | hw/ufs: answer a LUN with no logical unit, and the configuration descriptor (U-Boot's scan) |
 
 ## Layout
 

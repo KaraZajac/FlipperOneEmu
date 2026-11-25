@@ -1550,3 +1550,60 @@ register headers.
       starting again, and once took the CPU app's half-written "... but sel" for
       an error it does not know. It now leaves out a last line with no end yet.
       (The MCU firmware here is now dev-25112026-2e3290e4, which passes.)
+
+75. **The boot through U-Boot.** The card image carries the device's boot chain: the
+    boot ROM's ID block at sector 64 (TPL with the DDR blob, then SPL), and at sector
+    16384 a FIT, u-boot.itb, with TF-A's BL31 in three parts, U-Boot 2026.10 and the
+    device trees of both board revisions. `run --uboot` starts the RK3576 at U-Boot
+    proper, and the machine does what comes before it, at each start:
+    - **SPL's part.** It reads u-boot.itb from the card. It takes the configuration
+      whose compatible names the board's revision (the machine's `rev`). It puts
+      U-Boot at its load address (0x40800000), and that configuration's device tree
+      right after it, where U-Boot looks for its own. TF-A's images it leaves: the
+      machine is TF-A (QEMU's PSCI, the SCMI server). A U-Boot written to the card is
+      the one the next start runs.
+    - **The DDR blob's part.** U-Boot takes the DRAM's size from PMU1_GRF's OS_REG2/3,
+      and its banks from an ATAG_DDR_MEM at the top of TF-A's 2 MiB. The PMU GRFs were
+      unimplemented: zeros, which read as 256 MiB of DDR4. They now keep what is
+      written (their OS_REGs whole), through a reset of the SoC but not a cut of its
+      supply. The machine writes both: 4 GiB, one bank.
+    - **TF-A's part.** CPU 0 starts at U-Boot's entry at EL2, as BL31 hands over to
+      BL33.
+    From there U-Boot does what it does on the device. It finds the RK806, the card,
+    the Flipper's buttons (through the MCU) and its screen (a 256x144 framebuffer,
+    through the display link and the MCU). Its bootcmd scans for boot entries (five
+    profiles on the card, two kernels each) and shows `bootflow menu` on the Flipper's
+    screen. The menu has no timeout: the pad's keys pick an entry, and leaving the
+    menu only runs the scan again. U-Boot loads the kernel, initrd and device tree
+    from the btrfs root, and starts Linux with the entry's own options and all of the
+    DRAM past TF-A's 2 MiB. Flipper OS reaches its login.
+    - **The TRNG.** U-Boot asks its DRNG (CTRL bit 3, the data at 0x70), where Linux
+      asks its TRNG (bit 4). The model answered only Linux's, so U-Boot's read timed
+      out (-110) and the kernel had no seed for KASLR. It answers both now, and
+      acknowledges every request.
+    - **The UFS: QEMU patch 0015.** U-Boot scans the UFS LUN by LUN. A command to a
+      LUN with no logical unit failed the transfer, 126 errors on one scan, where a
+      device answers it in SCSI: INQUIRY with qualifier 011b and type 1Fh, anything
+      else LOGICAL UNIT NOT SUPPORTED. And the configuration descriptor, whose length
+      U-Boot reads as it starts the host, was not there. Both are answered now.
+      Left: "invalid UFS version 0x410", QEMU's UFSHCI 4.1, which this U-Boot does not
+      list.
+    - **Its keys, slowly.** U-Boot looks at the Flipper's buttons (the MCU's, over
+      I2C) between redraws of its screen. A redraw sends the whole framebuffer to the
+      MCU over SPI, a word at a time: 57-136 ms here ("cyclic function video_idle
+      took too long"), against a few ms on the device. So a short press can fall
+      between two looks and be lost, and a longer one be seen as held and repeated:
+      one pick of the 7th entry got the 8th. In the window, a key held a little
+      longer does it. The check reads the selection off the screen after each key.
+    - **Not the emulator's:** "Net: No ethernet found". This U-Boot has no network
+      driver. And four of the menu's nine entries, the 6.1.172 kernel's, cannot
+      boot: their `vmlinuz` is that kernel's configuration, and their device-tree
+      directory has no Flipper One tree ("Bad Linux ARM64 Image magic!"). Read from
+      the build's image with `btrfs restore`, outside the emulator, it is the same:
+      Flipper OS's OS-03 (docs/FIRMWARE_BUGS.md).
+    - **The check.** `scripts/linux_check.py --uboot` covers the boot chain: SPL's
+      part, the 4 GiB, the menu on the screen and the keys, the kernel with a KASLR
+      seed and the whole DRAM, the login with the entry's own command line, and a
+      reboot back through U-Boot's menu to the kernel. It passes, 15 checks
+      in about 6 minutes. A computer is on the USB-C port from the start, since the
+      boot entry's options mask no getty (OS-02).

@@ -1,0 +1,125 @@
+From: FlipperOneEmu
+Subject: [PATCH] hw/ufs: answer a LUN with no logical unit, and the
+ configuration descriptor
+
+A SCSI command to a LUN that has no logical unit failed the transfer
+(OCS INVALID_COMMAND_TABLE_ATTRIBUTES), where a device's server answers
+it: INQUIRY with peripheral qualifier 011b and device type 1Fh, no
+device there; REQUEST SENSE with LOGICAL UNIT NOT SUPPORTED; anything
+else CHECK CONDITION with that sense. A host that scans the LUNs one by
+one, as U-Boot's UFS driver does, logged a transfer error for each of
+them (126 on one scan) before it found nothing there, as it now does
+without.
+
+And the configuration descriptor (IDN 1) was not there either: a read of
+it failed the same way. U-Boot reads each descriptor's length as it
+starts the host. It is now mocked as the power and health descriptors
+are: a header (its length that of a UFS 3.1 one, with eight units'
+parameters) and zeros.
+
+---
+--- a/hw/ufs/ufs.h	2026-11-25 16:59:12.519506924 -0500
++++ b/hw/ufs/ufs.h	2026-11-25 16:59:12.569775072 -0500
+@@ -303,4 +303,5 @@
+ void ufs_complete_req(UfsRequest *req, UfsReqResult req_result);
+ void ufs_wb_update_avail_buffer(UfsHc *u);
+ void ufs_init_wlu(UfsLu *wlu, uint8_t wlun);
++UfsReqResult ufs_missing_lu_scsi_cmd(UfsRequest *req);
+ #endif /* HW_UFS_UFS_H */
+--- a/hw/ufs/ufs.c	2026-11-25 16:59:12.507479552 -0500
++++ b/hw/ufs/ufs.c	2026-11-25 16:59:12.572282212 -0500
+@@ -1101,8 +1101,9 @@
+     trace_ufs_exec_scsi_cmd(req->slot, lun, req->req_upiu.sc.cdb[0]);
+ 
+     if (!is_wlun(lun) && (lun >= UFS_MAX_LUS || u->lus[lun] == NULL)) {
++        /* no logical unit there: the device's answer, not a failed transfer */
+         trace_ufs_err_scsi_cmd_invalid_lun(lun);
+-        return UFS_REQUEST_FAIL;
++        return ufs_missing_lu_scsi_cmd(req);
+     }
+ 
+     switch (lun) {
+@@ -1934,6 +1935,8 @@
+     return desc;
+ }
+ 
++#define UFS_CONFIG_DESC_LEN (0x16 + 8 * 0x1a)
++
+ static QueryRespCode ufs_read_desc(UfsRequest *req)
+ {
+     UfsHc *u = req->hc;
+@@ -1974,6 +1977,16 @@
+         req->rsp_upiu.qr.data[1] = UFS_QUERY_DESC_IDN_POWER;
+         status = UFS_QUERY_RESULT_SUCCESS;
+         break;
++    case UFS_QUERY_DESC_IDN_CONFIGURATION:
++        /*
++         * mocking of configuration descriptor is not supported: its header,
++         * at the length of a UFS 3.1 one (with eight units' parameters)
++         */
++        memset(&req->rsp_upiu.qr.data, 0, UFS_CONFIG_DESC_LEN);
++        req->rsp_upiu.qr.data[0] = UFS_CONFIG_DESC_LEN;
++        req->rsp_upiu.qr.data[1] = UFS_QUERY_DESC_IDN_CONFIGURATION;
++        status = UFS_QUERY_RESULT_SUCCESS;
++        break;
+     case UFS_QUERY_DESC_IDN_HEALTH:
+         /* mocking of health descriptor is not supported */
+         memset(&req->rsp_upiu.qr.data, 0, sizeof(DeviceHealthDescriptor));
+--- a/hw/ufs/lu.c	2026-11-25 16:59:12.513607728 -0500
++++ b/hw/ufs/lu.c	2026-11-25 16:59:12.572668334 -0500
+@@ -365,6 +365,55 @@
+     return UFS_REQUEST_SUCCESS;
+ }
+ 
++/*
++ * A command to a LUN where no logical unit is, answered as a device server
++ * answers it (SPC): INQUIRY with peripheral qualifier 011b and device type
++ * 1Fh (no device there), REQUEST SENSE with LOGICAL UNIT NOT SUPPORTED, and
++ * any other CHECK CONDITION with that sense. (A host that scans the LUNs
++ * one by one, as U-Boot does, then finds nothing there without an error of
++ * the transfer for each.)
++ */
++UfsReqResult ufs_missing_lu_scsi_cmd(UfsRequest *req)
++{
++    uint8_t outbuf[SCSI_INQUIRY_LEN] = { 0 };
++    uint8_t sense_buf[UFS_SENSE_SIZE];
++    uint8_t scsi_status = GOOD;
++    int len = 0;
++
++    switch (req->req_upiu.sc.cdb[0]) {
++    case INQUIRY:
++        outbuf[0] = 0x7f;                       /* 011b, 1Fh */
++        if (req->req_upiu.sc.cdb[1] & 0x1) {    /* a VPD page: its header */
++            outbuf[1] = req->req_upiu.sc.cdb[2];
++            len = 4;
++        } else {
++            outbuf[2] = 0x6;                    /* SPC-4 */
++            outbuf[3] = 0x2;
++            outbuf[4] = SCSI_INQUIRY_LEN - 5;
++            len = SCSI_INQUIRY_LEN;
++        }
++        break;
++    case REQUEST_SENSE:
++        len = scsi_build_sense_buf(outbuf, sizeof(outbuf),
++                                   SENSE_CODE(LUN_NOT_SUPPORTED), true);
++        break;
++    default:
++        scsi_build_sense(sense_buf, SENSE_CODE(LUN_NOT_SUPPORTED));
++        scsi_status = CHECK_CONDITION;
++    }
++
++    len = MIN(len, (int)req->data_len);
++    if (scsi_status == GOOD && len > 0 &&
++        dma_buf_read(outbuf, len, NULL, req->sg, MEMTXATTRS_UNSPECIFIED) !=
++            MEMTX_OK) {
++        return UFS_REQUEST_FAIL;
++    }
++
++    ufs_build_scsi_response_upiu(req, sense_buf, sizeof(sense_buf), len,
++                                 scsi_status);
++    return UFS_REQUEST_SUCCESS;
++}
++
+ static UfsReqResult ufs_process_scsi_cmd(UfsLu *lu, UfsRequest *req)
+ {
+     uint8_t task_tag = req->req_upiu.header.task_tag;

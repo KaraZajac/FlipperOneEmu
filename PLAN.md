@@ -105,8 +105,11 @@ screen and its CLI.
 - ◐ Storage: microSD (dw-mshc, QEMU's SD card) with the published image: Flipper OS
       boots to its login (2026-11-24), the card's data a block at a time (patch
       0014: 48 MB/s, as the UFS) (2026-11-25); the 64 GB UFS, blank (QEMU's UFS host on a PCI
-      bus the kernel does not see, patches 0008-0010) (2026-11-24); then Flipper OS on
-      the UFS, and U-Boot from the image (SPL, TF-A BL31, U-Boot proper, a BLS entry)
+      bus the kernel does not see, patches 0008-0010) (2026-11-24); U-Boot from the image
+      (`run --uboot`): U-Boot proper from the card's u-boot.itb, the machine in SPL's,
+      TF-A's and the DDR blob's place; its boot menu on the Flipper's screen, the keys,
+      a BLS entry booted (patch 0015 for its UFS scan) (2026-11-25); then Flipper OS on
+      the UFS
 - ◐ The MCU powers it: `VCC5V0_SYS_S5_EN` (the main expander's pin 12) switches it on
       and off, and Linux's PSCI SYSTEM_OFF and SYSTEM_RESET are its own (QEMU patch
       0005) (2026-11-24); `MASKROM_EN`; BOOT1's voltage on a SARADC input
@@ -151,7 +154,7 @@ screen and its CLI.
 - ☐ Wi-Fi (the MT7921 on USB)
 
 ## Not planned
-- The RK3576's mask ROM and DDR training blob (closed): the machine starts at SPL or at
-  the kernel
+- The RK3576's mask ROM and DDR training blob (closed), SPL and TF-A's BL31: the machine
+  starts at U-Boot proper, in their place, or at the kernel
 - The NPU, the GPU (Panfrost falls back to software rendering), the video codecs
 - Cycle accuracy

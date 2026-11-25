@@ -41,6 +41,7 @@
 #include "target/arm/internals.h"
 #include "target/arm/arm-powerctl.h"
 #include "target/arm/multiprocessing.h"
+#include <libfdt.h>
 
 #define TYPE_FLIPPER_ONE MACHINE_TYPE_NAME("flipper-one")
 OBJECT_DECLARE_SIMPLE_TYPE(FlipperOneState, FLIPPER_ONE)
@@ -51,7 +52,12 @@ struct FlipperOneState {
     RP2350State mcu;
     RK3576State rk3576;         /* the CPU: Linux's */
     RkI2cTarget link;           /* its I2C0's target: the MCU's I2C1 */
-    bool linux_boot;            /* a kernel to start on it (-kernel) */
+    bool linux_boot;            /* a kernel to start on it (-kernel), or
+                                   U-Boot: */
+    bool uboot;                 /* ... U-Boot proper from its microSD card,
+                                   the machine as SPL and TF-A (property) */
+    char *rev;                  /* the board's revision (property) */
+    BlockBackend *sd_blk;       /* the microSD card's image */
     bool rk_rail;               /* VCC5V0_SYS_S5: its supply, the MCU's */
     bool rk_on;                 /* ... it runs */
     int rk_want;                /* RK_...: to do, in rk_power_bh */
@@ -101,6 +107,8 @@ struct FlipperOneState {
     char *log_id;
     bool bootsel;
 };
+
+#define FO_REV_DEFAULT  "f0b0c1"
 
 /*
  * The front panel's buttons, on the expander's pins (pressed: low), and its
@@ -561,10 +569,13 @@ static void flipper_one_frame_sent(void *opaque)
  * main expander's pin 12), as on the device. At the machine's start its
  * cores are off; the kernel (-kernel, as QEMU loads it) starts when the
  * rail comes on, from its images in DRAM as they were loaded (put back
- * each time after the first: a run writes over them). Without its rail,
- * or after Linux's PSCI SYSTEM_OFF, the cores are off and its devices as
- * at power-on; SYSTEM_RESET starts the kernel again. The MCU runs on
- * through all of it.
+ * each time after the first: a run writes over them). Or U-Boot does
+ * (uboot=on), as on the device: at each start the machine leaves what the
+ * DDR blob leaves, loads U-Boot from the microSD card as SPL does (fo_spl)
+ * and starts it at EL2, as TF-A starts BL33. Without its rail, or after
+ * Linux's PSCI SYSTEM_OFF, the cores are off and its devices as at
+ * power-on, and the PMU's always-on registers lost; SYSTEM_RESET starts it
+ * again. The MCU runs on through all of it.
  */
 static void fo_rk_save_images(FlipperOneState *s)
 {
@@ -610,6 +621,168 @@ static void fo_rk_restore_images(FlipperOneState *s)
     }
 }
 
+/*
+ * U-Boot proper, as SPL loads it on the device: from the microSD card's
+ * u-boot.itb (a FIT at sector 16384, its images' data after its tree or in
+ * it), the configuration for the board's revision (compatible
+ * "flipper,one-rev-REV"; the FIT's default if none is), U-Boot at its load
+ * address and that configuration's device tree right after it, where U-Boot
+ * looks for its own. TF-A's images are left: the machine is TF-A (QEMU's
+ * PSCI, the SCMI server). Its entry; 0 if there is nothing SPL would start
+ * (the boot ROM would go on to its USB mode).
+ */
+#define FO_SPL_FIT      (16384 * 512)
+#define FO_SPL_FIT_MAX  (64 * KiB)
+
+static bool fo_fit_addr(const void *fit, int node, const char *name,
+                        hwaddr *addr)
+{
+    int len;
+    const fdt32_t *p = fdt_getprop(fit, node, name, &len);
+
+    if (!p || (len != 4 && len != 8)) {
+        return false;
+    }
+    *addr = len == 8 ? (hwaddr)fdt32_to_cpu(p[0]) << 32 | fdt32_to_cpu(p[1])
+                     : fdt32_to_cpu(p[0]);
+    return true;
+}
+
+/* an image of the FIT into DRAM at *@addr, or at its own load address if
+ * that is 0: its length, 0 if it cannot be */
+static uint32_t fo_spl_image(FlipperOneState *s, const void *fit, int node,
+                             int64_t data_at, hwaddr *addr)
+{
+    const char *comp = fdt_getprop(fit, node, "compression", NULL);
+    g_autofree uint8_t *buf = NULL;
+    const void *data;
+    hwaddr pos, size;
+    int len;
+
+    if ((comp && strcmp(comp, "none")) ||
+        (!*addr && !fo_fit_addr(fit, node, "load", addr))) {
+        return 0;
+    }
+    data = fdt_getprop(fit, node, "data", &len);
+    if (!data) {
+        if (!fo_fit_addr(fit, node, "data-size", &size) || !size ||
+            size > 64 * MiB) {
+            return 0;
+        }
+        if (fo_fit_addr(fit, node, "data-position", &pos)) {
+            pos += FO_SPL_FIT;
+        } else if (fo_fit_addr(fit, node, "data-offset", &pos)) {
+            pos += data_at;
+        } else {
+            return 0;
+        }
+        len = size;
+        buf = g_malloc(len);
+        if (blk_pread(s->sd_blk, pos, len, buf, 0) < 0) {
+            return 0;
+        }
+        data = buf;
+    }
+    address_space_write(&address_space_memory, *addr, MEMTXATTRS_UNSPECIFIED,
+                        data, len);
+    return len;
+}
+
+static hwaddr fo_spl_fail(const char *why)
+{
+    qemu_log("flipper-one: SPL: %s\n", why);
+    return 0;
+}
+
+static hwaddr fo_spl(FlipperOneState *s)
+{
+    g_autofree char *compat = g_strdup_printf("flipper,one-rev-%s",
+                                              s->rev ?: FO_REV_DEFAULT);
+    g_autofree uint8_t *fit = NULL;
+    uint8_t head[sizeof(struct fdt_header)];
+    int images, confs, conf = -1, node, uboot = -1;
+    const char *name, *os;
+    hwaddr addr = 0, entry, fdt_at;
+    uint32_t len, size;
+
+    if (!s->sd_blk || !blk_is_inserted(s->sd_blk) ||
+        blk_pread(s->sd_blk, FO_SPL_FIT, sizeof(head), head, 0) < 0 ||
+        fdt_magic(head) != FDT_MAGIC) {
+        return fo_spl_fail("no u-boot.itb on the microSD card (sector 16384)");
+    }
+    size = fdt_totalsize(head);
+    if (size < sizeof(head) || size > FO_SPL_FIT_MAX) {
+        return fo_spl_fail("u-boot.itb's tree is not one SPL takes");
+    }
+    fit = g_malloc(size);
+    if (blk_pread(s->sd_blk, FO_SPL_FIT, size, fit, 0) < 0 ||
+        fdt_check_header(fit)) {
+        return fo_spl_fail("u-boot.itb's tree is not one SPL takes");
+    }
+    images = fdt_path_offset(fit, "/images");
+    confs = fdt_path_offset(fit, "/configurations");
+    if (images < 0 || confs < 0) {
+        return fo_spl_fail("u-boot.itb has no images or configurations");
+    }
+    fdt_for_each_subnode(node, fit, confs) {
+        const char *c = fdt_getprop(fit, node, "compatible", NULL);
+
+        if (c && !strcmp(c, compat)) {
+            conf = node;
+            break;
+        }
+    }
+    if (conf < 0) {
+        name = fdt_getprop(fit, confs, "default", NULL);
+        conf = name ? fdt_subnode_offset(fit, confs, name) : -1;
+        qemu_log("flipper-one: SPL: no configuration for %s: the default\n",
+                 compat);
+        if (conf < 0) {
+            return fo_spl_fail("u-boot.itb has no default configuration");
+        }
+    }
+    /* U-Boot: of the configuration's images, the one whose OS is U-Boot */
+    for (int i = 0; uboot < 0; i++) {
+        name = fdt_stringlist_get(fit, conf, "loadables", i, NULL);
+        if (!name && !i) {
+            name = fdt_getprop(fit, conf, "firmware", NULL);
+        }
+        if (!name) {
+            break;
+        }
+        node = fdt_subnode_offset(fit, images, name);
+        os = node >= 0 ? fdt_getprop(fit, node, "os", NULL) : NULL;
+        if (os && !strcmp(os, "u-boot")) {
+            uboot = node;
+        }
+    }
+    if (uboot < 0) {
+        name = fdt_getprop(fit, conf, "firmware", NULL);
+        node = name ? fdt_subnode_offset(fit, images, name) : -1;
+        os = node >= 0 ? fdt_getprop(fit, node, "os", NULL) : NULL;
+        if (os && !strcmp(os, "u-boot")) {
+            uboot = node;
+        }
+    }
+    if (uboot < 0 || !(len = fo_spl_image(s, fit, uboot, FO_SPL_FIT +
+                                          ROUND_UP(size, 4), &addr))) {
+        return fo_spl_fail("no U-Boot in u-boot.itb that SPL could load");
+    }
+    entry = addr;
+    fo_fit_addr(fit, uboot, "entry", &entry);
+    name = fdt_getprop(fit, conf, "fdt", NULL);
+    node = name ? fdt_subnode_offset(fit, images, name) : -1;
+    fdt_at = ROUND_UP(addr + len, 8);
+    if (node < 0 || !fo_spl_image(s, fit, node, FO_SPL_FIT + ROUND_UP(size, 4),
+                                  &fdt_at)) {
+        return fo_spl_fail("no device tree for U-Boot in u-boot.itb");
+    }
+    qemu_log("flipper-one: SPL: U-Boot at 0x%" HWADDR_PRIx ", %s after it\n",
+             addr, (const char *)fdt_getprop(fit, conf, "description", NULL)
+                   ?: name);
+    return entry;
+}
+
 static void fo_rk_cpu_off(ARMCPU *cpu)
 {
     arm_set_cpu_power_state(cpu, PSCI_OFF);
@@ -622,6 +795,7 @@ static void fo_rk_power_bh(void *opaque)
     FlipperOneState *s = opaque;
     bool running = runstate_is_running();
     int want = s->rk_want;
+    hwaddr entry = 0;
 
     if (want != RK_OFF && !s->rk_rail) {
         want = RK_OFF;
@@ -635,12 +809,20 @@ static void fo_rk_power_bh(void *opaque)
     }
     rk3576_reset_devices(&s->rk3576);
     s->frame_active = false;
-    if (want != RK_OFF) {
+    if (want == RK_OFF) {
+        rk3576_power_lost(&s->rk3576);
+    } else if (s->uboot) {                      /* the DDR blob, then SPL */
+        rk3576_ddr_blob(&s->rk3576, MACHINE(s)->ram_size);
+        entry = fo_spl(s);
+    } else {
         if (!s->rk_nimages) {
             fo_rk_save_images(s);               /* the first start: as loaded */
         } else {
             fo_rk_restore_images(s);
         }
+        entry = s->binfo.loader_start;
+    }
+    if (entry) {
         rk_scmi_reset(&s->rk3576.scmi);         /* (TF-A's start) */
     }
     for (int i = 0; i < RK3576_NCPUS; i++) {
@@ -649,22 +831,23 @@ static void fo_rk_power_bh(void *opaque)
 
         cpu_reset(cs);                          /* (the others: off, for
                                                    PSCI's CPU_ON) */
-        if (want != RK_OFF && i == 0) {
-            arm_emulate_firmware_reset(cs, 2);  /* as QEMU's own direct boot */
-            cpu_set_pc(cs, s->binfo.loader_start);
+        if (entry && i == 0) {
+            arm_emulate_firmware_reset(cs, 2);  /* as QEMU's own direct boot,
+                                                   or TF-A to BL33 */
+            cpu_set_pc(cs, entry);
             arm_rebuild_hflags(&cpu->env);
         } else {
             fo_rk_cpu_off(cpu);
         }
     }
-    s->rk_on = want != RK_OFF;
+    s->rk_on = entry != 0;
     if (running) {
         resume_all_vcpus();
     }
     qemu_log("flipper-one: %" PRId64 " ms: the RK3576 %s\n",
              qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL),
-             want == RK_OFF ? "is off" : want == RK_ON ? "starts" :
-             "starts again");
+             want == RK_OFF ? "is off" : !entry ? "has nothing to start" :
+             want == RK_ON ? "starts" : "starts again");
     fo_panel_rk3576(s->panel, s->rk_on);
 }
 
@@ -684,6 +867,7 @@ static void flipper_one_rk3576_gate(void *opaque)
     FlipperOneState *s = opaque;
 
     s->rk_rail = s->rk_on = s->rk_lost = false;
+    rk3576_power_lost(&s->rk3576);
     for (int i = 0; i < RK3576_NCPUS; i++) {
         fo_rk_cpu_off(&s->rk3576.cpu[i]);
     }
@@ -776,13 +960,14 @@ static void flipper_one_rk3576_reset(void *opaque)
  * The CPU, the RK3576, and its DRAM at 0x40000000 (-m, 4 GiB unless told).
  * A kernel (-kernel, -dtb, -initrd, -append) starts on it when the MCU
  * switches its rail on, as U-Boot would start it: at EL2, PSCI from QEMU
- * over SMC; without one its cores stay off.
+ * over SMC; or U-Boot from its microSD card (uboot=on); without either its
+ * cores stay off.
  */
 static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
 {
     object_initialize_child(OBJECT(ms), "rk3576", &s->rk3576, TYPE_RK3576);
     qdev_prop_set_bit(DEVICE(&s->rk3576), "start-on",
-                      ms->kernel_filename != NULL);
+                      ms->kernel_filename != NULL || s->uboot);
     /* its I2C2 is the main board's bus, the MCU's PIO I2C's too */
     object_property_set_link(OBJECT(&s->rk3576), "i2c2-bus",
                              OBJECT(s->main_bus.bus), &error_abort);
@@ -815,6 +1000,7 @@ static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
                                    BUS(dw_mshc_bus(&s->rk3576.sdmmc)),
                                    &error_fatal);
             rk3576_gpio_in(&s->rk3576, 0, 7, false);
+            s->sd_blk = blk_by_legacy_dinfo(di);
         }
     }
     /* the UFS's user area, its LU 0 (-drive if=none,id=ufs: the device's
@@ -863,16 +1049,22 @@ static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
         rk_sai_set_source(sai, nau8822_adc, codec);
         nau8822_headset_mic(codec, s->headset == FO_HEADSET_IN);
     }
-    if (!ms->kernel_filename) {
+    if (s->uboot && ms->kernel_filename) {
+        error_report("flipper-one: uboot=on or -kernel, not both");
+        exit(1);
+    }
+    if (!ms->kernel_filename && !s->uboot) {
         qemu_register_reset(flipper_one_rk3576_reset, &s->rk3576);
         return;
     }
     /* the kernel's memory after the 2 MiB that are TF-A's (its SCMI shared
-     * memory among them), as the loader gives it */
+     * memory among them), as the loader gives it; with U-Boot, QEMU loads
+     * nothing (SPL's part is fo_spl()) and gives its PSCI */
     s->binfo.ram_size = ms->ram_size - RK3576_TFA_SIZE;
     s->binfo.loader_start = RK3576_DRAM_BASE + RK3576_TFA_SIZE;
     s->binfo.board_id = -1;
     s->binfo.psci_conduit = QEMU_PSCI_CONDUIT_SMC;
+    s->binfo.firmware_loaded = s->uboot;
     arm_load_kernel(&s->rk3576.cpu[0], ms, &s->binfo);
     /* (after arm_load_kernel's: reset handlers run in that order) */
     s->linux_boot = true;
@@ -1112,6 +1304,33 @@ static void flipper_one_set_hdmi(Object *obj, bool value, Error **errp)
     FLIPPER_ONE(obj)->hdmi_at_start = value;
 }
 
+static bool flipper_one_get_uboot(Object *obj, Error **errp)
+{
+    return FLIPPER_ONE(obj)->uboot;
+}
+
+static void flipper_one_set_uboot(Object *obj, bool value, Error **errp)
+{
+    FLIPPER_ONE(obj)->uboot = value;
+}
+
+static char *flipper_one_get_rev(Object *obj, Error **errp)
+{
+    return g_strdup(FLIPPER_ONE(obj)->rev ?: FO_REV_DEFAULT);
+}
+
+static void flipper_one_set_rev(Object *obj, const char *value, Error **errp)
+{
+    FlipperOneState *s = FLIPPER_ONE(obj);
+
+    if (strcmp(value, "f0b0c1") && strcmp(value, "f0b1c2")) {
+        error_setg(errp, "rev: f0b0c1 or f0b1c2");
+        return;
+    }
+    g_free(s->rev);
+    s->rev = g_strdup(value);
+}
+
 static void flipper_one_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
@@ -1145,6 +1364,17 @@ static void flipper_one_class_init(ObjectClass *oc, const void *data)
                               flipper_one_set_battery, NULL, NULL);
     object_class_property_set_description(oc, "battery",
         "The battery's charge at the start, 0 to 100 (%); 80 unless told");
+    object_class_property_add_bool(oc, "uboot", flipper_one_get_uboot,
+                                   flipper_one_set_uboot);
+    object_class_property_set_description(oc, "uboot",
+        "Start the RK3576 at U-Boot proper from its microSD card, as SPL "
+        "loads it from u-boot.itb (sector 16384), the machine in TF-A's "
+        "place and the DDR blob's (in -kernel's stead)");
+    object_class_property_add_str(oc, "rev", flipper_one_get_rev,
+                                  flipper_one_set_rev);
+    object_class_property_set_description(oc, "rev",
+        "The board's revision, as its device trees name it (f0b0c1 unless "
+        "told, or f0b1c2): the configuration of u-boot.itb that SPL takes");
     object_class_property_add_bool(oc, "hdmi", flipper_one_get_hdmi,
                                    flipper_one_set_hdmi);
     object_class_property_set_description(oc, "hdmi",

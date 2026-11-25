@@ -124,8 +124,15 @@ def cmd_run(args):
            "-global", "flipper-one-host.link=host",
            "-name", f"flipperone-{args.name}",
            "-d", "guest_errors", "-D", str(d / "qemu.log")]
+    if getattr(args, "uboot", False):
+        if args.linux is None:
+            die("--uboot: with --linux")
+        if args.kernel_args:
+            die("--uboot: the boot entry's options are U-Boot's to give; "
+                "no --kernel-args")
     if args.linux is not None:
-        cmd += linux_args(d, args.linux, args.kernel_args)
+        cmd += linux_args(d, args.linux, args.kernel_args,
+                          getattr(args, "uboot", False))
     if args.gdb:
         cmd += ["-gdb", f"tcp::{args.gdb}"]
     if args.net or args.ssh:
@@ -384,11 +391,13 @@ def terminal(args, sock, what, enter):
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old)
 
 
-def linux_args(d, build, more=""):
+def linux_args(d, build, more="", uboot=False):
     """QEMU's arguments for Flipper OS's kernel on the RK3576: a build's (the
     newest fetched unless told), with the device tree of the board revision
     the MCU firmware is for, and its boot entry's options; the debug port's
-    UART0 is the console last named, the one the initramfs's shell uses"""
+    UART0 is the console last named, the one the initramfs's shell uses. Or,
+    with uboot, U-Boot from the device's microSD card, as on the device: it
+    shows its boot menu on the Flipper's screen and boots what is picked"""
     builds = sorted((p for p in OS_DIR.glob("*/os.json")),
                     key=lambda p: int(p.parent.name) if p.parent.name.isdigit()
                     else -1)
@@ -405,7 +414,7 @@ def linux_args(d, build, more=""):
         pass
     rev = {"f1": "rev-f0b0c1", "f2": "rev-f0b1c2"}[target]
     dtb = ROOT / info["dtbs"] / "rockchip" / f"rk3576-flipper-one-{rev}.dtb"
-    if not dtb.exists():
+    if not uboot and not dtb.exists():
         die(f"no {dtb.relative_to(ROOT)}")
     # its microSD card: the build's image, the first time (QEMU's SD cards
     # are a power of 2 in size: 8 GiB, sparse); the device's from then on
@@ -426,6 +435,10 @@ def linux_args(d, build, more=""):
         with open(ufs, "wb"):
             pass
         os.truncate(ufs, 64 * 10**9)
+    disks = ["-drive", f"if=sd,format=raw,file={card}",
+             "-drive", f"if=none,id=ufs,format=raw,file={ufs}"]
+    if uboot:                   # (SPL's, TF-A's and the DDR blob's parts:
+        return ["-machine", f"uboot=on,rev={rev[4:]}"] + disks  # the machine)
     return ["-kernel", str(ROOT / info["kernel"]), "-dtb", str(dtb),
             "-initrd", str(ROOT / info["initrd"]),
             # rw: the boot entries leave it out (Debian's initramfs then
@@ -441,9 +454,7 @@ def linux_args(d, build, more=""):
             "-append", info["options"] + " rw console=ttyS0,1500000n8"
             " cpufreq.default_governor=performance"
             " systemd.default_device_timeout_sec=300" +
-            (f" {more}" if more else ""),
-            "-drive", f"if=sd,format=raw,file={card}",
-            "-drive", f"if=none,id=ufs,format=raw,file={ufs}"]
+            (f" {more}" if more else "")] + disks
 
 
 def png(path, width, height, rgb):
@@ -549,6 +560,11 @@ def main():
                            help="start Flipper OS's kernel on the RK3576 (a "
                                 "build fetched by scripts/fetch_os.py; the "
                                 "newest unless told)")
+            p.add_argument("--uboot", action="store_true",
+                           help="... through U-Boot, from the microSD card, as "
+                                "on the device: its boot menu on the Flipper's "
+                                "screen (up, down, OK), the boot entry's own "
+                                "options (the machine plays SPL and TF-A)")
             p.add_argument("--net", action="store_true",
                            help="a cable in the first Ethernet port, to this "
                                 "PC's network (through passt)")

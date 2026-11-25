@@ -426,6 +426,10 @@ struct RK3576State {
     GICState gic;
     RkBlock cru;                        /* clocks and resets */
     RkBlock pmu;                        /* power domains */
+    RkBlock pmu0_grf, pmu1_grf;         /* the PMU's GRFs: always on, kept
+                                           through a reset of the SoC (their
+                                           OS_REGs: the reboot mode, the DDR
+                                           blob's word on the DRAM) */
     RkBlock rng;                        /* the TRNG */
     RkTimer timer0;                     /* the broadcast clockevent */
     RkI2cState i2c[RK3576_NI2C];
@@ -483,6 +487,11 @@ void rk3576_hdmi_plug(RK3576State *s, bool on);
 /* its devices as at power-on (not the cores, which are the board's to
  * start) */
 void rk3576_reset_devices(RK3576State *s);
+/* its supply gone: what is always on loses what it kept */
+void rk3576_power_lost(RK3576State *s);
+/* what Rockchip's DDR blob leaves for the stages after it, for DRAM of
+ * @size bytes at RK3576_DRAM_BASE */
+void rk3576_ddr_blob(RK3576State *s, uint64_t size);
 /* the bus of I2C@n, for what the board has on it */
 I2CBus *rk3576_i2c_bus(RK3576State *s, int n);
 /* SAI @n (0, 2 or 6) */
