@@ -19,16 +19,18 @@
  *   R53) and the speaker (R3, R54, R55), is on and unmuted; else they have
  *   the DAC's digital volume and the louder output's. The voice is active
  *   while frames come, and for 200 ms after the last.
- * - Its ADC: the frames the SAI receives (nau8822_adc). The left one is the
- *   board's internal microphone on LMICP/LMICN: a WAV file (the "mic"
- *   property: 16-bit PCM, its first channel, any rate, looped), taken as
- *   what the ADC gives at the codec's defaults (the input PGA at 0 dB, its
- *   +20 dB boost, the ADC at 0 dB), then with the PGA's gain, the boost and
- *   the ADC's volume as set (R45, R47, R15). It is silent while that path
- *   is powered off (R2: the PGA, the boost stage, the ADC), not connected
- *   (R44), muted (R45) or at volume 0, and with no file. It starts from the
- *   file's beginning whenever the left ADC is powered on. The right one,
- *   the headset's microphone on RMICP, is silent.
+ * - Its ADC: the frames the SAI receives (nau8822_adc). Both microphones
+ *   hear a WAV file (the "mic" property: 16-bit PCM, its first channel, any
+ *   rate, looped): the board's internal one on LMICP/LMICN (the left), and
+ *   a headset's on RMICP (the right) while the board says one is in the
+ *   jack (nau8822_headset_mic) with no button on its cable held. The file
+ *   is taken as what the ADC gives at the codec's defaults (the input PGA
+ *   at 0 dB, its +20 dB boost, the ADC at 0 dB), then with each channel's
+ *   PGA gain, boost and ADC volume as set (R45-R48, R15-R16). A channel is
+ *   silent while its path is powered off (R2: the PGA, the boost stage,
+ *   the ADC), not connected (R44), muted (R45/R46) or at volume 0, and with
+ *   no file. The file starts from its beginning whenever an ADC is powered
+ *   on with neither on before.
  * The rest (the line and auxiliary inputs, EQ, ALC, the limiter, the
  * high-pass filter) is registers only.
  *
@@ -60,7 +62,7 @@
 #define R_ADC_CTRL      0x0e
 #define R_ADC_VOL_L     0x0f
 #define R_INPUT         0x2c
-#define R_PGA_L         0x2d
+#define R_PGA_L         0x2d            /* (and the right's, each next) */
 #define R_BOOST_L       0x2f
 #define R_PLL_N         0x24
 #define R_PLL_K1        0x25
@@ -98,6 +100,7 @@ struct Nau8822State {
     size_t mic_n;
     uint32_t mic_rate;
     double mic_pos;                     /* ... where it is in them */
+    bool headset_mic;                   /* a headset's in the jack (board) */
 };
 
 /* the driver's defaults (nau8822.c), which a reset gives */
@@ -250,46 +253,54 @@ static void nau_audio_out(void *opaque, int free_b)
 
 /* ------------------------------------------------------------ the ADC */
 
-/* the left channel's capture gain (1.0: 65536) on the microphone's file,
- * which is what the ADC gives at the defaults: 0 while that path is off */
-static int nau_adc_gain(Nau8822State *s)
+/* a channel's capture gain (1.0: 65536) on the microphone's file, which
+ * is what the ADC gives at the defaults: 0 while that path is off, and on
+ * the right while no headset's microphone is there */
+static int nau_adc_gain(Nau8822State *s, bool right)
 {
-    uint16_t pm2 = s->regs[R_PM2], pga = s->regs[R_PGA_L];
-    int adc = s->regs[R_ADC_VOL_L] & 0xff;
+    uint16_t pm2 = s->regs[R_PM2], pga = s->regs[R_PGA_L + right];
+    uint16_t on = (BIT(0) | BIT(2) | BIT(4)) << right;
+    int adc = s->regs[R_ADC_VOL_L + right] & 0xff;
     double db;
 
-    /* the left ADC, input PGA and boost stage on; LMICP or LMICN to the
-     * PGA; the PGA not muted, the ADC's volume not 0 */
-    if ((pm2 & (BIT(0) | BIT(2) | BIT(4))) != (BIT(0) | BIT(2) | BIT(4)) ||
-        !(s->regs[R_INPUT] & (BIT(0) | BIT(1))) || (pga & BIT(6)) || !adc) {
+    /* its ADC, input PGA and boost stage on; its MICP or MICN to the PGA
+     * (R44: the left's bits 0-1, the right's 4-5); the PGA not muted, the
+     * ADC's volume not 0 */
+    if ((right && !s->headset_mic) || (pm2 & on) != on ||
+        !(s->regs[R_INPUT] & ((BIT(0) | BIT(1)) << (right * 4))) ||
+        (pga & BIT(6)) || !adc) {
         return 0;
     }
     /* PGA: 0.75 dB steps, 0x10 = 0 dB; boost +20 dB; ADC: 0.5 dB steps */
     db = ((pga & 0x3f) - 0x10) * 0.75 +
-         (s->regs[R_BOOST_L] & BIT(8) ? 0 : -20) + (adc - 255) * 0.5;
+         (s->regs[R_BOOST_L + right] & BIT(8) ? 0 : -20) + (adc - 255) * 0.5;
     return lround(65536.0 * pow(10.0, db / 20));
 }
 
 void nau8822_adc(void *opaque, int16_t *lr, int frames)
 {
     Nau8822State *s = opaque;
-    int gain = s->mic && s->fs ? nau_adc_gain(s) : 0;
+    bool live = s->mic && s->fs;
+    int gain[2] = { live ? nau_adc_gain(s, false) : 0,
+                    live ? nau_adc_gain(s, true) : 0 };
     double step = s->fs ? (double)s->mic_rate / s->fs : 0;
-    bool invert = s->regs[R_ADC_CTRL] & BIT(0);     /* (LADCPL) */
 
     for (int i = 0; i < frames; i++) {
-        int64_t v = 0;
+        double x = 0;
 
-        if (gain) {
+        if (gain[0] || gain[1]) {
             size_t a = (size_t)s->mic_pos;
             double f = s->mic_pos - a;
-            double x = s->mic[a] * (1 - f) + s->mic[(a + 1) % s->mic_n] * f;
 
-            v = ((int64_t)lround(invert ? -x : x) * gain) >> 16;
-            v = MIN(MAX(v, INT16_MIN), INT16_MAX);
+            x = s->mic[a] * (1 - f) + s->mic[(a + 1) % s->mic_n] * f;
         }
-        lr[2 * i] = v;
-        lr[2 * i + 1] = 0;              /* (the headset's: none) */
+        for (int c = 0; c < 2; c++) {
+            /* (R14's LADCPL, RADCPL: a channel inverted) */
+            bool invert = s->regs[R_ADC_CTRL] & BIT(c);
+            int64_t v = ((int64_t)lround(invert ? -x : x) * gain[c]) >> 16;
+
+            lr[2 * i + c] = MIN(MAX(v, INT16_MIN), INT16_MAX);
+        }
         if (s->mic) {
             s->mic_pos += step;
             if (s->mic_pos >= s->mic_n) {
@@ -297,6 +308,11 @@ void nau8822_adc(void *opaque, int16_t *lr, int frames)
             }
         }
     }
+}
+
+void nau8822_headset_mic(DeviceState *dev, bool present)
+{
+    NAU8822(dev)->headset_mic = present;
 }
 
 /* the microphone's file: a RIFF WAVE of 16-bit PCM, its first channel */
@@ -364,8 +380,8 @@ static void nau_write(Nau8822State *s, int reg, uint16_t v)
     if (reg >= NAU_REGS || reg == R_REVISION || reg == R_ID) {
         return;
     }
-    if (reg == R_PM2 && (v & BIT(0)) && !(s->regs[reg] & BIT(0))) {
-        s->mic_pos = 0;                 /* (the left ADC on: a recording) */
+    if (reg == R_PM2 && (v & 3) && !(s->regs[reg] & 3)) {
+        s->mic_pos = 0;                 /* (an ADC on: a recording) */
     }
     s->regs[reg] = v & 0x1ff;
     switch (reg) {

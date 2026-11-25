@@ -33,7 +33,8 @@ Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
   at 1 kHz, and the codec gives it out: the device's audio.wav, from QEMU's
   wav backend (`run --audio`), has 2 s of 1 kHz; its internal microphone
   hears the device's mic.wav (`run --mic`), 440 Hz, and arecord gets that
-  at its level (the headset's microphone: silence);
+  at its level; so does a headset's, plugged in on the panel link (and
+  pulled out: silence);
 - `systemctl reboot` starts the RK3576 again, and the kernel with it;
   `systemctl poweroff` switches it off (PSCI), after which the MCU cuts
   its rail; the MCU's CPU app switches it on again, and the kernel starts;
@@ -381,6 +382,24 @@ def checks(check, d, out, first_boot, off, net):
           len(stat) == 4 and abs(stat[1] - MIC_HZ) <= 5 and
           abs(stat[0] - MIC_PEAK / 32768) < 0.005 and stat[2] < 0.001,
           str(rec[-12:]))
+    # a headset in the jack (the panel link): its microphone, on the right
+    # channel, hears the file too; pulled out, nothing again
+    def right_peak():
+        out = con.run("arecord -q -D hw:NAU8822 -f S16_LE -r 48000 -c 2 -d 1 "
+                      "/tmp/rec.wav && sox /tmp/rec.wav -n remix 2 stat 2>&1",
+                      90) or []
+        m = [re.search(r"Maximum amplitude:\s+([\d.]+)", line) for line in out]
+        return next((float(x.group(1)) for x in m if x), None)
+    panel.s.sendall(b"headset 1\n")
+    time.sleep(1)
+    with_headset = right_peak()
+    panel.s.sendall(b"headset 0\n")
+    time.sleep(1)
+    without = right_peak()
+    check("... and a headset's microphone, plugged in, and not once pulled out",
+          with_headset is not None and without is not None and
+          abs(with_headset - MIC_PEAK / 32768) < 0.005 and without < 0.001,
+          f"{with_headset} {without}")
 
     qmark = len(text_of(qlog))
     lmark = len(text_of(linux))

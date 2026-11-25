@@ -412,9 +412,14 @@ def linux_args(d, build, more=""):
             # cores run as fast as the host lets them, whatever their
             # clock, and schedutil's changes of it (an SMC to the SCMI
             # server, a write to the PMIC over I2C, dozens a second) made
-            # Flipper OS a third slower for nothing
+            # Flipper OS a third slower for nothing. Devices 5 min, not
+            # systemd's 90 s, to show up: on a busy PC udev's coldplug of
+            # the emulated board took longer, the partitions' by-uuid links
+            # came late, and the boot went to emergency mode
             "-append", info["options"] + " rw console=ttyS0,1500000n8"
-            " cpufreq.default_governor=performance" + (f" {more}" if more else ""),
+            " cpufreq.default_governor=performance"
+            " systemd.default_device_timeout_sec=300" +
+            (f" {more}" if more else ""),
             "-drive", f"if=sd,format=raw,file={card}",
             "-drive", f"if=none,id=ufs,format=raw,file={ufs}"]
 

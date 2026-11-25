@@ -45,13 +45,14 @@ and enumerates Flipper OS's USB gadget at high speed: its serial port's login on
 `devices/NAME/usb.sock`, and over USB/IP the whole gadget on this PC: its network
 (NCM, with a DHCP server on Flipper OS's side), MTP and the serial port. Its sound card
 (the NAU8822 codec on SAI2) plays, at 48 kHz: to a WAV file, or nowhere (`run --audio`);
-its internal microphone hears a WAV file (`run --mic`).
+its microphones (the internal one, and a headset's in the jack) hear a WAV file
+(`run --mic`).
 It reaches its login in two to three minutes, the first boot included
 (TCG emulates eight cores). The MCU switches the RK3576 on and off as on the device:
 Flipper OS's power-off and reboot work, and so does the MCU's own Stop (now and then a
 power-off or reboot waits 90 s for BlueZ's `mpris-proxy`, which has no Bluetooth
 adapter: the Wi-Fi and Bluetooth chip is on USB, not modelled yet). The RK3576's
-display outputs, the headset's microphone and more come next. [RESEARCH.md](RESEARCH.md) is the survey
+display outputs and more come next. [RESEARCH.md](RESEARCH.md) is the survey
 this starts from:
 the device, what Flipper Devices publishes, and what emulating it takes.
 [PLAN.md](PLAN.md) is the order of work; the MCU comes first.

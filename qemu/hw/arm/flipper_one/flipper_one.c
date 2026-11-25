@@ -85,6 +85,7 @@ struct FlipperOneState {
                                    computer */
     bool usb20_sel;             /* the USB mux: the RK3576's, not the MCU's */
     int headset;                /* in the jack: FO_HEADSET_... */
+    DeviceState *codec;         /* ... its mic on the NAU8822's RMICP */
     int ambient_dc;             /* around the device: 0.1 °C */
     bool off;                   /* the board's supply cut (the charger's
                                    ship FET) */
@@ -162,6 +163,10 @@ static void flipper_one_headset(FlipperOneState *s, int what)
 
     s->headset = what;
     s->mcu.adc_mv[7] = what == FO_HEADSET_NONE ? 0 : 2200 * r / (r + 2200);
+    /* the mic to the codec too, which a button held shorts or swamps */
+    if (s->codec) {
+        nau8822_headset_mic(s->codec, what == FO_HEADSET_IN);
+    }
     /* the switch pulls the line up, through the MCU's resets */
     s->mcu.ext_pullup = deposit64(s->mcu.ext_pullup, 42, 1,
                                   what != FO_HEADSET_NONE);
@@ -839,6 +844,8 @@ static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
         DeviceState *codec = qdev_new(TYPE_NAU8822);
         RkSaiState *sai = rk3576_sai(&s->rk3576, 2);
 
+        s->codec = codec;
+
         qdev_prop_set_uint8(codec, "address", 0x1a);
         i2c_slave_realize_and_unref(I2C_SLAVE(codec),
                                     rk3576_i2c_bus(&s->rk3576, 6),
@@ -846,6 +853,7 @@ static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
         nau8822_link(codec, rk_sai_lrck, sai);
         rk_sai_set_sink(sai, nau8822_dac, codec);
         rk_sai_set_source(sai, nau8822_adc, codec);
+        nau8822_headset_mic(codec, s->headset == FO_HEADSET_IN);
     }
     if (!ms->kernel_filename) {
         qemu_register_reset(flipper_one_rk3576_reset, &s->rk3576);

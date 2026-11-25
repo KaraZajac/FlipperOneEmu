@@ -1366,3 +1366,28 @@ register headers.
     amixer's PGA at +9 dB the peak is 0.14087, 2.818 times as much. The Linux check
     records 2 s from the file it gives `--mic`: 440 Hz at its level, and nothing on
     the right channel (34 checks).
+
+69. **The headset's microphone, and a boot on a busy PC.**
+    - **The headset's microphone.** The jack's headset is a four-pole one, so its
+      microphone is there while a headset is in and no button on its cable is
+      held (a button shorts or swamps it). The board now tells the codec, and the
+      codec's right channel (RMICP) hears the same `--mic` file through the right
+      PGA, boost and ADC volume (R46, R48, R16) and R2's right-hand power bits.
+      The Linux check plugs a headset in over the panel link and records the
+      file's level on the right channel, then pulls it out and records nothing
+      (35 checks).
+    - **Devices get 5 minutes to show up.** With this PC's other work taking
+      over twelve of its sixteen threads (load 17 to 20), a reboot's second boot
+      waited for the partitions' `/dev/disk/by-uuid` links. udev's coldplug of
+      the emulated board was still running after systemd's 90 s device timeout,
+      so `/home`, `/var/log` and `/boot` failed and Flipper OS went into
+      emergency mode. The launcher now adds
+      `systemd.default_device_timeout_sec=300` to the kernel's command line, as
+      it adds the performance governor: a real device's partitions are there in
+      seconds, so the longer wait changes nothing there.
+    - **DP0's sound card fails.** In the same runs, something in Flipper OS's
+      user session kept preparing DP0's card, dozens of times a second, and each
+      try failed: "dw-dp 27e40000.dp: unsupported DAI 6", then "ASoC error (-22)
+      at snd_soc_dai_prepare() on spdif-hifi". The device tree puts that card on
+      the DP codec's S/PDIF DAI (6 is HDMI_SPDIF), which this dw-dp driver does
+      not take. What retries it is still to be found.

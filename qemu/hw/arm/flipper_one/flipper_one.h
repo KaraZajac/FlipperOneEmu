@@ -234,6 +234,8 @@ void nau8822_link(DeviceState *dev, void (*lrck)(void *opaque, int hz),
                   void *opaque);
 void nau8822_dac(void *opaque, const int16_t *lr, int frames);
 void nau8822_adc(void *opaque, int16_t *lr, int frames);
+/* a headset's microphone on its RMICP, or none */
+void nau8822_headset_mic(DeviceState *dev, bool present);
 
 /* iqs7211e.c: the finger on the touchpad (0 ... 1000 across and down) and
  * its pressure (0 ... 255), or none */
