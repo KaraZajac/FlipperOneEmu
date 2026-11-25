@@ -16,7 +16,9 @@ Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
   a key pressed on the panel reaches it, through the MCU and the I2C link;
 - Linux reads the main board's chips over the bus it shares with the MCU:
   the INA219 on VSYS, the five INA4230s; its root is the microSD card, and
-  its UFS is a 64 GB disk;
+  its UFS is a 64 GB disk; each Ethernet port has its RTL8211F, and with
+  passt installed port 1 is on this PC's network (`run --net`): a link,
+  an address by DHCP, a gateway that answers;
   the CPU clusters' clocks come from TF-A's SCMI server, and cpufreq has
   both clusters; the six thermal zones read the TSADC, with the trims the
   OTP holds;
@@ -154,7 +156,7 @@ def copy_card(src, dst):
                     str(dst)], check=True)
 
 
-def checks(check, d, out, first_boot, off):
+def checks(check, d, out, first_boot, off, net):
     boot_s = 1200 if first_boot else 600
     linux, qlog, mcu = d / "linux.log", d / "qemu.log", d / "mcu.log"
 
@@ -203,6 +205,21 @@ def checks(check, d, out, first_boot, off):
     check("its UFS: a 64 GB disk (sda) on the UFS host",
           bool(ufs) and ufs[0].strip() == "64000000000" and
           any(u.strip() == "ufshcd" for u in ufs[1:]), str(ufs))
+    eth = con.run("for p in end0 end1; do echo $p "
+                  "$(cat /sys/class/net/$p/phydev/phy_id) "
+                  "$(cat /sys/class/net/$p/carrier 2>/dev/null || echo -); "
+                  "done")
+    want = [f"end0 0x001cc916 {1 if net else 0}", "end1 0x001cc916 0"]
+    check("the Ethernet ports: an RTL8211F on each, "
+          + ("port 1 with a link" if net else "no link (no network given)"),
+          eth is not None and [e.strip() for e in eth] == want, str(eth))
+    if net:
+        ping = con.run("ip -4 -br addr show end0; ping -c 2 -W 3 "
+                       "$(ip route | awk '/default/{print $3; exit}') "
+                       ">/dev/null && echo pinged", 60)
+        check("... an address by DHCP, and the gateway answers (passt)",
+              bool(ping) and len(ping[0].split()) >= 3 and
+              ping[-1].strip() == "pinged", str(ping))
     freq = con.run("cat /sys/devices/system/cpu/cpufreq/policy0/"
                    "scaling_cur_freq /sys/devices/system/cpu/cpufreq/"
                    "policy4/scaling_cur_freq")
@@ -286,12 +303,15 @@ def main():
     d.mkdir(parents=True)
     if not first_boot:
         copy_card(TEMPLATE / "sd.img", d / "sd.img")
+    net = shutil.which("passt") is not None     # (QEMU's network backend)
     print(f"{'a first boot' if first_boot else 'from the kept card'}, "
-          f"Flipper OS build {os_build()}", flush=True)
+          f"Flipper OS build {os_build()}, "
+          f"{'a network on Ethernet port 1' if net else 'no passt: no network'}",
+          flush=True)
     check = st.Checks()
     t0 = time.time()
     run = [sys.executable, str(st.LAUNCHER), "run", "-n", name, "--detach",
-           "--linux"]
+           "--linux"] + (["--net"] if net else [])
     if subprocess.run(run).returncode:
         sys.exit("the device did not start")
     def off():
@@ -301,7 +321,7 @@ def main():
             copy_card(d / "sd.img", kept)
 
     try:
-        checks(check, d, out, first_boot, off)
+        checks(check, d, out, first_boot, off, net)
         log_checks(check, d)
     finally:
         subprocess.run([sys.executable, str(st.LAUNCHER), "stop", "-n", name],

@@ -728,6 +728,14 @@ static bool flipper_one_psci(ARMCPU *cpu, void *opaque)
     return true;
 }
 
+/* the Ethernet PHYs' INTB, low while asserted: GPIO1_C1 and GPIO1_C2 */
+static void flipper_one_phy_int(void *opaque, int n, int level)
+{
+    FlipperOneState *s = opaque;
+
+    rk3576_gpio_in(&s->rk3576, 1, 17 + n, !level);
+}
+
 /* the RK3576's CRU resets it (its TSADC's TSHUT): as TF-A's SYSTEM_RESET */
 static void flipper_one_rk_cru_reset(void *opaque)
 {
@@ -805,6 +813,11 @@ static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
     s->rk3576.gpio_out_opaque = s;
     s->rk3576.cru_reset = flipper_one_rk_cru_reset;
     s->rk3576.cru_reset_opaque = s;
+    for (int i = 0; i < 2; i++) {
+        qdev_connect_gpio_out_named(DEVICE(&s->rk3576.gmac[i]), "phy-int", 0,
+                                    qemu_allocate_irq(flipper_one_phy_int,
+                                                      s, i));
+    }
     i2c_slave_create_simple(rk3576_i2c_bus(&s->rk3576, 1), "rk806", 0x23);
     i2c_slave_create_simple(rk3576_i2c_bus(&s->rk3576, 8), "hym8563", 0x51);
     if (!ms->kernel_filename) {

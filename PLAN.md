@@ -124,7 +124,9 @@ screen and its CLI.
       (2026-11-24); the console UART between the two; the MCU update over I2C
 
 ## M5: Flipper OS's hardware ☐
-- ☐ Ethernet (GMAC, dwmac 4.20a, RTL8211F) to the host's network
+- ◐ Ethernet (GMAC, dwmac 4.20a, RTL8211F): both ports and their PHYs; the first on the
+      host's network through passt (`run --net`) (2026-11-24); the second's own network,
+      port forwards (SSH from the host)
 - ☐ USB: the gadget on USB-C1 (NCM, MTP, ACM) over USB/IP; the host controller and its hub
 - ☐ M.2 and PCIe, audio (NAU8822), HDMI, the RTC, the power chips on I2C2
 - ☐ Wi-Fi (the MT7921 on USB)

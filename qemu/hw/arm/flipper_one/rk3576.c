@@ -50,6 +50,9 @@
  *   SPI0      rk_spi.c, 0x2acf0000, SPI 116: the display link (the board
  *             takes what it sends)
  *   SDMMC     dw_mshc.c, 0x2a310000, SPI 251: the microSD slot's host
+ *   GMAC0-1   rk_gmac.c, 0x2a220000 and 0x2a230000, SPIs 293 and 301: the
+ *             Ethernet ports, each with the board's PHY; each takes the next
+ *             -nic (its network), and has no link without one
  *   UFS       0x2a2d0000, SPI 361: QEMU's UFS host (UFSHCI 4.0, no MCQ;
  *             QEMU patch 0008 for the UIC commands Rockchip's driver
  *             sends), on a PCI host that the kernel does not see; the
@@ -107,6 +110,8 @@
 #define TSADC_SPI       123
 #define UFS_BASE        0x2a2d0000
 #define UFS_SPI         361
+#define GMAC_BASE       0x2a220000      /* GMAC0; GMAC1 0x10000 on */
+#define GMAC_SPI        293             /* GMAC0's macirq; GMAC1's 8 on */
 #define TIMER0_BASE     0x2acc0000
 #define TIMER0_SPI      45
 #define UART0_BASE      0x2ad40000
@@ -560,6 +565,9 @@ void rk3576_reset_devices(RK3576State *s)
     }
     device_cold_reset(DEVICE(&s->spi0));
     device_cold_reset(DEVICE(&s->sdmmc));       /* and its card */
+    for (int n = 0; n < 2; n++) {
+        device_cold_reset(DEVICE(&s->gmac[n]));     /* (and its PHY) */
+    }
     device_cold_reset(s->ufs_pcie);             /* (the UFS host's PCI side:
                                                    the kernel resets the
                                                    host as it starts it) */
@@ -632,6 +640,11 @@ static void rk3576_init(Object *obj)
     object_initialize_child(obj, "gic", &s->gic, TYPE_ARM_GIC);
     object_initialize_child(obj, "spi0", &s->spi0, TYPE_RK_SPI);
     object_initialize_child(obj, "sdmmc", &s->sdmmc, TYPE_DW_MSHC);
+    for (int n = 0; n < 2; n++) {
+        g_autofree char *name = g_strdup_printf("gmac%d", n);
+
+        object_initialize_child(obj, name, &s->gmac[n], TYPE_RK_GMAC);
+    }
     for (int n = 0; n < RK3576_NI2C; n++) {
         g_autofree char *name = g_strdup_printf("i2c%d", n);
 
@@ -782,6 +795,19 @@ static void rk3576_realize(DeviceState *dev, Error **errp)
                                 sysbus_mmio_get_region(
                                     SYS_BUS_DEVICE(&s->sdmmc), 0));
     sysbus_connect_irq(SYS_BUS_DEVICE(&s->sdmmc), 0, rk3576_spi(s, 251));
+
+    /* the Ethernet ports: each takes the next -nic for it (none: no cable) */
+    for (int n = 0; n < 2; n++) {
+        SysBusDevice *gmac = SYS_BUS_DEVICE(&s->gmac[n]);
+
+        qemu_configure_nic_device(DEVICE(gmac), true, NULL);
+        if (!sysbus_realize(gmac, errp)) {
+            return;
+        }
+        memory_region_add_subregion(sysmem, GMAC_BASE + n * 0x10000,
+                                    sysbus_mmio_get_region(gmac, 0));
+        sysbus_connect_irq(gmac, 0, rk3576_spi(s, GMAC_SPI + n * 8));
+    }
 
     /*
      * The UFS host: QEMU's, which is a PCI device, on a PCI host of its own

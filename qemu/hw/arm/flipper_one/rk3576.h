@@ -12,6 +12,7 @@
 #include "hw/intc/arm_gic.h"
 #include "hw/i2c/i2c.h"
 #include "hw/sd/sd.h"
+#include "net/net.h"
 #include "target/arm/cpu.h"
 
 #define TYPE_RK3576 "rk3576"
@@ -160,6 +161,34 @@ struct DwMshcState {
 
 SDBus *dw_mshc_bus(DwMshcState *s);
 
+/* rk_gmac.c: an Ethernet MAC (DWC Ethernet QoS 4.20a), with the board's
+ * RTL8211F PHY on its MDIO bus */
+#define TYPE_RK_GMAC "rk-gmac"
+OBJECT_DECLARE_SIMPLE_TYPE(RkGmacState, RK_GMAC)
+#define RKGMAC_FRAME        16384       /* a frame, as its FIFOs take it */
+
+struct RkGmacState {
+    SysBusDevice parent_obj;
+    MemoryRegion mr;
+    qemu_irq irq;                       /* macirq */
+    qemu_irq phy_int;                   /* the PHY's INTB: 1, asserted */
+    NICConf conf;
+    NICState *nic;
+    uint32_t regs[0x1200 / 4];          /* the MAC's, MTL's and DMA's */
+    uint32_t status;                    /* channel 0's (write 1 to clear) */
+    uint64_t tx_cur, rx_cur;            /* the DMA's current descriptors */
+    bool rbu;                           /* ... none for RX: said */
+    uint32_t tx_len;                    /* a frame being gathered, ... */
+    bool tx_drop;                       /* ... too long: dropped */
+    uint8_t txbuf[RKGMAC_FRAME];
+    uint8_t rxbuf[RKGMAC_FRAME + 4];    /* (with its FCS) */
+    bool link;                          /* the PHY's link */
+    struct {
+        uint16_t bmcr, anar, gbcr, page, insr;
+        uint16_t vnd[6][16];            /* 0x10-0x1f, by page */
+    } phy;
+};
+
 /*
  * rk3576_scmi.c: the SCMI server that TF-A is (the CPU and GPU clocks), on
  * SMC 0x82000010, its shared memory in DRAM's first 2 MiB, which are
@@ -230,6 +259,7 @@ struct RK3576State {
     RkGpio gpio[RK3576_NGPIO];
     RkSpiState spi0;                    /* the display link */
     DwMshcState sdmmc;                  /* the microSD slot */
+    RkGmacState gmac[2];                /* the Ethernet ports */
     RkScmi scmi;                        /* TF-A's SCMI server */
     RkBlock otp;                        /* the OTP's controller */
     uint8_t otp_ns[0x100];              /* ... the part it reads */

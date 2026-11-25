@@ -125,6 +125,10 @@ def cmd_run(args):
         cmd += linux_args(d, args.linux)
     if args.gdb:
         cmd += ["-gdb", f"tcp::{args.gdb}"]
+    if args.net:
+        # the RK3576's first Ethernet port on this PC's network, through
+        # passt (QEMU starts it): NAT, DHCP and DNS, no root needed
+        cmd += ["-nic", "passt"]
     if args.usbip:
         cmd += ["-chardev", f"socket,id=usbip,host=127.0.0.1,port={args.usbip},"
                 "server=on,wait=off",
@@ -482,6 +486,9 @@ def main():
                            help="start Flipper OS's kernel on the RK3576 (a "
                                 "build fetched by scripts/fetch_os.py; the "
                                 "newest unless told)")
+            p.add_argument("--net", action="store_true",
+                           help="a cable in the first Ethernet port, to this "
+                                "PC's network (through passt)")
         if name in ("gui", "shot"):
             p.add_argument("--zoom", type=int)
         if name == "gui":

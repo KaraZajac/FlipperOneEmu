@@ -1004,3 +1004,42 @@ register headers.
     and read back match. Reading 32 MiB takes 4.6 s, against 6.1 s from the microSD: the
     guest's own work bounds both. The Linux check looks for the 64 GB disk on the UFS
     host.
+
+## Ethernet (2026-11-24)
+
+60. **Both Ethernet ports, and a network for the first.** The RK3576's two GMACs and
+    the board's RTL8211F PHYs were unimplemented registers. The stmmac driver got as far
+    as its PHY, which read all zeros over MDIO, and phylink refused it ("validation of
+    rgmii-id ... failed", "cannot attach to PHY"). A spec of what the driver needs came
+    first, read from stmmac and the realtek PHY driver in Flipper's kernel. Then the
+    model, `rk_gmac.c` (DWC Ethernet QoS 4.20a):
+    - **The MAC.** Version 4.20. Its hardware features are as plain as the driver allows:
+      one queue each way, 16 KiB FIFOs and 32-bit DMA, with no checksum offload, TSO,
+      PTP, EEE, VLAN filtering, counters, wake-up frames or split header. An MDIO
+      transfer and a DMA reset are done as they are asked for.
+    - **The DMA**, on GMAC4's 16-byte descriptors. TX goes from the current descriptor
+      to the tail pointer, frame by frame, padded to 60 bytes, and gives each descriptor
+      back. RX writes each frame with its FCS (the driver strips 4 bytes) into the
+      descriptors the driver owns, then raises RI at once; on the chip the RX watchdog
+      raises it a little later, since the driver sets no IOC. A frame that finds too few
+      descriptors waits for the driver's next tail write (RBU).
+    - **The PHY**: an RTL8211F at MDIO address 1. Autonegotiation is instant, and the
+      link is 1000 Mbit/s full duplex while there is one. INSR and INER drive its INTB,
+      which goes low on GPIO1_C1 (port 1) or GPIO1_C2 (port 2), and phylib runs on that
+      interrupt; it does not poll.
+    - **The network.** Each port takes the next `-nic`, and has no link without one: no
+      cable. The launcher's `run --net` puts port 1 on this PC's network through passt,
+      which QEMU starts: NAT, DHCP and DNS, with no root needed. This QEMU has no slirp
+      (libslirp-devel is not installed), and passt is what Fedora installs with podman.
+    The results:
+    - both ports attach "RTL8211F Gigabit Ethernet", and port 1 reports "end0: Link is
+      Up - 1Gbps/Full";
+    - DHCP gives end0 10.10.10.124/24 (passt gives the guest this PC's own address), the
+      gateway answers ping, and DNS resolves;
+    - 8 MiB from a server on this PC to the device took 0.98 s (68 Mbit/s), and 0.78 s
+      back (86 Mbit/s), each matching its MD5;
+    - the monitor's `set_link` takes the link down and up, which the PHY's interrupt
+      brings to Linux;
+    - `ip link set end0 down` and `up` run the driver's whole close and open again.
+    The Linux check looks for both PHYs. With passt installed it runs with `--net` and
+    checks port 1's link, address and gateway.

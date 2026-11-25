@@ -35,12 +35,14 @@ firmware, which shows them) and answers its keys (which the MCU firmware passes 
 their I2C link). Its CPU clusters' clocks come from TF-A's SCMI (cpufreq), its
 temperature sensors, calibrated from its OTP, read the chip warming as its cores run,
 and its 64 GB UFS (blank, as one that nothing was installed on) is a disk to Linux.
+Its two Ethernet ports have their PHYs, and with `--net` the first is on this PC's
+network: DHCP, DNS, and the internet through NAT.
 It reaches its login in two to three minutes, the first boot included
 (TCG emulates eight cores). The MCU switches the RK3576 on and off as on the device:
 Flipper OS's power-off and reboot work, and so does the MCU's own Stop (now and then a
 power-off or reboot waits 90 s for BlueZ's `mpris-proxy`, which has no Bluetooth
 adapter: the Wi-Fi and Bluetooth chip is on USB, not modelled yet). The RK3576's USB,
-network, display outputs and more come next. [RESEARCH.md](RESEARCH.md) is the survey
+display outputs and more come next. [RESEARCH.md](RESEARCH.md) is the survey
 this starts from:
 the device, what Flipper Devices publishes, and what emulating it takes.
 [PLAN.md](PLAN.md) is the order of work; the MCU comes first.
@@ -83,6 +85,8 @@ the MCU switches its power on, and Flipper OS's interface replaces that screen.
 ./flipperoneemu run --bootsel ...    # ... started with BOOTSEL held: the boot ROM's USB boot
 ./flipperoneemu run --usbip 3240 ... # ... its USB given to this PC: sudo scripts/usbip_attach.py
 scripts/fetch_os.py                  # a Flipper OS build: its kernel, initrd and device trees
+./flipperoneemu run --linux --net ... # ... with its first Ethernet port on this PC's
+                                     # network (NAT, through passt: installed with podman)
 ./flipperoneemu run --linux ...      # ... Flipper OS on the RK3576, from the build's
                                      # image on the device's microSD (devices/NAME/sd.img);
                                      # its UFS, devices/NAME/ufs.img, is blank
