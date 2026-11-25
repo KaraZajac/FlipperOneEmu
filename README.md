@@ -46,13 +46,15 @@ and enumerates Flipper OS's USB gadget at high speed: its serial port's login on
 (NCM, with a DHCP server on Flipper OS's side), MTP and the serial port. Its sound card
 (the NAU8822 codec on SAI2) plays, at 48 kHz: to a WAV file, or nowhere (`run --audio`);
 its microphones (the internal one, and a headset's in the jack) hear a WAV file
-(`run --mic`). An NVMe SSD can be put in its M.2 slot (`run --nvme`), on PCIe0.
+(`run --mic`). An NVMe SSD can be put in its M.2 slot (`run --nvme`), on PCIe0, and
+a monitor in its HDMI port (`run --hdmi`): Linux lights it at 1280x720 with its
+console on it, and `shot --hdmi` takes its picture.
 It reaches its login in two to three minutes, the first boot included
 (TCG emulates eight cores). The MCU switches the RK3576 on and off as on the device:
 Flipper OS's power-off and reboot work, and so does the MCU's own Stop (now and then a
 power-off or reboot waits 90 s for BlueZ's `mpris-proxy`, which has no Bluetooth
 adapter: the Wi-Fi and Bluetooth chip is on USB, not modelled yet). The RK3576's
-display outputs and more come next. [RESEARCH.md](RESEARCH.md) is the survey
+DisplayPort (over the USB-C port) and more come next. [RESEARCH.md](RESEARCH.md) is the survey
 this starts from:
 the device, what Flipper Devices publishes, and what emulating it takes.
 [PLAN.md](PLAN.md) is the order of work; the MCU comes first.
@@ -103,6 +105,9 @@ scripts/fetch_os.py                  # a Flipper OS build: its kernel, initrd an
                                      # sound needs pipewire-devel when QEMU is configured)
 ./flipperoneemu run --linux --mic FILE.wav ...  # ... and what its internal microphone
                                      # hears: a WAV file (16-bit PCM), looped
+./flipperoneemu run --linux --hdmi ...  # ... a monitor in the HDMI port (Linux lights it,
+                                     # 1280x720, its console on it; the panel link's
+                                     # `hdmi 1|0` plugs it in and out)
 ./flipperoneemu run --linux --nvme [FILE.img] ...  # ... an NVMe SSD in the M.2 slot,
                                      # its disk a raw image (devices/NAME/nvme.img: a
                                      # blank 256 GB, sparse, unless told)
@@ -129,6 +134,7 @@ scripts/fo_picoboot.py --port 3240 load FIRMWARE.uf2 --reboot
 ./flipperoneemu cli --usb ...         # ... on its USB serial port (a computer plugged in)
 ./flipperoneemu where [-n NAME]      # where each core is: its PC and function
 ./flipperoneemu shot FILE.png        # the screen as a picture
+./flipperoneemu shot --hdmi FILE.png # ... or what the HDMI port shows (run --hdmi)
 ./flipperoneemu status | stop [-n NAME]
 scripts/smoke_test.py                # a throwaway device, checked: PASS or FAIL
 scripts/linux_check.py               # ... with Flipper OS too: boot, screen, keys, sensors,

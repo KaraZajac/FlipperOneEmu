@@ -19,3 +19,4 @@ config FLIPPER_ONE
     select USB_XHCI_SYSBUS
     select PCI_EXPRESS_DESIGNWARE
     select NVME_PCI
+    select EDID

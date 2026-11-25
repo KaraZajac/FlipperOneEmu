@@ -258,6 +258,81 @@ void rk_sai_lrck(void *sai, int hz);
 void rk_sai_set_sink(RkSaiState *s, RkSaiSink *sink, void *opaque);
 void rk_sai_set_source(RkSaiState *s, RkSaiSource *source, void *opaque);
 
+/* rk_iommu.c: a Rockchip IOMMU (v2): its banks' registers, and the
+ * translation of its master's addresses */
+#define TYPE_RK_IOMMU "rk-iommu"
+OBJECT_DECLARE_SIMPLE_TYPE(RkIommuState, RK_IOMMU)
+#define RK_IOMMU_MAX_BANKS 2
+
+typedef struct RkIommuBank {
+    struct RkIommuState *s;
+    uint32_t dte;                       /* DTE_ADDR, as written */
+    bool paging, stall;
+    uint32_t int_raw, int_mask, auto_gating;
+} RkIommuBank;
+
+struct RkIommuState {
+    SysBusDevice parent_obj;
+    MemoryRegion mr[RK_IOMMU_MAX_BANKS];
+    qemu_irq irq;
+    uint32_t nbanks;                    /* (property) */
+    RkIommuBank bank[RK_IOMMU_MAX_BANKS];
+};
+
+/* @iova through @s's tables (its first bank's: the banks are programmed
+ * alike): the physical address; false if nothing is mapped there */
+bool rk_iommu_translate(RkIommuState *s, uint32_t iova, hwaddr *pa);
+
+/* rk_vop2.c: the VOP2 (display controller): its registers, frames and
+ * interrupts; video port 0 (HDMI's) on a QEMU console */
+#define TYPE_RK_VOP2 "rk-vop2"
+OBJECT_DECLARE_SIMPLE_TYPE(RkVop2State, RK_VOP2)
+#define RK_VOP2_NVP     3               /* video ports */
+#define RK_VOP2_SIZE    0x3000
+
+typedef struct RkVop2Port {
+    struct RkVop2State *s;
+    int n;
+} RkVop2Port;
+
+struct RkVop2State {
+    SysBusDevice parent_obj;
+    MemoryRegion mr;
+    uint32_t regs[RK_VOP2_SIZE / 4];
+    uint32_t int_en[2 + RK_VOP2_NVP];   /* SYS0, SYS1, then VP0-2 */
+    uint32_t int_raw[2 + RK_VOP2_NVP];
+    uint8_t pending;                    /* REG_CFG_DONE's, per port */
+    bool glb_en;
+    bool running[RK_VOP2_NVP];
+    bool standby_due[RK_VOP2_NVP];      /* (at the next frame start) */
+    QEMUTimer *frame[RK_VOP2_NVP];
+    RkVop2Port port[RK_VOP2_NVP];
+    qemu_irq irq_sys, irq_vp[RK_VOP2_NVP];
+    RkIommuState *mmu;                  /* its IOMMU (the SoC's to set) */
+    QemuConsole *con;                   /* video port 0's picture */
+    bool dirty;                         /* ... a "done" since its copy */
+    int64_t last_copy;
+};
+
+/* rk_hdmi.c: the HDMI transmitter (DW HDMI QP), its DDC master answering
+ * with the monitor's EDID */
+#define TYPE_RK_HDMI "rk-hdmi"
+OBJECT_DECLARE_SIMPLE_TYPE(RkHdmiState, RK_HDMI)
+#define RK_HDMI_SIZE    0x20000
+
+struct RkHdmiState {
+    SysBusDevice parent_obj;
+    MemoryRegion mr;
+    uint32_t regs[RK_HDMI_SIZE / 4];
+    uint32_t int1;                      /* MAINUNIT_1's interrupts */
+    qemu_irq irq_main;
+    bool connected;                     /* a monitor at the cable's end */
+    uint8_t edid[256];
+};
+
+/* a monitor plugged in, or not: what the DDC master finds */
+void rk_hdmi_plug(RkHdmiState *s, bool connected);
+
 /* rk_gmac.c: an Ethernet MAC (DWC Ethernet QoS 4.20a), with the board's
  * RTL8211F PHY on its MDIO bus */
 #define TYPE_RK_GMAC "rk-gmac"
@@ -375,6 +450,14 @@ struct RK3576State {
                                            looks: their regions' ends */
     RkSaiState sai[RK3576_NSAI];        /* SAI0, SAI2 (the codec's), SAI6
                                            (HDMI's): rk3576_sai() */
+    RkVop2State vop;                    /* the display controller */
+    RkHdmiState hdmi;                   /* ... its HDMI transmitter, */
+    RkBlock hpd;                        /* ... the hotplug line (IOC GRF), */
+    bool hpd_level, hpd_pending;
+    RkBlock hdptx, hdptx_grf;           /* ... the HDMI PHY and its GRF */
+    DeviceState *vop_sys_or;            /* (the VOP's and its IOMMU's line) */
+    RkIommuState vop_mmu;               /* the VOP's IOMMU (two banks) */
+    RkIommuState vdec_mmu;              /* the video decoder's (two) */
     DeviceState *pcie;                  /* PCIe0, the M.2 slot's: QEMU's
                                            DesignWare host, ... */
     RkBlock pcie_apb;                   /* ... Rockchip's registers, */
@@ -394,6 +477,8 @@ struct RK3576State {
 
 /* an SPI of the GIC, as the device tree numbers them */
 qemu_irq rk3576_spi(RK3576State *s, int spi);
+/* a monitor plugged into the HDMI port, or pulled out */
+void rk3576_hdmi_plug(RK3576State *s, bool on);
 /* its devices as at power-on (not the cores, which are the board's to
  * start) */
 void rk3576_reset_devices(RK3576State *s);

@@ -17,7 +17,10 @@ Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
 - Linux reads the main board's chips over the bus it shares with the MCU:
   the INA219 on VSYS, the five INA4230s; its root is the microSD card, and
   its UFS is a 64 GB disk; an NVMe in the M.2 slot (PCIe0, `run --nvme`)
-  is a 256 GB one, and 4 MiB written to it read back the same; USB0 is in
+  is a 256 GB one, and 4 MiB written to it read back the same; a monitor
+  in the HDMI port (`run --hdmi`) lights at 1280x720 with the console on
+  it, the Flipper's screen still fb0, its picture not black, and Linux
+  sees it pulled out and plugged in again; USB0 is in
   its device role with its Type-C port, USB1's root hubs are there, and the
   battery reads (its chain waits on USB0's role switch); each Ethernet port
   has its RTL8211F, and with passt installed port 1 is on this PC's network
@@ -71,6 +74,7 @@ import tempfile
 import threading
 import time
 import wave
+import zlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import smoke_test as st                 # noqa: E402  (its checks and links)
@@ -241,6 +245,26 @@ def mic_wav(path):
                 2 * math.pi * MIC_HZ * i / 48000))) for i in range(3 * 48000)))
 
 
+def png_lit(path):
+    """a PNG's (width, height), as QEMU's screendump writes one, and the
+    share of its rows' bytes (decompressed, filtered) that are not 0: none
+    in a black picture"""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None, 0.0
+    p, idat, size = 8, b"", None
+    while data[:8] == b"\x89PNG\r\n\x1a\n" and p + 8 <= len(data):
+        n, kind = struct.unpack(">I4s", data[p:p + 8])
+        if kind == b"IHDR":
+            size = struct.unpack(">II", data[p + 8:p + 16])
+        elif kind == b"IDAT":
+            idat += data[p + 8:p + 8 + n]
+        p += 12 + n
+    raw = zlib.decompress(idat) if idat else b""
+    return size, 1 - raw.count(0) / len(raw) if raw else 0.0
+
+
 def copy_card(src, dst):
     subprocess.run(["cp", "--reflink=auto", "--sparse=always", str(src),
                     str(dst)], check=True)
@@ -317,6 +341,29 @@ def checks(check, d, out, first_boot, off, net):
                  "cmp /tmp/r /tmp/r2 && echo same", 120)
     check("... and 4 MiB written to it read back the same", rw == ["same"],
           str(rw))
+    # the HDMI port, a monitor in it from the start (`run --hdmi`): Linux
+    # reads its EDID and lights it at 1280x720, the console on it (fbcon's
+    # map:1, fb1) and the Flipper's own screen still fb0; its picture,
+    # QEMU's console, is not black; pulled out and plugged in again
+    hdmi = "/sys/class/drm/card1-HDMI-A-1"
+    seen = con.run(f"cat {hdmi}/status; head -1 {hdmi}/modes; cat "
+                   "/sys/class/graphics/fb0/name /sys/class/graphics/fb1/name")
+    check("HDMI: a monitor, at 1280x720 with the console on it (fb1), the "
+          "Flipper's screen still fb0", seen == ["connected", "1280x720",
+          "flipper_one_dis", "rockchipdrmfb"], str(seen))
+    subprocess.run([sys.executable, str(st.LAUNCHER), "shot", "-n", d.name,
+                    "--hdmi", str(out / "hdmi.png")], stdout=subprocess.DEVNULL)
+    size, lit = png_lit(out / "hdmi.png")
+    check("... and its picture is the console's (1280x720, not black)",
+          size == (1280, 720) and lit > 0.001, f"{size} {lit:.4f}")
+    panel.s.sendall(b"hdmi 0\n")
+    gone = st.until(lambda: con.run(f"cat {hdmi}/status") ==
+                    ["disconnected"], 60 * slow, 2)
+    panel.s.sendall(b"hdmi 1\n")
+    back = st.until(lambda: con.run(f"cat {hdmi}/status") == ["connected"],
+                    60 * slow, 2)
+    check("... pulled out, and plugged in again: Linux sees both",
+          gone and back, f"{gone} {back}")
     usb = con.run("cat /sys/class/usb_role/23000000.usb-role-switch/role; "
                   "ls /sys/class/udc /sys/class/typec | paste -sd' '; "
                   "lsusb | grep -c 'root hub'")
@@ -515,7 +562,7 @@ def main():
            "--linux", "--kernel-args",
            "systemd.mask=serial-getty@flipserial0.service",
            "--audio", str(d / "audio.wav"), "--mic", str(d / "mic.wav"),
-           "--nvme"] + (["--net"] if net else [])
+           "--nvme", "--hdmi"] + (["--net"] if net else [])
     if subprocess.run(run).returncode:
         sys.exit("the device did not start")
     def off():

@@ -86,6 +86,8 @@ struct FlipperOneState {
     bool usb20_sel;             /* the USB mux: the RK3576's, not the MCU's */
     int headset;                /* in the jack: FO_HEADSET_... */
     DeviceState *codec;         /* ... its mic on the NAU8822's RMICP */
+    bool hdmi;                  /* a monitor in the HDMI port */
+    bool hdmi_at_start;         /* ... from the start (property) */
     int ambient_dc;             /* around the device: 0.1 °C */
     bool off;                   /* the board's supply cut (the charger's
                                    ship FET) */
@@ -121,6 +123,10 @@ static void flipper_one_input(void *opaque)
     }
     if (p->headset != s->headset) {
         flipper_one_headset(s, p->headset);
+    }
+    if (p->hdmi != s->hdmi) {
+        s->hdmi = p->hdmi;
+        rk3576_hdmi_plug(&s->rk3576, s->hdmi);
     }
     if (p->ambient_dc != s->ambient_dc) {
         flipper_one_ambient(s, p->ambient_dc);
@@ -781,6 +787,8 @@ static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
     object_property_set_link(OBJECT(&s->rk3576), "i2c2-bus",
                              OBJECT(s->main_bus.bus), &error_abort);
     sysbus_realize(SYS_BUS_DEVICE(&s->rk3576), &error_fatal);
+    s->hdmi = s->panel->hdmi;                   /* (a monitor from the start) */
+    rk3576_hdmi_plug(&s->rk3576, s->hdmi);
     memory_region_add_subregion(get_system_memory(), RK3576_DRAM_BASE,
                                 ms->ram);
     /* its USB0's gadget pulls D+ up for the computer plugged in */
@@ -916,6 +924,7 @@ static void flipper_one_init(MachineState *ms)
     s->panel = FLIPPER_ONE_PANEL(qdev_new(TYPE_FLIPPER_ONE_PANEL));
     object_property_add_child(OBJECT(ms), "panel", OBJECT(s->panel));
     qdev_realize_and_unref(DEVICE(s->panel), NULL, &error_fatal);
+    s->panel->hdmi = s->hdmi_at_start;
 
     /* the RK3576's side of its link to the MCU, for a program until it is
      * emulated: -global flipper-one-host.link=CHARDEV (I2C1 at 0x69, CPU_INT
@@ -1093,6 +1102,16 @@ static void flipper_one_set_bootsel(Object *obj, bool value, Error **errp)
     FLIPPER_ONE(obj)->bootsel = value;
 }
 
+static bool flipper_one_get_hdmi(Object *obj, Error **errp)
+{
+    return FLIPPER_ONE(obj)->hdmi_at_start;
+}
+
+static void flipper_one_set_hdmi(Object *obj, bool value, Error **errp)
+{
+    FLIPPER_ONE(obj)->hdmi_at_start = value;
+}
+
 static void flipper_one_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
@@ -1126,6 +1145,12 @@ static void flipper_one_class_init(ObjectClass *oc, const void *data)
                               flipper_one_set_battery, NULL, NULL);
     object_class_property_set_description(oc, "battery",
         "The battery's charge at the start, 0 to 100 (%); 80 unless told");
+    object_class_property_add_bool(oc, "hdmi", flipper_one_get_hdmi,
+                                   flipper_one_set_hdmi);
+    object_class_property_set_description(oc, "hdmi",
+        "A monitor in the HDMI port from the start (the panel link's "
+        "\"hdmi 1|0\" plugs one in and out); its picture, the VOP's video "
+        "port 0, is QEMU's first graphic console");
 }
 
 static const TypeInfo flipper_one_types[] = {

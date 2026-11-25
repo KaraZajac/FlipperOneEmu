@@ -101,6 +101,8 @@ def cmd_run(args):
     machine = f"flipper-one,flash={d / 'flash.bin'},log=mculog"
     if args.bootsel:
         machine += ",bootsel=on"
+    if getattr(args, "hdmi", False):            # a monitor from the start
+        machine += ",hdmi=on"
     cmd = [str(QEMU), "-M", machine,
            "-chardev", f"file,id=mculog,path={d / 'mcu.log'}",
            "-bios", str(BOOTROM), "-display", "none",
@@ -451,8 +453,20 @@ def png(path, width, height, rgb):
 
 
 def cmd_shot(args):
-    """the screen as the panel shows it, in its colours"""
+    """the screen as the panel shows it, in its colours; or with --hdmi,
+    what the HDMI port gives the monitor (QEMU's console, as it dumps it)"""
     d = device_dir(args.name)
+    if args.hdmi:
+        path = os.path.abspath(args.file)
+        try:
+            pathlib.Path(path).unlink(missing_ok=True)
+            monitor(d, f"screendump {path} -f png")
+        except OSError:
+            die(f"{args.name} is not running")
+        if not os.path.exists(path):
+            die("no picture from the HDMI port")
+        print(f"{args.file}: the HDMI port's picture")
+        return 0
     s = socket.socket(socket.AF_UNIX)
     s.settimeout(2)
     try:
@@ -549,6 +563,11 @@ def main():
                            help="an NVMe SSD in the M.2 slot, its disk a raw "
                                 "image (default devices/NAME/nvme.img: a "
                                 "blank 256 GB the first time)")
+            p.add_argument("--hdmi", action="store_true",
+                           help="a monitor in the HDMI port from the start "
+                                "(1280x720 preferred; `shot --hdmi` takes "
+                                "its picture; the panel link's `hdmi 1|0` "
+                                "plugs one in and out)")
         if name in ("gui", "shot"):
             p.add_argument("--zoom", type=int)
         if name == "gui":
@@ -556,6 +575,8 @@ def main():
                            help="start Flipper OS on the RK3576 too")
         if name == "shot":
             p.add_argument("file")
+            p.add_argument("--hdmi", action="store_true",
+                           help="the HDMI port's picture, not the screen's")
         if name in ("cli", "console"):
             p.add_argument("command", nargs="*", help="one command, then quit")
             p.add_argument("--wait", type=float, default=1.5,

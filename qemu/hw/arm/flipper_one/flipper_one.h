@@ -87,6 +87,8 @@ struct FlipperOnePanelState {
                                            charger, 2 a computer; it stays
                                            when the program goes */
     int headset;                        /* in the jack: FO_HEADSET_... */
+    bool hdmi;                          /* a monitor in the HDMI port; it
+                                           stays when the program goes */
     int ambient_dc;                     /* around the device: 0.1 °C */
     bool powered;                       /* the board has its supply */
     int rk3576;                         /* the RK3576 runs: 1, 0, or -1 (no

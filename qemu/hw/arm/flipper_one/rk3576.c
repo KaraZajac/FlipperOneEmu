@@ -63,6 +63,15 @@
  *             193: the serial audio interfaces Flipper OS enables (SAI2:
  *             the codec's I2S link, SAI6: HDMI's); their DMA requests on
  *             DMAC0's 0/1, DMAC1's 0/1, DMAC2's 4/5
+ *   VOP2      rk_vop2.c, 0x27d00000, SPIs 342 (with its IOMMU's), 379-381:
+ *             the display controller; video port 0 (HDMI's) on a QEMU
+ *             console, read through its IOMMU
+ *   HDMI      rk_hdmi.c, 0x27da0000, SPI 341: the transmitter, its DDC
+ *             master reading the monitor's EDID; the hotplug line in the IOC
+ *             GRF (0x2604a400, SPI 367); the HDPTX PHY (0x2b000000) as kept
+ *             registers, its GRF (0x26032000) locked while its PLL is on
+ *   IOMMUs    rk_iommu.c: the VOP's (0x27d07e00, 0x27d07f00; SPI 342) and
+ *             the video decoder's (0x27b00800, 0x27b00900; SPI 309)
  *   PCIe0     0x22000000 (DBI), 0x2a200000 (Rockchip's registers): the M.2
  *             slot's root complex, QEMU's DesignWare host (a viewport iATU,
  *             the iMSI-RX on SPI 283) with Rockchip's link state and INTx
@@ -141,6 +150,16 @@
 #define PCIE0_APB_SIZE  0x10000
 #define PCIE0_SPI_LEGACY 280
 #define PCIE0_SPI_MSI   283
+#define VOP_BASE        0x27d00000
+#define VOP_SPI_SYS     342
+#define VOP_SPI_VP0     379
+#define HDMI_BASE       0x27da0000
+#define HDMI_SPI_MAIN   341
+#define HDMI_SPI_HPD    367
+#define HPD_BASE        0x2604a400              /* (in the IOC GRF) */
+#define HDPTX_BASE      0x2b000000
+#define HDPTX_SIZE      0x2000
+#define HDPTX_GRF_BASE  0x26032000
 #define TIMER0_BASE     0x2acc0000
 #define TIMER0_SPI      45
 #define UART0_BASE      0x2ad40000
@@ -452,6 +471,58 @@ static void pcie_apb_wrote(RkBlock *b, hwaddr off, uint32_t old, uint32_t v)
     }
 }
 
+/* --------------------------------------------------------- the display */
+
+/* the HDMI's hotplug line, in the IOC GRF (MISC_CON0 at +0x00: bit 1
+ * clears its pending change, bit 2 masks it; HDMI_HPD_STATUS at +0x40:
+ * bit 3 the level, bit 4 a change pending) */
+static void hpd_irq_update(RK3576State *s)
+{
+    qemu_set_irq(rk3576_spi(s, HDMI_SPI_HPD),
+                 s->hpd_pending && !(s->hpd.regs[0] & BIT(2)));
+}
+
+static uint32_t hpd_read(RkBlock *b, hwaddr off)
+{
+    RK3576State *s = b->soc;
+
+    if (off == 0x40) {
+        return (s->hpd_level ? BIT(3) : 0) | (s->hpd_pending ? BIT(4) : 0);
+    }
+    return b->regs[off / 4];
+}
+
+static void hpd_wrote(RkBlock *b, hwaddr off, uint32_t old, uint32_t v)
+{
+    RK3576State *s = b->soc;
+
+    if (off == 0 && (v & BIT(1)) && (v & BIT(17))) {
+        s->hpd_pending = false;         /* (HPD_INT_CLR clears itself) */
+        b->regs[0] &= ~BIT(1);
+    }
+    hpd_irq_update(s);
+}
+
+void rk3576_hdmi_plug(RK3576State *s, bool on)
+{
+    rk_hdmi_plug(&s->hdmi, on);
+    if (on != s->hpd_level) {
+        s->hpd_level = on;
+        s->hpd_pending = true;
+        hpd_irq_update(s);
+    }
+}
+
+/* the HDMI PHY's GRF: its STATUS (+0x80) has the PHY ready, its clock
+ * ready and its PLL locked while CON0 enables the PLL (bit 7) */
+static uint32_t hdptx_grf_read(RkBlock *b, hwaddr off)
+{
+    if (off == 0x80) {
+        return b->regs[0] & BIT(7) ? 0xf : 0;
+    }
+    return b->regs[off / 4];
+}
+
 /* ------------------------------------------------------------ TIMER0 */
 
 #define TMR_ENABLE      0x1
@@ -677,6 +748,15 @@ void rk3576_reset_devices(RK3576State *s)
     }
     memset(s->usbdp.regs, 0, USBDP_SIZE);
     device_cold_reset(s->pcie);                 /* (and what is in its slot) */
+    device_cold_reset(DEVICE(&s->vop_mmu));
+    device_cold_reset(DEVICE(&s->vop));
+    device_cold_reset(DEVICE(&s->hdmi));        /* (the monitor stays) */
+    memset(s->hpd.regs, 0, 0x100);
+    s->hpd_pending = false;
+    hpd_irq_update(s);
+    memset(s->hdptx.regs, 0, HDPTX_SIZE);
+    memset(s->hdptx_grf.regs, 0, 0x100);
+    device_cold_reset(DEVICE(&s->vdec_mmu));
     memset(s->pcie_apb.regs, 0, PCIE0_APB_SIZE);
     pcie_legacy_update(s);
     device_cold_reset(s->ufs_pcie);             /* (the UFS host's PCI side:
@@ -791,6 +871,10 @@ static void rk3576_init(Object *obj)
         object_initialize_child(obj, name, &s->sai[i], TYPE_RK_SAI);
     }
     qdev_init_gpio_in_named(DEVICE(obj), pcie_intx, "pcie0-intx", 4);
+    object_initialize_child(obj, "vop", &s->vop, TYPE_RK_VOP2);
+    object_initialize_child(obj, "hdmi", &s->hdmi, TYPE_RK_HDMI);
+    object_initialize_child(obj, "vop-mmu", &s->vop_mmu, TYPE_RK_IOMMU);
+    object_initialize_child(obj, "vdec-mmu", &s->vdec_mmu, TYPE_RK_IOMMU);
 }
 
 static void rk3576_realize(DeviceState *dev, Error **errp)
@@ -1079,6 +1163,73 @@ static void rk3576_realize(DeviceState *dev, Error **errp)
                   PCIE0_APB_SIZE, true);
     s->pcie_apb.read = pcie_apb_read;
     s->pcie_apb.wrote = pcie_apb_wrote;
+
+    /*
+     * The display: the VOP2, its IOMMU (below), its HDMI transmitter with
+     * the hotplug line in the IOC GRF, the HDMI PHY (its registers kept,
+     * its GRF's status locked while its PLL is on). The VOP's own
+     * interrupt and its IOMMU's share SPI 342.
+     */
+    s->vop_sys_or = qdev_new(TYPE_OR_IRQ);
+    qdev_prop_set_uint16(s->vop_sys_or, "num-lines", 2);
+    qdev_realize_and_unref(s->vop_sys_or, NULL, &error_fatal);
+    qdev_connect_gpio_out(s->vop_sys_or, 0, rk3576_spi(s, VOP_SPI_SYS));
+    s->vop.mmu = &s->vop_mmu;
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->vop), errp)) {
+        return;
+    }
+    memory_region_add_subregion(sysmem, VOP_BASE, sysbus_mmio_get_region(
+                                    SYS_BUS_DEVICE(&s->vop), 0));
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->vop), 0,
+                       qdev_get_gpio_in(s->vop_sys_or, 0));
+    for (int n = 0; n < RK_VOP2_NVP; n++) {
+        sysbus_connect_irq(SYS_BUS_DEVICE(&s->vop), 1 + n,
+                           rk3576_spi(s, VOP_SPI_VP0 + n));
+    }
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->hdmi), errp)) {
+        return;
+    }
+    memory_region_add_subregion(sysmem, HDMI_BASE, sysbus_mmio_get_region(
+                                    SYS_BUS_DEVICE(&s->hdmi), 0));
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->hdmi), 0,
+                       rk3576_spi(s, HDMI_SPI_MAIN));
+    rk_block_init(s, &s->hpd, "rk3576.ioc-grf-hpd", HPD_BASE, 0x100, true);
+    s->hpd.read = hpd_read;
+    s->hpd.wrote = hpd_wrote;
+    rk_block_init(s, &s->hdptx, "rk3576.hdptx", HDPTX_BASE, HDPTX_SIZE,
+                  false);
+    rk_block_init(s, &s->hdptx_grf, "rk3576.hdptx-grf", HDPTX_GRF_BASE,
+                  0x100, true);
+    s->hdptx_grf.read = hdptx_grf_read;
+
+    /* the IOMMUs Flipper OS enables: the VOP's, and the video decoder's,
+     * two banks each */
+    {
+        static const struct {
+            hwaddr bank[2];
+            int spi;
+        } mmus[2] = {
+            { { 0x27d07e00, 0x27d07f00 }, 342 },    /* (shared with the VOP's
+                                                       own interrupt) */
+            { { 0x27b00800, 0x27b00900 }, 309 },
+        };
+        RkIommuState *mmu[2] = { &s->vop_mmu, &s->vdec_mmu };
+
+        for (int i = 0; i < 2; i++) {
+            SysBusDevice *sbd = SYS_BUS_DEVICE(mmu[i]);
+
+            qdev_prop_set_uint32(DEVICE(mmu[i]), "banks", 2);
+            if (!sysbus_realize(sbd, errp)) {
+                return;
+            }
+            for (int b = 0; b < 2; b++) {
+                memory_region_add_subregion(sysmem, mmus[i].bank[b],
+                                            sysbus_mmio_get_region(sbd, b));
+            }
+            sysbus_connect_irq(sbd, 0, i ? rk3576_spi(s, mmus[i].spi) :
+                                  qdev_get_gpio_in(s->vop_sys_or, 1));
+        }
+    }
 
     create_unimplemented_device("rk3576", PERIPH_BASE, PERIPH_SIZE);
 }

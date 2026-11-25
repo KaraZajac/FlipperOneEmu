@@ -90,6 +90,12 @@ headset 1
 What is in the headphone jack, as below: on connecting, and at each change.
 
 ```
+hdmi 1
+```
+
+Whether a monitor is in the HDMI port, as below: on connecting, and at each change.
+
+```
 power off
 power on
 ```
@@ -167,6 +173,18 @@ down (`play`, `volup`, `voldown`, `assist`: the standard's 0, 240, 470 and 135 Î
 the mic line) and let go, and the headset pulled out. The firmware looks at the jack
 every 100 ms and takes a second after a plug goes in to look for the mic; a button
 shorter than that is not seen. The window's Device menu has them (The headphone jack).
+While a headset is in (and no button held), its microphone hears what the internal
+one does (`run --mic`).
+
+```
+hdmi 1
+hdmi 0
+```
+
+A monitor into the HDMI port, and out: its hotplug line rises or falls, and Linux
+reads its EDID (it prefers 1280x720 at 60 Hz) and lights it, or lets it go. What it
+shows is QEMU's first graphic console: `./flipperoneemu shot --hdmi FILE.png` takes
+it. `run --hdmi` has one plugged in from the start. It stays when the program goes.
 
 ```
 ambient 40

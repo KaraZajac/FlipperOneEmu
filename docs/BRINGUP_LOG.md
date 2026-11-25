@@ -1430,3 +1430,68 @@ register headers.
       and stretches every later wait by as much as that boot was over 200 s
       (400 s for a first boot): 2.8 times here, and only the console's 60 s
       "shell answers" was still fixed (now stretched too).
+
+71. **The HDMI port: Flipper OS's console on a monitor.** Until now the RK3576's
+    display path read as unimplemented registers. rockchipdrm still bound (card1),
+    but its IOMMU failed its reset test at every resume ("Error during raw reset"),
+    no monitor was ever found, and `fbcon=map:1` sent the console to an fb1 that
+    did not exist. A spec came first, read from Flipper's own kernel
+    (flipperdevices/flipper-linux-kernel at 08a94c1da821, which carries HDMI 2.1
+    changes mainline does not). It found no risk to the panel: FlipCTL picks its
+    DRM device by driver name, and rockchipdrm's card number is fixed before any
+    display register is read. Now:
+    - **`rk_iommu.c`**, Rockchip's IOMMU (v2), for the VOP's (two banks) and the
+      video decoder's:
+      - DTE_ADDR is kept as written, and a forced reset clears it (the reset
+        test checks both).
+      - Paging and stall follow their commands at once.
+      - Its master's addresses are translated through the two-level table, with
+        v2's 40-bit encoding. The decoder's "Enable paging request timed out" is
+        gone too.
+    - **`rk_vop2.c`**, the VOP2:
+      - VERSION_INFO is the RK3576's.
+      - REG_CFG_DONE holds a port's "done" until its next frame start, and reads
+        back without its write enables (the driver's set-bits skips a write that
+        changes nothing).
+      - The interrupt registers are write-masked.
+      - A video port out of STANDBY runs at 60 frames a second, raising FS and
+        FS_FIELD; a STANDBY stops it, with DSP_HOLD_VALID. The tick runs only
+        while something waits for it.
+      - Video port 0 (HDMI's) is QEMU's first graphic console. It is composed
+        only when asked (a screendump): the windows its OVL_LAYER_SEL stacks,
+        read through the IOMMU.
+    - **`rk_hdmi.c`**, the HDMI transmitter. Its DDC master does one byte per
+      operation and gives the monitor's EDID at 0x50, NACKing anything else. The
+      EDID is QEMU's, its preferred timing replaced with CTA-861's 720p60.
+    - **In `rk3576.c`**:
+      - the hotplug line in the IOC GRF (its level, a pending change, mask and
+        clear, SPI 367);
+      - the HDMI PHY's registers, kept, with its GRF status locked while CON0
+        enables its PLL;
+      - the VOP's interrupt and its IOMMU's ORed onto SPI 342.
+    - **The board.** `run --hdmi` has a monitor in the port from the start; the
+      panel link's `hdmi 1|0` plugs one in and out; `shot --hdmi FILE.png` takes
+      the picture (QEMU's screendump).
+    Three model bugs on the way, each found from what Linux showed:
+    - **800x600, not 720p.** QEMU's EDID describes 1280x720 with a timing of its
+      own (an odd pixel clock), which the HDMI PHY's rate table does not have.
+      Linux left that mode out and took 800x600. The preferred timing is now
+      CTA-861's 720p60 (74.25 MHz).
+    - **DDC transfers that never started.** After a NACKed transfer the driver
+      only soft-resets the I2C master, without clearing its operation bits. The
+      model started a transfer only when those bits went from 0 to set, so the
+      next one never did. They now clear themselves when a transfer is done, and
+      with the soft reset.
+    - **255 EDID extensions.** QEMU's generator counts extensions up from what byte
+      126 already holds, and the model had filled the buffer with 0xff first. Linux
+      then read 255 invalid extension blocks, 32,768 single-byte transfers per
+      EDID read. The buffer is zeroed first now.
+    With a monitor from the start, Linux finds HDMI-A-1 connected with 1280x720
+    first, lights it, and fbcon puts tty1 there as fb1 (rockchipdrmfb). The panel
+    stays fb0, and FlipCTL keeps drawing on it. `shot --hdmi` shows Debian's login
+    prompt on tty1. The Linux check now has a monitor in from the start and
+    checks:
+    - the mode, the console's fb1 and the panel's fb0;
+    - a picture that is not black;
+    - Linux seeing the monitor pulled out and plugged in again.
+    All 40 checks pass, the reboot and the power cycle included.

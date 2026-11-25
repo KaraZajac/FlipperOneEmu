@@ -131,6 +131,7 @@ static void panel_everything(FlipperOnePanelState *s)
     panel_rows(s, true);
     flipper_link_send(&s->lk, "usb %d\n", s->usb);
     flipper_link_send(&s->lk, "headset %s\n", headset_names[s->headset]);
+    flipper_link_send(&s->lk, "hdmi %d\n", s->hdmi);
     flipper_link_send(&s->lk, "power %s\n", s->powered ? "on" : "off");
     panel_ambient(s);
     if (s->rk3576 >= 0) {
@@ -208,6 +209,11 @@ static void panel_line(void *opaque, char *line)
                 panel_input(s);
             }
         }
+    } else if (!strcmp(line, "hdmi") && arg && (arg[0] == '0' ||
+                                               arg[0] == '1') && !arg[1]) {
+        s->hdmi = arg[0] == '1';
+        flipper_link_send(&s->lk, "hdmi %d\n", s->hdmi);
+        panel_input(s);
     } else if (!strcmp(line, "usb") && arg && arg[0] >= '0' &&
                arg[0] <= '2' && !arg[1]) {
         s->usb = arg[0] - '0';
