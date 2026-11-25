@@ -1043,3 +1043,13 @@ register headers.
     - `ip link set end0 down` and `up` run the driver's whole close and open again.
     The Linux check looks for both PHYs. With passt installed it runs with `--net` and
     checks port 1's link, address and gateway.
+
+61. **SSH from this PC.** Flipper OS runs OpenSSH, socket-activated, on port 22.
+    `run --ssh PORT` gives port 1 its network, as `--net` does, and passt forwards this
+    PC's PORT to the device's port 22 (`-nic passt,tcp-ports=127.0.0.1/PORT:22`).
+    passt bound the port on every interface until it was given the address; on
+    loopback only, the device is not open to the LAN. The banner comes through,
+    `SSH-2.0-OpenSSH_10.0p2 Debian-7+deb13u4`. The first connection waits for sshd to
+    start, a few seconds here. How to log in is Flipper OS's business, since `user` has
+    a password of its own: the console logs in by itself, and `passwd` there, or a key
+    in `~/.ssh/authorized_keys`, opens SSH.

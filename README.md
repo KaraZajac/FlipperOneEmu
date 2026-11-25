@@ -87,6 +87,9 @@ the MCU switches its power on, and Flipper OS's interface replaces that screen.
 scripts/fetch_os.py                  # a Flipper OS build: its kernel, initrd and device trees
 ./flipperoneemu run --linux --net ... # ... with its first Ethernet port on this PC's
                                      # network (NAT, through passt: installed with podman)
+./flipperoneemu run --linux --ssh 2222 ...  # ... and this PC's port 2222 to its SSH:
+                                     # ssh -p 2222 user@127.0.0.1 (set a password with
+                                     # passwd on its console first, which logs in itself)
 ./flipperoneemu run --linux ...      # ... Flipper OS on the RK3576, from the build's
                                      # image on the device's microSD (devices/NAME/sd.img);
                                      # its UFS, devices/NAME/ufs.img, is blank

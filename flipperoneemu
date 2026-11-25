@@ -125,10 +125,12 @@ def cmd_run(args):
         cmd += linux_args(d, args.linux)
     if args.gdb:
         cmd += ["-gdb", f"tcp::{args.gdb}"]
-    if args.net:
+    if args.net or args.ssh:
         # the RK3576's first Ethernet port on this PC's network, through
-        # passt (QEMU starts it): NAT, DHCP and DNS, no root needed
-        cmd += ["-nic", "passt"]
+        # passt (QEMU starts it): NAT, DHCP and DNS, no root needed; and
+        # this PC's port (on its loopback only) to the device's SSH
+        cmd += ["-nic", "passt" + (f",tcp-ports=127.0.0.1/{args.ssh}:22"
+                                   if args.ssh else "")]
     if args.usbip:
         cmd += ["-chardev", f"socket,id=usbip,host=127.0.0.1,port={args.usbip},"
                 "server=on,wait=off",
@@ -489,6 +491,9 @@ def main():
             p.add_argument("--net", action="store_true",
                            help="a cable in the first Ethernet port, to this "
                                 "PC's network (through passt)")
+            p.add_argument("--ssh", type=int, metavar="PORT",
+                           help="... and this PC's PORT to Flipper OS's SSH "
+                                "(port 22): ssh -p PORT user@127.0.0.1")
         if name in ("gui", "shot"):
             p.add_argument("--zoom", type=int)
         if name == "gui":

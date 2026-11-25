@@ -125,8 +125,8 @@ screen and its CLI.
 
 ## M5: Flipper OS's hardware ☐
 - ◐ Ethernet (GMAC, dwmac 4.20a, RTL8211F): both ports and their PHYs; the first on the
-      host's network through passt (`run --net`) (2026-11-24); the second's own network,
-      port forwards (SSH from the host)
+      host's network through passt (`run --net`), SSH from the host (`run --ssh PORT`)
+      (2026-11-24); a network for the second port
 - ☐ USB: the gadget on USB-C1 (NCM, MTP, ACM) over USB/IP; the host controller and its hub
 - ☐ M.2 and PCIe, audio (NAU8822), HDMI, the RTC, the power chips on I2C2
 - ☐ Wi-Fi (the MT7921 on USB)
