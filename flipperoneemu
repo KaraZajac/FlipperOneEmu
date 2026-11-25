@@ -144,6 +144,14 @@ def cmd_run(args):
              if args.audio.endswith(".wav") else args.audio)
     cmd += ["-audiodev", f"{audio},id=snd0,out.frequency=48000",
             "-global", "nau8822.audiodev=snd0"]
+    # the HDMI port's picture (QEMU's first graphic console), live, to a VNC
+    # viewer on this PC: its loopback only
+    if getattr(args, "vnc", None):
+        if not 5900 <= args.vnc <= 65535:
+            die("--vnc: a port from 5900 on")
+        if not (QEMU.parent / "pc-bios" / "keymaps" / "en-us").exists():
+            die("--vnc: QEMU's keymap is not built: scripts/setup_qemu.sh")
+        cmd += ["-vnc", f"127.0.0.1:{args.vnc - 5900}"]
     # what the codec's internal microphone hears: a WAV file, looped
     if getattr(args, "mic", None):
         if not os.path.isfile(args.mic):
@@ -568,6 +576,9 @@ def main():
                                 "(1280x720 preferred; `shot --hdmi` takes "
                                 "its picture; the panel link's `hdmi 1|0` "
                                 "plugs one in and out)")
+            p.add_argument("--vnc", type=int, metavar="PORT",
+                           help="... and what it shows, live, to a VNC "
+                                "viewer at 127.0.0.1:PORT (5900 on)")
         if name in ("gui", "shot"):
             p.add_argument("--zoom", type=int)
         if name == "gui":

@@ -108,6 +108,8 @@ scripts/fetch_os.py                  # a Flipper OS build: its kernel, initrd an
 ./flipperoneemu run --linux --hdmi ...  # ... a monitor in the HDMI port (Linux lights it,
                                      # 1280x720, its console on it; the panel link's
                                      # `hdmi 1|0` plugs it in and out)
+./flipperoneemu run --linux --hdmi --vnc 5901 ...  # ... and its picture, live, to a VNC
+                                     # viewer at 127.0.0.1:5901
 ./flipperoneemu run --linux --nvme [FILE.img] ...  # ... an NVMe SSD in the M.2 slot,
                                      # its disk a raw image (devices/NAME/nvme.img: a
                                      # blank 256 GB, sparse, unless told)

@@ -38,7 +38,7 @@ revive_venv() {
 
 if [[ "${1:-}" == "--build" ]]; then
     revive_venv
-    exec ninja -C "$BUILD" qemu-system-aarch64
+    exec ninja -C "$BUILD" qemu-system-aarch64 pc-bios/keymaps/en-us
 fi
 
 mkdir -p "$TP" "$BUILD"
@@ -136,5 +136,6 @@ fi
 revive_venv
 
 echo ">> building"
-ninja -C "$BUILD" qemu-system-aarch64 qemu-img
+# (en-us: the keymap QEMU's VNC server needs, for `run --vnc`)
+ninja -C "$BUILD" qemu-system-aarch64 qemu-img pc-bios/keymaps/en-us
 echo ">> $BUILD/qemu-system-aarch64"

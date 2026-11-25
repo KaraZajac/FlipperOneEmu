@@ -1513,3 +1513,12 @@ register headers.
       Nothing tells it that no DP monitor is there: simple-card gives the DP codec
       no jack. The device would most likely do the same; that is Flipper OS's
       policy, not the emulator's. The Linux check plays to `hw:NAU8822` directly.
+
+73. **The HDMI picture, live.** `run --vnc PORT` gives QEMU's first graphic console,
+    the HDMI port's picture, to a VNC viewer at 127.0.0.1:PORT (this PC's loopback
+    only). It is composed when the viewer asks, as for a screenshot. QEMU's VNC
+    server needs a keymap. The build made none: its keymaps are targets of their
+    own, and only the emulator and qemu-img were built. scripts/setup_qemu.sh now
+    builds en-us too, and the launcher says so if it is missing. A minimal RFB
+    client gets the handshake, the console's size and a frame: 640x480 and black
+    with no signal.
