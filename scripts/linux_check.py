@@ -27,7 +27,8 @@ Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
   its device role with its Type-C port, USB1's root hubs are there, and the
   battery reads (its chain waits on USB0's role switch); the MT7921's
   Bluetooth is on USB1 with its firmware loaded, hci0, BlueZ's controller
-  powered, a scan starts and finds nothing; its Wi-Fi is mt7921u's with its
+  powered, a scan finds the LE beacon near it, nothing else; its Wi-Fi is
+  mt7921u's with its
   firmware running, wlx000ce7464f02, NetworkManager's, and a scan completes
   and finds nothing, or with passt (`run --wifi`) the access point near it,
   whose open network NetworkManager joins (an address by DHCP, a gateway that
@@ -540,9 +541,12 @@ def checks(check, d, out, first_boot, off, net):
           any("Manufacturer: 0x0046" in x for x in show),
           " / ".join(show[:4]))
     scan = con.run("timeout 30 bluetoothctl --timeout 10 scan on", 60) or []
-    check("... a scan (inquiry and LE) starts, and finds nothing",
-          any("Discovery started" in x for x in scan) and
-          not any("[NEW] Device" in x for x in scan), " / ".join(scan[-3:]))
+    found = [x for x in scan if "[NEW] Device" in x]
+    check("... a scan (inquiry and LE) finds the beacon near it "
+          "(non-connectable, LE), nothing else",
+          any("Discovery started" in x for x in scan) and len(found) == 1 and
+          "C0:FE:46:4F:42:01 FlipperOneEmu Beacon" in found[0],
+          " / ".join(found or scan[-3:]))
     # its Wi-Fi: mt7921u on interface 3 of the same chip, its firmware
     # running; NetworkManager's; a scan that finds nothing (no radio)
     wifi = con.run("W=$(ls /sys/class/ieee80211/phy0/device/net/ | head -1); "
@@ -567,6 +571,7 @@ def checks(check, d, out, first_boot, off, net):
         # through passt
         check("... a scan finds the access point near it, its two networks "
               "(run --wifi)", wifi[-1:] == ["scan 0 2"], str(wifi))
+        led = panel.leds[1:2]                   # (the Wi-Fi LED, off)
         join = con.run("W=$(ls /sys/class/ieee80211/phy0/device/net/ | head "
                        "-1); sudo timeout 90 nmcli dev wifi connect "
                        "FlipperOneEmu ifname $W >/dev/null 2>&1; echo $?; "
@@ -580,6 +585,10 @@ def checks(check, d, out, first_boot, off, net):
               len(join) == 4 and join[0] == "0" and "/" in join[1] and
               join[2] == "ping 0" and "SSID: FlipperOneEmu" in join[3] and
               "signal: -42 dBm" in join[3], str(join))
+        check("... and Flipper OS lights the Wi-Fi LED (the MCU's chain)",
+              led == ["000000"] and st.until(
+                  lambda: panel.leds[1:2] not in ([], ["000000"]), 15),
+              f"{led} -> {panel.leds[1:2]}")
         wpa = con.run("W=$(ls /sys/class/ieee80211/phy0/device/net/ | head "
                       "-1); sudo timeout 90 nmcli dev wifi connect "
                       "FlipperOneEmu-WPA2 password flipperone ifname $W "

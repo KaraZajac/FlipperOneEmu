@@ -27,8 +27,9 @@
  *   ID 70), BR/EDR and LE, with what it claims in its features and its
  *   supported commands answered: the HCI core's initialisation, BlueZ's
  *   settings, inquiry (complete after its length, no device found), LE
- *   scanning and advertising (no reports), connections (pages time out).
- *   No radio: nothing is ever found, nothing connects. The values not
+ *   scanning and advertising, connections (pages time out). No radio:
+ *   nothing connects; an LE scan finds a beacon near the Flipper, a
+ *   non-connectable one ("FlipperOneEmu Beacon"). The values not
  *   fixed by the protocol (its subversion, the TX powers, the lists'
  *   sizes) are a typical controller's, not read from a device.
  *
@@ -129,6 +130,10 @@ struct MT7921State {
     uint8_t page_op;                    /* ... which (0: none) */
     uint8_t page_addr[6];
     bool le_connecting;
+    QEMUTimer *beacon_ble;              /* an LE scan's: the beacon's
+                                           advertisement, now and then */
+    bool le_scan_dup;                   /* ... once a scan, the host
+                                           filtering duplicates */
     /* the chip's registers: std and uhw, the Bluetooth's and Wi-Fi's */
     GHashTable *regs;                   /* address → value (else 0) */
     /* its Wi-Fi */
@@ -392,6 +397,7 @@ static void controller_reset(MT7921State *s)
     timer_del(s->page);
     s->page_op = 0;
     s->le_connecting = false;
+    timer_del(s->beacon_ble);
     s->scan_enable = 0;
     s->inquiry_mode = 0;
     s->page_scan_type = 0;
@@ -407,6 +413,34 @@ static void controller_reset(MT7921State *s)
     memset(s->eir, 0, sizeof(s->eir));
     memset(s->cod, 0, sizeof(s->cod));
     memset(s->name, 0, sizeof(s->name));
+}
+
+/* the beacon near the Flipper: an LE Advertising Report (non-connectable,
+ * a random static address; its flags, general discoverable, and its name;
+ * -60 dBm), every second, or once a scan when the host filters duplicates
+ * (BlueZ's passive scan, always on, then sees it once) */
+static void beacon_ble(void *opaque)
+{
+    MT7921State *s = opaque;
+    static const char name[] = "FlipperOneEmu Beacon";
+    uint8_t e[64] = { 0x02, 1, 0x03, 0x01,      /* LE Advertising Report:
+                                                   one, ADV_NONCONN_IND,
+                                                   random */
+                      0x01, 0x42, 0x4f, 0x46, 0xfe, 0xc0 };
+    int n = 11;
+
+    e[n++] = 2, e[n++] = 0x01, e[n++] = 0x06;   /* flags: general
+                                                   discoverable, no BR/EDR */
+    e[n++] = sizeof(name), e[n++] = 0x09;       /* its complete name */
+    memcpy(e + n, name, sizeof(name) - 1);
+    n += sizeof(name) - 1;
+    e[10] = n - 11;                             /* (the data's length) */
+    e[n++] = (uint8_t)-60;
+    ev_put(s, 0x3e, e, n);
+    if (!s->le_scan_dup) {
+        timer_mod(s->beacon_ble, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                  NANOSECONDS_PER_SECOND);
+    }
 }
 
 static void inquiry_done(void *opaque)
@@ -846,6 +880,17 @@ static void hci_command(MT7921State *s, const uint8_t *pkt, int len)
         r[2] = 10;
         ev_cc(s, op, r, 3);
         break;
+    case 0x200c:                                /* LE Set Scan Enable: the
+                                                   beacon in it */
+        if (plen && p[0]) {
+            s->le_scan_dup = plen > 1 && p[1];
+            timer_mod(s->beacon_ble, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                      200 * SCALE_MS);
+        } else {
+            timer_del(s->beacon_ble);
+        }
+        ev_cc_status(s, op, 0);
+        break;
     case 0x2001:                                /* LE Set Event Mask */
     case 0x2005:                                /* LE Set Random Address */
     case 0x2006:                                /* LE Set Advertising
@@ -854,7 +899,6 @@ static void hci_command(MT7921State *s, const uint8_t *pkt, int len)
     case 0x2009:                                /* LE Set Scan Response Data */
     case 0x200a:                                /* LE Set Advertising Enable */
     case 0x200b:                                /* LE Set Scan Parameters */
-    case 0x200c:                                /* LE Set Scan Enable */
     case 0x2010:                                /* LE Clear Filter Accept
                                                    List */
     case 0x2011:                                /* LE Add Device To ... */
@@ -1999,6 +2043,7 @@ static void mt7921_realize(USBDevice *dev, Error **errp)
     s->evq = g_byte_array_new();
     s->inquiry = timer_new_ns(QEMU_CLOCK_VIRTUAL, inquiry_done, s);
     s->page = timer_new_ns(QEMU_CLOCK_VIRTUAL, page_done, s);
+    s->beacon_ble = timer_new_ns(QEMU_CLOCK_VIRTUAL, beacon_ble, s);
     s->scan = timer_new_ns(QEMU_CLOCK_VIRTUAL, scan_done, s);
     s->beacon = timer_new_ns(QEMU_CLOCK_VIRTUAL, ap_beacon, s);
     s->ap_reply = timer_new_ns(QEMU_CLOCK_VIRTUAL, ap_reply_now, s);

@@ -2615,3 +2615,43 @@ register headers.
        - QEMU's log has nothing from the chip.
        - linux_check joins the open network, then the WPA2 one (423 s).
          Its U-Boot mode (460 s), MaskROM mode and the smoke test pass.
+
+104. **An LE beacon near the Flipper; the Wi-Fi LED; the window's network.**
+     - **The beacon.** BlueZ's scans found nothing, since there is no radio.
+       Now, while the host scans, the MT7921's controller hears a beacon:
+       - LE Advertising Reports of a non-connectable advertiser
+         (ADV_NONCONN_IND);
+       - a random static address, C0:FE:46:4F:42:01;
+       - its flags and its name, "FlipperOneEmu Beacon";
+       - −60 dBm.
+
+       `bluetoothctl scan on` lists it. The LE features leave extended
+       advertising out, so BlueZ scans with the legacy commands and reads
+       the legacy reports.
+     - **Its flags matter.** With flags 0x04 (no BR/EDR) alone, btmon showed
+       the reports reaching the kernel and the kernel's Device Found
+       reaching bluetoothd, which made no device of them. In a discovery
+       without a filter, BlueZ takes an LE device only if its flags say
+       general or limited discoverable. The beacon's flags are now 0x06.
+     - **Duplicates.** Flipper OS keeps a passive LE scan running. Every scan
+       it enables, passive or active, turns duplicate filtering off: the
+       kernel does that while an advertisement monitor is registered. So
+       the controller reports the beacon every second, as a real one would
+       hear it. If the host filters duplicates, it reports once per scan.
+     - When a discovery ends, BlueZ drops the device at once, because it is
+       temporary and not connectable: `bluetoothctl devices` is empty
+       afterwards.
+     - **The Wi-Fi LED.** With `--wifi`, once NetworkManager joins the open
+       network, Flipper OS lights the Wi-Fi LED (flipper-one:rgb:wifi). The
+       panel link reports it (007e7c), through the MCU's WS2812 chain.
+       FlipCTL has no Bluetooth screen: its Network menu ends at Ethernet.
+     - **The window.** `gui --net --wifi` passes both options to its device
+       (f349ffa).
+     - **Checked.** linux_check's Bluetooth scan finds the beacon and
+       nothing else. With `--wifi`, it checks that the Wi-Fi LED is off
+       before the join and lit after it.
+       - linux_check passes (523 s), as do its U-Boot mode (516 s), its
+         MaskROM mode and the smoke test.
+       - linux_check's reboot and power-off steps vary from run to run
+         (27-45 s and 16-42 s across the last seven runs), with or without
+         the beacon.
