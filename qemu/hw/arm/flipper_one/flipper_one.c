@@ -92,6 +92,12 @@ struct FlipperOneState {
     int usb;                    /* in the port: 0 nothing, 1 a charger, 2 a
                                    computer */
     bool usb20_sel;             /* the USB mux: the RK3576's, not the MCU's */
+    QEMUTimer *expander_reset[2];   /* RESET low long enough: the control
+                                       bus's expander, the main one's */
+    bool maskrom_strap;         /* MASKROM_EN (BOOT0, the main expander's pin
+                                   15): SARADC_VIN0_BOOT pulled to ground */
+    bool in_maskrom;            /* ... the RK3576 started with it: its boot
+                                   ROM waits for USB, nothing more runs */
     int headset;                /* in the jack: FO_HEADSET_... */
     DeviceState *codec;         /* ... its mic on the NAU8822's RMICP */
     bool hdmi;                  /* a monitor in the HDMI port */
@@ -279,6 +285,32 @@ static void flipper_one_power_back(void *opaque)
     flipper_one_power(opaque, true);
 }
 
+/* MASKROM_EN (the docs' BOOT0): it pulls the RK3576's SARADC_VIN0_BOOT to
+ * ground, which its boot ROM reads at reset: then it skips every boot
+ * medium and waits in its USB download mode. The MCU's Maskrom cuts the
+ * rail and raises it with this, which it lets go a second later */
+static void flipper_one_maskrom(void *opaque, int n, int level)
+{
+    FlipperOneState *s = opaque;
+
+    s->maskrom_strap = level;
+}
+
+/*
+ * The device as the emulator starts it: in use, Flipper OS on, its MCU just
+ * starting (as after a firmware update, or a watchdog's reset). An MCU
+ * restart leaves the main expander as it was: it still drives the Linux
+ * side's rails and the USB mux to it, and the firmware's start keeps them
+ * (its "Host is powered" path). After the board's power is cut, it starts
+ * cold instead: the enables pulled down, the Linux side off until it is
+ * started (the Power tab's Start Flipper OS). So does a start with BOOTSEL
+ * held, a power-on with the button down: the boot ROM's USB boot has the
+ * USB-C port, which a mux left on the Linux side would keep from it
+ */
+#define MAIN_INPUTS     0x00ff      /* the main expander's pins 0-7 */
+#define MAIN_HOST_ON    ((1 << 8) | (1 << 11) | (1 << 12))  /* USB20_SEL,
+                                       VCC5V0_DEV_S0_EN, VCC5V0_SYS_S5_EN */
+
 static void flipper_one_usb20_sel(void *opaque, int n, int level)
 {
     FlipperOneState *s = opaque;
@@ -354,15 +386,47 @@ static void flipper_one_host_power(void *opaque, int n, int level)
     s->rk_rail = level;
 }
 
-/* the expanders' RESET: GPIO43 (the control bus's), GPIO38 (the main
- * board's), open drain with the board's pull-ups */
+/*
+ * The expanders' RESET: GPIO43 (the control bus's), GPIO38 (the main
+ * board's), open drain with the board's pull-ups; a low resets a chip only
+ * when it lasts. The firmware's open-drain setup of the pins drives them
+ * low for a few instructions (OUTOVER low before it lets the pin go): the
+ * chips would be reset at every MCU start, and the main one's rails with
+ * them, where the firmware has a powered host run on across an MCU
+ * restart. On the board that glitch does not reset them. Here a low resets
+ * them once it has lasted 100 us (the virtual clock follows the host's, so
+ * a few instructions can take a while); the firmware's own resets hold it
+ * 50 ms.
+ */
+#define EXPANDER_RESET_NS   100000
+
+static void flipper_one_buttons_reset(void *opaque)
+{
+    FlipperOneState *s = opaque;
+
+    qemu_set_irq(qdev_get_gpio_in(DEVICE(s->buttons), 0), 0);
+}
+
+static void flipper_one_main_reset(void *opaque)
+{
+    FlipperOneState *s = opaque;
+
+    qemu_set_irq(qdev_get_gpio_in(DEVICE(s->main_expander), 0), 0);
+}
+
 static void flipper_one_expander_reset(void *opaque, int pin, bool level,
                                        int64_t when_ns)
 {
     FlipperOneState *s = opaque;
-    I2CSlave *dev = pin == 43 ? s->buttons : s->main_expander;
+    int i = pin == 43 ? 0 : 1;
+    I2CSlave *dev = i ? s->main_expander : s->buttons;
 
-    qemu_set_irq(qdev_get_gpio_in(DEVICE(dev), 0), level);
+    if (!level) {
+        timer_mod(s->expander_reset[i], when_ns + EXPANDER_RESET_NS);
+    } else {
+        timer_del(s->expander_reset[i]);
+        qemu_set_irq(qdev_get_gpio_in(DEVICE(dev), 0), 1);
+    }
 }
 
 static void flipper_one_touch_rdy(void *opaque, int n, int level)
@@ -835,8 +899,12 @@ static void fo_rk_power_bh(void *opaque)
                                                    goes, whatever it is) */
         g_byte_array_set_size(s->last_frame, 0);
     }
+    s->in_maskrom = want != RK_OFF && s->maskrom_strap;
     if (want == RK_OFF) {
         rk3576_power_lost(&s->rk3576);
+    } else if (s->in_maskrom) {
+        /* its boot ROM in its USB download mode, the strap read at the
+         * reset: what it does there is not modelled, so nothing starts */
     } else if (s->uboot) {                      /* the DDR blob, then SPL */
         rk3576_ddr_blob(&s->rk3576, MACHINE(s)->ram_size);
         entry = fo_spl(s);
@@ -872,7 +940,10 @@ static void fo_rk_power_bh(void *opaque)
     }
     qemu_log("flipper-one: %" PRId64 " ms: the RK3576 %s\n",
              qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL),
-             want == RK_OFF ? "is off" : !entry ? "has nothing to start" :
+             want == RK_OFF ? "is off" :
+             s->in_maskrom ? "waits in its MaskROM (its boot ROM's USB "
+                             "download mode, not modelled)" :
+             !entry ? "has nothing to start" :
              want == RK_ON ? "starts" : "starts again");
     fo_panel_rk3576(s->panel, s->rk_on);
 }
@@ -1202,7 +1273,18 @@ static void flipper_one_init(MachineState *ms)
     qdev_connect_gpio_out_named(DEVICE(s->main_expander), "pins", 12,
                                 qemu_allocate_irq(flipper_one_host_power, s,
                                                   0));
-    s->main_inputs = 0xffff;                    /* pulled up */
+    qdev_connect_gpio_out_named(DEVICE(s->main_expander), "pins", 15,
+                                qemu_allocate_irq(flipper_one_maskrom, s, 0));
+    /* pins 0-7 are inputs, the board's faults, interrupts and power-goods,
+     * open drain: pulled up. 8-15 are enables (the rails, the USB mux,
+     * MASKROM_EN): pulled down, so that they are off while the expander's
+     * pins are inputs. The firmware's init reads them back and keeps what
+     * it finds: across an MCU restart the levels the expander still drives
+     * (Linux runs on); from a cold start, nothing on */
+    s->main_inputs = MAIN_INPUTS;
+    if (!s->bootsel) {
+        pcal6416_preset(s->main_expander, MAIN_INPUTS, MAIN_HOST_ON);
+    }
     s->battery.load_ma = 40;
     bq28z620_attach(i2c_slave_create_simple(s->main_bus.bus, "bq28z620",
                                             0x55), &s->battery);
@@ -1245,6 +1327,10 @@ static void flipper_one_init(MachineState *ms)
     qdev_realize_and_unref(s->usb_host, NULL, &error_fatal);
     s->mcu.usb.pullup_fn = fo_usb_host_pullup;
     s->mcu.usb.pullup_opaque = s->usb_host;
+    s->expander_reset[0] = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                        flipper_one_buttons_reset, s);
+    s->expander_reset[1] = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                        flipper_one_main_reset, s);
     rp2350_pin_listen(&s->mcu, 43, flipper_one_expander_reset, s);
     rp2350_pin_listen(&s->mcu, 38, flipper_one_expander_reset, s);
 

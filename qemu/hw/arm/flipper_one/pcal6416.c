@@ -55,6 +55,9 @@ struct Pcal6416State {
     qemu_irq pin_out[16];           /* "pins": an output's level (1: driven
                                        high; an input or low: 0) */
     uint16_t driven;                /* ... as last told */
+    bool preset;                    /* its first reset (the machine's start)
+                                       takes these: */
+    uint16_t preset_config, preset_output;
 };
 
 /* a command byte's register and port (byte), or -1 */
@@ -203,6 +206,15 @@ void pcal6416_set_pins(I2CSlave *dev, uint16_t levels)
     pcal_update(s);
 }
 
+void pcal6416_preset(I2CSlave *dev, uint16_t config, uint16_t output)
+{
+    Pcal6416State *s = PCAL6416(dev);
+
+    s->preset = true;
+    s->preset_config = config;
+    s->preset_output = output;
+}
+
 static void pcal_reset(DeviceState *dev)
 {
     Pcal6416State *s = PCAL6416(dev);
@@ -213,6 +225,11 @@ static void pcal_reset(DeviceState *dev)
     s->r[R_DRIVE0] = s->r[R_DRIVE1] = 0xffff;
     s->r[R_PULL_SEL] = 0xffff;
     s->r[R_INT_MASK] = 0xffff;                  /* all masked */
+    if (s->preset) {                            /* (once) */
+        s->preset = false;
+        s->r[R_CONFIG] = s->preset_config;
+        s->r[R_OUTPUT] = s->preset_output;
+    }
     s->out_conf = 0;
     s->command = 0;
     s->have_command = false;

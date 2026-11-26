@@ -27,7 +27,9 @@ into its USB-C port, and the battery charges; a computer plugged in gets its USB
 port, also as a real USB device on this PC (USB/IP), and the firmware can be updated as
 picotool updates it, through the RP2350's boot ROM. Its `power reboot` power-cycles the
 board through the charger, and its power off (ship mode) turns it off until a charger
-is plugged in. The RK3576 (four Cortex-A53s and four A72s) boots a published
+is plugged in; after either, as on the device, Flipper OS stays off until the Power
+tab's Start Flipper OS (the emulator itself starts as a device in use, Flipper OS on).
+The MCU's Maskrom puts the RK3576 in its MaskROM (BOOT0). The RK3576 (four Cortex-A53s and four A72s) boots a published
 Flipper OS build from its image on an emulated microSD card, to its login: its own
 kernel and device tree, Debian 13 under systemd, and FlipCTL, which draws Flipper OS's
 interface on the Flipper's screen (its frames go over the display SPI to the MCU

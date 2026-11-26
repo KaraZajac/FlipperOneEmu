@@ -1845,3 +1845,48 @@ register headers.
       through the RPC each change the screen; the menu holds still where the
       desktop's sleeping face moves. On an error in the log, it prints the lines
       before it.
+
+85. **MASKROM_EN after all: the main expander's pulls, its first start, its RESET.**
+    - **The answer to log 82.** The firmware does not read the main expander's
+      output register at its start. It reads the pins (`read_input() & 0xFF00`)
+      and writes back what it finds, so across an MCU restart the expander keeps
+      driving what it drove. From a cold start its pins are inputs, and what it
+      reads is the board's pulls. The model had all sixteen pulled up, so every
+      start found the rails, the USB mux, MASKROM_EN and the GPIO port's power
+      on, and took that for a running host. The enables (8-15) must be pulled
+      down on the board: otherwise every cold start would power the RK3576 into
+      MaskROM. The docs say BOOT0 (MASKROM_EN) "can force the CPU into MaskROM
+      mode": it pulls the RK3576's SARADC_VIN0_BOOT to ground, which its boot ROM
+      reads at reset.
+    - **Modelled so.** The enables are pulled down, the inputs (faults,
+      interrupts, power-goods) pulled up. MASKROM_EN is a strap read when the
+      RK3576's rail comes up: with it, its boot ROM waits in its USB download
+      mode, which is not modelled, and nothing runs.
+    - **The emulator's start.** A cold start would leave Flipper OS off until
+      someone chose Start Flipper OS in the Power tab (only that menu and the
+      firmware's "host is powered" start the CPU app). So the machine starts as
+      the device is found in use: Flipper OS on, its MCU starting, as after an
+      update. Its main expander's first reset leaves USB20_SEL,
+      VCC5V0_DEV_S0_EN and the rail driven, and the firmware takes its "Host is
+      powered" path. After the board's power is cut (`power reboot`, ship mode)
+      it starts cold. So does a start with BOOTSEL held: a mux left on the Linux
+      side would keep the USB-C port from the boot ROM.
+    - **A RESET glitch, found on the way.** The firmware's open-drain setup of
+      GPIO38 and GPIO43, the expanders' RESET lines, sets OUTOVER low before it
+      lets the pin go, so it drives them low for a few instructions. The model
+      reset the chips on it at every MCU start: the main one's rails went with it,
+      where the firmware has a powered host run on across an MCU restart. The
+      all-pulled-up expander had hidden it. Now a low resets them only once it has
+      lasted 100 µs; the firmware's own resets hold it 50 ms.
+    - **Checked.** Linux boots at the start (the RK3576 at 40 ms). Stop turns it
+      off. The MCU's Maskrom leaves the RK3576 in MaskROM, with no kernel, the
+      expander going 0x800, 0x9900, 0x1900 a second on. The Maskrom app's Stop,
+      then Start Flipper OS, boots Linux again. The smoke test passes, three of
+      three; the Linux check (42 of 42), its MCU update from Flipper OS (the MCU
+      restarting under a running host) and its U-Boot path pass.
+    - **BOOT1, looked into.** The MCU makes it as a 12-bit, 2 kHz PWM on GPIO4,
+      eleven ladder levels, 0 V by default; it reaches the RK3576's SARADC
+      channel 1. U-Boot's download-key check reads channel 1 of a device named
+      `saradc*`, and Flipper's is `adc@2ae00000`, so that check never fires.
+      Channel 2 is the board's revision (U-Boot: 0-208 f0b0c1, 209-616
+      f0b1c2). The RK3576's SARADC is not modelled yet.

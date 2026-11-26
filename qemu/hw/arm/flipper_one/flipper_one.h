@@ -217,6 +217,10 @@ void fo_leds_power(FoLeds *l, int chain, bool on);
  * GPIO input 0 (low: held in reset), its INT GPIO output 0 */
 struct I2CSlave;
 void pcal6416_set_pins(struct I2CSlave *dev, uint16_t levels);
+/* ... the pins' directions (@config, 1: an input) and the outputs' levels
+ * its next reset (the machine's start) leaves, as an MCU restart finds
+ * them from before; the resets after that, as the chip's */
+void pcal6416_preset(struct I2CSlave *dev, uint16_t config, uint16_t output);
 
 /* usb_host.c: the computer at the other end of the USB-C cable: the device
  * controller its data lines reach (@ops NULL: none); and, for a device's
