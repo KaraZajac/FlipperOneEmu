@@ -92,7 +92,11 @@ screen and its CLI.
 - ◐ CRU (its registers, the PLLs locked, the clocks the timer counts at), the PMU's
       power domains, the TRNG, the Rockchip timer (the broadcast clockevent), the
       DesignWare UARTs (UART0 the console, UART4 the MCU's line) (2026-11-24); GRFs,
-      pinctrl and the GPIO banks as unimplemented registers so far
+      pinctrl and the GPIO banks as unimplemented registers so far; the GMACs' 125 MHz
+      sources at CPLL / 8, the DDR blob's word LPDDR4X (Linux's DFI), PMU0_GRF's boot
+      mode (`reboot` into the MaskROM) (2026-11-26, log 98); the CRU's other reset
+      values (a divider at 0 leaves a clock at its PLL's rate: refclko25m_gmac0_out at
+      1188 MHz)
 - ☑ The published kernel and the Flipper One device tree, started directly: Flipper
       OS's initramfs, to its shell (`scripts/fetch_os.py`, `run --linux`, `console`)
       (2026-11-24)

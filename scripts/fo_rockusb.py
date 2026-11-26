@@ -13,7 +13,8 @@ its Loader mode, from here.
     scripts/fo_rockusb.py [--port 3240] download-boot LOADER.bin [--no-crc]
     scripts/fo_rockusb.py [--port 3240] download-sram | download-ddr FILE
     scripts/fo_rockusb.py [--port 3240] chip-info | flash-id | flash-info
-    scripts/fo_rockusb.py [--port 3240] capability | storage | reset
+    scripts/fo_rockusb.py [--port 3240] capability | storage
+    scripts/fo_rockusb.py [--port 3240] reset [maskrom | power-off ...]
     scripts/fo_rockusb.py [--port 3240] switch-storage ufs | sd | emmc ...
     scripts/fo_rockusb.py [--port 3240] read START COUNT FILE | write START FILE
 
@@ -56,6 +57,8 @@ SECTOR = 512
 # Rockusb's storages: their indexes (rockusb's, rkdeveloptool's)
 STORAGES = {"nand": 0, "emmc": 1, "sd": 2, "sd0": 2, "sd1": 3, "spinor": 4,
             "spinand": 5, "ram": 6, "sata": 10, "pcie": 11, "ufs": 12}
+# Rockusb's reset: its subcodes (rockusb's names; rkdeveloptool's rd N)
+RESETS = {"reset": 0, "msc": 1, "power-off": 2, "maskrom": 3, "disconnect": 4}
 CAPABILITIES = ((0, 0x01, "direct LBA"), (0, 0x02, "vendor storage"),
                 (0, 0x04, "first 4M access"), (0, 0x08, "read LBA"),
                 (0, 0x20, "read com log"), (0, 0x40, "read IDB config"),
@@ -233,7 +236,9 @@ def main():
     wr = sub.add_parser("write", help="(Loader mode) a file into sectors")
     wr.add_argument("start", type=int)
     wr.add_argument("file", type=pathlib.Path)
-    sub.add_parser("reset", help="(Loader mode) the device restarts")
+    rs = sub.add_parser("reset", help="(Loader mode) the device restarts "
+                        "(maskrom: into its MaskROM; power-off: off)")
+    rs.add_argument("subcode", nargs="?", default="reset", choices=RESETS)
     a = ap.parse_args()
 
     if a.cmd == "list":
@@ -300,8 +305,9 @@ def main():
                 print(f"{-(-len(data) // SECTOR)} sectors at {a.start} in "
                       f"{time.monotonic() - t0:.1f} s")
             else:
-                ld.command(0xFF, 0, False)
-                print("reset")
+                ld.command(0xFF, 0, False, opcode=RESETS[a.subcode])
+                print("reset" + (f" ({a.subcode})" if a.subcode != "reset"
+                                 else ""))
         finally:
             c.close()
         return 0

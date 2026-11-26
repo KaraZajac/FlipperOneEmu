@@ -26,8 +26,11 @@
  *             acknowledged and idle at once (0x120, 0x128)
  *   PMU GRFs  0x26024000, 0x26026000: what is written is kept, through a
  *             reset of the SoC but not a cut of its supply; their OS_REGs
- *             (0x200-0x22c) whole: the reboot mode, and in PMU1's OS_REG2-3
- *             what the DDR blob says of the DRAM (rk3576_ddr_blob)
+ *             (0x200-0x22c) whole, and PMU0's boot mode (0x40, the device
+ *             tree's syscon-reboot-mode: Linux's `reboot maskrom` writes
+ *             BOOT_BROM_DOWNLOAD there, which the boot ROM takes at the
+ *             reset, rk3576_brom_download()); in PMU1's OS_REG2-3 what the
+ *             DDR blob says of the DRAM (rk3576_ddr_blob)
  *   RNG       0x2a410000: the TRNG: a request (CTRL bit 4: Linux's) has 32
  *             bytes ready at once (TRNG_DATA, 0x50; STATE bit 4, write 1 to
  *             clear), and so has one of the DRNG's (bit 3, DRNG_DATA at 0x70:
@@ -140,6 +143,7 @@
 #define GIC_VIFACE      0x2a704000
 #define GIC_VCPU        0x2a706000
 #define CRU_BASE        0x27200000
+#define CRU_CLKSEL(n)   (0x300 + 4 * (n))   /* CLKSEL_CON(n) */
 #define CRU_SIZE        0x50000
 #define PMU_BASE        0x27380000
 #define PMU_SIZE        0x800
@@ -148,6 +152,8 @@
 #define PMU_GRF_SIZE    0x1000
 #define PMU_GRF_OS_REG  0x200           /* OS_REG0-11: plain 32-bit words */
 #define PMU_GRF_OS_END  0x230
+#define PMU0_GRF_BOOT_MODE  0x40        /* the reboot mode's word */
+#define BOOT_BROM_DOWNLOAD  0xef08a53c  /* ... the boot ROM's USB download */
 #define RNG_BASE        0x2a410000
 #define RNG_SIZE        0x200
 #define OTP_BASE        0x2a580000
@@ -250,12 +256,30 @@ static void rk_block_init(RK3576State *s, RkBlock *b, const char *name,
 
 /* ------------------------------------------------------ PMU's GRFs */
 
-/* their OS_REGs take the word written whole, the rest a GRF's halves */
+/* their OS_REGs take the word written whole, and so does PMU0's boot
+ * mode; the rest a GRF's halves */
 static void pmu_grf_wrote(RkBlock *b, hwaddr off, uint32_t old, uint32_t v)
 {
-    if (off >= PMU_GRF_OS_REG && off < PMU_GRF_OS_END) {
+    if ((off >= PMU_GRF_OS_REG && off < PMU_GRF_OS_END) ||
+        (b == &b->soc->pmu0_grf && off == PMU0_GRF_BOOT_MODE)) {
         b->regs[off / 4] = v;
     }
+}
+
+bool rk3576_brom_download(RK3576State *s)
+{
+    uint32_t *mode = &s->pmu0_grf.regs[PMU0_GRF_BOOT_MODE / 4];
+
+    if (*mode != BOOT_BROM_DOWNLOAD) {
+        return false;
+    }
+    *mode = 0;                                  /* (taken: once) */
+    return true;
+}
+
+void rk3576_brom_download_ask(RK3576State *s)
+{
+    s->pmu0_grf.regs[PMU0_GRF_BOOT_MODE / 4] = BOOT_BROM_DOWNLOAD;
 }
 
 void rk3576_power_lost(RK3576State *s)
@@ -277,28 +301,42 @@ static uint32_t atag_hash(const uint8_t *p, size_t len)
 
 /*
  * What Rockchip's DDR blob leaves when it has trained the DRAM:
- *   PMU1_GRF's OS_REG2 and OS_REG3: the DRAM's geometry, as U-Boot's
- *     rockchip_sdram_size() reads it: one channel of one rank, of DDR4's
- *     kind (type 0), up to 4 GiB (U-Boot takes 3 GiB at most from it, what
- *     is below 4 GiB: it places itself there);
+ *   PMU1_GRF's OS_REG2 and OS_REG3: the DRAM's kind and geometry, as
+ *     U-Boot's rockchip_sdram_size() and Linux's DFI read them: LPDDR4X
+ *     (type 8: its low bits in OS_REG2, its high one in OS_REG3, whose
+ *     words are of the blob's version 3; the docs leave the Flipper One's
+ *     kind open, LPDDR4 or 5, and the blob handles both), one channel of
+ *     one rank, up to 4 GiB (U-Boot takes 3 GiB at most from it, what is
+ *     below 4 GiB: it places itself there);
  *   an ATAG_DDR_MEM at the top of TF-A's 2 MiB (0x401fe000), the DRAM as
  *     one bank: U-Boot gives the kernel all of it from there.
  */
 #define ATAG_DDR_MEM    0x54410052
 #define ATAG_ADDR       (RK3576_DRAM_BASE + 2 * MiB - 8 * KiB)
 #define ATAG_WORDS      48              /* its header, and tag_ddr_mem's 46 */
+#define DDR_LPDDR4X     8               /* (Rockchip's types: DDR4 is 0) */
+#define DDR_REG_VERSION 3               /* OS_REG3's: the type's high bits */
 
-void rk3576_ddr_blob(RK3576State *s, uint64_t size)
+void rk3576_ddr_words(RK3576State *s, uint64_t size)
 {
     uint64_t mb = MIN(size, 4 * GiB) >> 20;
     int n = mb ? 63 - clz64(mb) : 8;            /* log2 of it, rounded down */
-    int col = MAX(9, MIN(12, n + 14 - 16));     /* row + col = n + 14 */
-    int row = MAX(13, MIN(16, n + 14 - col));   /* (+ bk 3, bg 1, bw 2) */
+    int col = MAX(9, MIN(12, n + 15 - 16));     /* row + col = n + 15 */
+    int row = MAX(13, MIN(16, n + 15 - col));   /* (+ bk 3, bw 2; bank
+                                                   groups are DDR4's) */
+
+    s->pmu1_grf.regs[(PMU_GRF_OS_REG + 8) / 4] = (DDR_LPDDR4X & 7) << 13 |
+                                                  (row - 13) << 6 |
+                                                  (col - 9) << 9;
+    s->pmu1_grf.regs[(PMU_GRF_OS_REG + 12) / 4] = DDR_REG_VERSION << 28 |
+                                                   (DDR_LPDDR4X >> 3) << 12;
+}
+
+void rk3576_ddr_blob(RK3576State *s, uint64_t size)
+{
     uint32_t tag[ATAG_WORDS] = { 0 };
 
-    s->pmu1_grf.regs[(PMU_GRF_OS_REG + 8) / 4] = (row - 13) << 6 |
-                                                  (col - 9) << 9;
-    s->pmu1_grf.regs[(PMU_GRF_OS_REG + 12) / 4] = 0;
+    rk3576_ddr_words(s, size);
     tag[0] = cpu_to_le32(ATAG_WORDS);
     tag[1] = cpu_to_le32(ATAG_DDR_MEM);
     tag[2] = cpu_to_le32(1);                    /* one bank: ... */
@@ -865,6 +903,13 @@ void rk3576_reset_devices(RK3576State *s)
                                                    host as it starts it) */
     ufs_master(s);
     memset(s->cru.regs, 0, CRU_SIZE);
+    /* the GMACs' 125 MHz sources (stmmac's CSR clock) as the device has
+     * them: CPLL / 8 (CLKSEL_CON(30) bits 14:10, CLKSEL_CON(31) bits 4:0),
+     * once the kernel's tree has CPLL at 1 GHz; nothing in Linux sets
+     * them, and at 0 they were CPLL whole, past what stmmac's MDC
+     * dividers take ("clk_csr value out of range") */
+    s->cru.regs[CRU_CLKSEL(30) / 4] = 7 << 10;
+    s->cru.regs[CRU_CLKSEL(31) / 4] = 7;
     memset(s->pmu.regs, 0, PMU_SIZE);
     memset(s->rng.regs, 0, RNG_SIZE);
     memset(s->otp.regs, 0, OTP_SIZE);

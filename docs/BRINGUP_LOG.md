@@ -2345,3 +2345,60 @@ register headers.
       - 4 MiB went through it in 0.4 s written and 0.5 s read back (some
         10 MB/s, nearly all of it USB/IP's round trips).
       - The smoke test and linux_check (422 s) pass.
+
+98. **The boot's three emulator warnings gone; `reboot maskrom`.**
+    - **The DDR blob's word says LPDDR4X.** Linux's DFI (devfreq-event) read
+      the DRAM's type from PMU1_GRF's OS_REG2 and found 0, DDR4's, which it
+      does not take ("unsupported memory type 0x0"). The machine's word now
+      says LPDDR4X: type 8, its low bits in OS_REG2 and its high one in
+      OS_REG3, whose words are of the blob's version 3. The docs leave the
+      Flipper One's kind open (LPDDR4 or 5), and rkbin's blob handles both;
+      LPDDR4X is the commoner pairing on RK3576 boards.
+      - U-Boot sizes DDR4 with a bank-group bit that the LPDDR kinds lack, so
+        the geometry gains a row or column bit to keep 4 GiB. Its
+        rockchip_sdram_size(), played over the new words, gives 1, 2 and
+        4 GiB as before.
+      - The direct boot skipped the blob, and so had no words at all. It
+        now gets them too (rk3576_ddr_words()), but not the blob's ATAG,
+        which is U-Boot's alone.
+    - **The UFS says its bRefClkGatingWaitTime** (QEMU patch 0023). QEMU's
+      UFS answered 0, and Linux complained at every boot ("Undefined ref clk
+      gating wait time, use default 255us"). It now says 255 us, what Linux
+      assumes when a device does not say.
+    - **The GMACs' CSR clock.** stmmac sets its MDC divider from the rate of
+      "stmmaceth", clk_gmac0_125m_src (and gmac1's), which is CPLL /
+      (CLKSEL_CON(30) bits 14:10 + 1). The model's CRU starts at zeros, and
+      the kernel's tree sets CPLL to 1 GHz, so the clock ran at 1 GHz, past
+      stmmac's table ("clk_csr value out of range (0xffffff00 exceeds mask
+      0x00000f00)"). Nothing in Linux sets those dividers; they now start at
+      /8, 125 MHz as the clocks' names have it.
+    - **`reboot maskrom`.** Flipper One's tree has a syscon-reboot-mode in
+      PMU0_GRF at 0x40: mode-maskrom (BOOT_BROM_DOWNLOAD, 0xef08a53c), with
+      mode-normal and boot-medium modes beside it. The model kept that GRF's
+      words in halves, as a GRF's write mask has them, which would have
+      mangled the word. Now that word is kept whole, through a reset of the
+      SoC. At the reset the boot ROM takes BOOT_BROM_DOWNLOAD from it (and
+      clears it): `reboot maskrom` in Flipper OS leaves the RK3576 in its
+      MaskROM, USB0 a device for the computer on the cable.
+      - The boot-medium modes (ufs, ufs-sd, emmc-sd ...) are not played: the
+        boot ROM goes its usual way.
+    - **Rockusb's reset as the usbplug does it.** Its subcode is now the
+      board's to act on. 3 (rkdeveloptool's `rd 3`, rockusb's
+      `reset-device maskrom`) writes BOOT_BROM_DOWNLOAD before the reset, as
+      `reboot maskrom` does. 2 turns the RK3576 off, as TF-A's SYSTEM_OFF
+      does. The others are a reset.
+    - **Checked.**
+      - A direct boot: none of the three warnings, and debugfs has both
+        clk_gmac*_125m_src at 125 MHz. linux_check's log checks now fail if
+        any of the three comes back.
+      - `sudo systemctl reboot --reboot-argument=maskrom` (systemd 257 takes
+        the argument only so): the RK3576 waits in its MaskROM.
+      - linux_check's MaskROM mode writes Flipper OS's U-Boot (the kept
+        card's first 12 MiB) to the blank card through the Loader mode, in
+        0.9 s. `reset maskrom` then stays in the MaskROM despite the card;
+        the usbplug again, and a plain reset boots the card's U-Boot, as the
+        PC wrote it. PASS in 15 s.
+      - linux_check's U-Boot mode: U-Boot still finds 4 GiB in the new
+        words, and the mode now ends with the reboot into the MaskROM,
+        which the computer enumerates. PASS in 535 s.
+      - The smoke test (52 s) and linux_check (424 s) pass.

@@ -27,7 +27,8 @@
  * ID and size (flash info), the chip's info, the capabilities (direct LBA,
  * a switch of storage), sectors of 512 bytes read, written and erased, the
  * storage got and switched (the UFS's LU 0, rockusb's 12, from the start;
- * the microSD card, 2), and a reset, the board's to do. Others fail.
+ * the microSD card, 2), and a reset, the board's to do (its subcode: 3 into
+ * the MaskROM, 2 off). Others fail.
  *
  * Copyright (c) 2026, Kara Zajac
  * SPDX-License-Identifier: BSD-3-Clause
@@ -402,8 +403,9 @@ static FoUsbResult loader_command(RkMaskrom *m, const uint8_t *cbw, int len)
                                         BDRV_REQ_MAY_UNMAP) >= 0, 0);
         break;
     case 0xff:                                  /* a reset: the board's, */
-        loader_status(m, true, 0);              /* whatever its subcode */
+        loader_status(m, true, 0);              /* as its subcode asks */
         m->reset_due = true;
+        m->reset_op = op;
         break;
     default:
         qemu_log_mask(LOG_UNIMP, "rk3576: Loader mode: command 0x%02x "
@@ -485,7 +487,7 @@ static void loader_reset(void *opaque)
     RkMaskrom *m = opaque;
 
     if (m->on && m->loader && m->reset) {
-        m->reset(m->reset_opaque);
+        m->reset(m->reset_opaque, m->reset_op);
     }
 }
 

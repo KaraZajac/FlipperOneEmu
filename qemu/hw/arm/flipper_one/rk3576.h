@@ -253,8 +253,9 @@ typedef struct RkMaskrom {
     uint32_t residue;                   /* ... what it leaves unmoved */
     int64_t at;                         /* ... a write's: where */
     bool reset_due;                     /* a reset, once its status is out */
+    int reset_op;                       /* ... its subcode (rockusb's) */
     QEMUTimer *reset_timer;
-    void (*reset)(void *opaque);        /* Rockusb's reset: the board's */
+    void (*reset)(void *opaque, int op);    /* Rockusb's: the board's */
     void *reset_opaque;
 } RkMaskrom;
 
@@ -568,9 +569,18 @@ void rk3576_hdmi_plug(RK3576State *s, bool on);
 void rk3576_reset_devices(RK3576State *s);
 /* its supply gone: what is always on loses what it kept */
 void rk3576_power_lost(RK3576State *s);
+/* the boot ROM at a reset of the SoC: true if PMU0_GRF's boot mode sends it
+ * to its USB download (BOOT_BROM_DOWNLOAD: Linux's `reboot maskrom`, a
+ * usbplug's reset into the MaskROM), which it then clears */
+bool rk3576_brom_download(RK3576State *s);
+/* ... which this asks for, as `reboot maskrom` does */
+void rk3576_brom_download_ask(RK3576State *s);
 /* what Rockchip's DDR blob leaves for the stages after it, for DRAM of
  * @size bytes at RK3576_DRAM_BASE */
 void rk3576_ddr_blob(RK3576State *s, uint64_t size);
+/* ... of which its words in PMU1_GRF alone (the DRAM's kind and geometry,
+ * which Linux's DFI reads), for a boot that skips the blob */
+void rk3576_ddr_words(RK3576State *s, uint64_t size);
 /* the bus of I2C@n, for what the board has on it */
 I2CBus *rk3576_i2c_bus(RK3576State *s, int n);
 /* SAI @n (0, 2 or 6) */

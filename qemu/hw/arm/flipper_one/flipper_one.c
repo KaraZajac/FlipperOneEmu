@@ -1302,7 +1302,10 @@ static void fo_rk_power_bh(void *opaque)
                                                    goes, whatever it is) */
         g_byte_array_set_size(s->last_frame, 0);
     }
-    s->in_maskrom = want != RK_OFF && s->maskrom_strap;
+    /* the boot ROM's USB download: BOOT0 low at the reset, or the boot mode
+     * that asks for it (Linux's `reboot maskrom`) */
+    s->in_maskrom = want != RK_OFF &&
+                    (rk3576_brom_download(&s->rk3576) || s->maskrom_strap);
     s->dram_up = false;
     if (want == RK_OFF) {
         rk3576_power_lost(&s->rk3576);
@@ -1325,6 +1328,9 @@ static void fo_rk_power_bh(void *opaque)
         } else {
             fo_rk_restore_images(s);
         }
+        /* (the DDR blob's words, which the device has at any boot and
+         * Linux's DFI reads; the blob's ATAG is U-Boot's alone) */
+        rk3576_ddr_words(&s->rk3576, MACHINE(s)->ram_size);
         entry = s->binfo.loader_start;
     }
     fo_rk_start(s, entry);
@@ -1438,6 +1444,19 @@ static void flipper_one_rk_cru_reset(void *opaque)
     fo_rk_power(opaque, RK_RESTART);
 }
 
+/* Rockusb's reset, as a usbplug does it (rk3576_maskrom.c): @op 3 into the
+ * MaskROM (the boot mode, as Linux's `reboot maskrom` writes it), 2 off (as
+ * TF-A's SYSTEM_OFF), the others a reset */
+static void flipper_one_rockusb_reset(void *opaque, int op)
+{
+    FlipperOneState *s = opaque;
+
+    if (op == 3) {
+        rk3576_brom_download_ask(&s->rk3576);
+    }
+    fo_rk_power(s, op == 2 ? RK_OFF : RK_RESTART);
+}
+
 /* the RK3576's cores, with no kernel to start: reset, and off */
 static void flipper_one_rk3576_reset(void *opaque)
 {
@@ -1503,7 +1522,7 @@ static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
     s->rk3576.maskrom.pullup_opaque = s->usb_host;
     s->rk3576.maskrom.run = fo_maskrom_run;
     s->rk3576.maskrom.run_opaque = s;
-    s->rk3576.maskrom.reset = flipper_one_rk_cru_reset;
+    s->rk3576.maskrom.reset = flipper_one_rockusb_reset;
     s->rk3576.maskrom.reset_opaque = s;
     /* the MCU on I2C0, its PMIC on I2C1, its real-time clock on I2C8 */
     s->link = (RkI2cTarget){

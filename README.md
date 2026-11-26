@@ -170,7 +170,9 @@ scripts/fo_rockusb.py --port 3240 read 0 8 FILE | write START FILE  # Rockusb's 
                                      # it: the UFS's boot LU (once installed), or else the
                                      # microSD card; with neither (a new device), or with
                                      # the MCU's Maskrom, it waits in its MaskROM, USB0 a
-                                     # device (2207:350e) for a USB download:
+                                     # device (2207:350e) for a USB download (so it does
+                                     # after Flipper OS's `sudo systemctl reboot
+                                     # --reboot-argument=maskrom`, as on the device):
 scripts/fo_rockusb.py --port 3240 download-boot installer-falcon-loader.bin  # rockusb's,
                                      # over USB/IP (`run --uboot --usbip 3240 --net`, a
                                      # computer plugged in: Ctrl+Shift+U): the installer
@@ -180,8 +182,8 @@ scripts/fo_rockusb.py --port 3240 download-boot rk3576_loader.bin  # ... or Rock
                                      # own (rkbin's, its usbplug): the machine plays the
                                      # usbplug, Rockusb's Loader mode on USB0, the UFS's
                                      # LU 0 behind it (`switch-storage sd`: the card);
-                                     # then read, write, flash-info, reset (rkdeveloptool's
-                                     # rl, wl, rfi, rd)
+                                     # then read, write, flash-info, reset [maskrom]
+                                     # (rkdeveloptool's rl, wl, rfi, rd [3])
 ./flipperoneemu console [-n NAME] [CMD]  # Linux's console (the RK3576's UART0); Ctrl-] leaves
 ./flipperoneemu console --usb ...    # ... Flipper OS's serial port on its USB gadget
                                      # (a computer plugged in: Ctrl+Shift+U)
@@ -253,6 +255,7 @@ yet.
 | 0020 | accel/tcg/mttcg: an interrupt without an exit request (each one another thread raised made cpu_exec return, and the vCPU take the BQL) |
 | 0021 | accel/tcg/cputlb: reset dirty only in the mmu_idx in use (every vCPU's sixteen, each time a page of RAM got its first TB) |
 | 0022 | hw/intc/arm_gic: one pass over the interrupts for every CPU (a GIC update looked at every interrupt once per CPU) |
+| 0023 | hw/ufs: a reference clock gating wait time (bRefClkGatingWaitTime read 0, which Linux complained of) |
 
 ## Layout
 

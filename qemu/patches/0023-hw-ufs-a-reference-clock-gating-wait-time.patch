@@ -1,0 +1,25 @@
+From: FlipperOneEmu
+Subject: [PATCH] hw/ufs: a reference clock gating wait time
+
+bRefClkGatingWaitTime (attribute 0x17) read 0, and Linux, which reads
+it of a device of UFS 3.0 on, complained at every boot: "Undefined ref
+clk gating wait time, use default 255us". The device now says 255 us,
+what Linux assumes when it is not said.
+
+---
+--- a/hw/ufs/ufs.c	2026-11-26 12:56:22.659030187 -0500
++++ b/hw/ufs/ufs.c	2026-11-26 12:56:22.676771650 -0500
+@@ -2832,6 +2832,13 @@
+     u->attributes.max_data_in_size = 0x08;
+     u->attributes.max_data_out_size = 0x08;
+     u->attributes.ref_clk_freq = 0x01; /* 26 MHz */
++    /*
++     * bRefClkGatingWaitTime: a device of UFS 3.0 on says how long it needs
++     * the reference clock before a change of its link's mode, and Linux
++     * reads it (and complains of a 0). 255 us: what Linux assumes when a
++     * device does not say.
++     */
++    u->attributes.ref_clk_gating_wait_time = 0xff;
+     /* the configuration descriptor answers (ufs_write_config_desc) */
+     u->attributes.config_descr_lock = 0x00;
+     u->attributes.max_num_of_rtt = 0x02;

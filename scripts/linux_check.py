@@ -63,17 +63,18 @@ With --uboot it checks the boot through U-Boot instead, as on the device
 at power-on), and its rockusb makes USB0 a Rockusb device, which the
 computer enumerates; in Rockusb's Loader mode over USB/IP (fo_rockusb.py)
 sectors read are the card's, and 64 KiB written read back the same and are
-in the card's image (then put back); `boot` goes on. Then: the machine
-loads U-Boot from the card's u-boot.itb as SPL would, and U-Boot sees the
-board's revision and
-the 4 GiB of DRAM the DDR blob left word of; it finds the card's boot
-entries and shows its boot menu on the Flipper's screen; the Flipper's
-keys pick the Minimal profile of the build's kernel, and U-Boot boots it
-with the entry's own options, a seed for KASLR (from the TRNG) and all of
-the DRAM past TF-A's 2 MiB; Flipper OS reaches its login; and a reboot
-comes back to U-Boot's menu, and from there to the kernel again. A
-computer is on the USB-C port from the start: the boot entry's options
-mask no getty (OS-02).
+in the card's image (then put back); `boot` goes on. Then: the machine loads
+U-Boot from the card's u-boot.itb as SPL would, and U-Boot sees the board's
+revision and the 4 GiB of DRAM the DDR blob left word of; it finds the
+card's boot entries and shows its boot menu on the Flipper's screen; the
+Flipper's keys pick the Minimal profile of the build's kernel, and U-Boot
+boots it with the entry's own options, a seed for KASLR (from the TRNG) and
+all of the DRAM past TF-A's 2 MiB; Flipper OS reaches its login; a reboot
+comes back to U-Boot's menu, and from there to the kernel and the login
+again; and a reboot with --reboot-argument=maskrom (the tree's reboot mode)
+leaves the RK3576 in its MaskROM, which the computer enumerates. A computer
+is on the USB-C port from the start: the boot entry's options mask no getty
+(OS-02).
 
 With --mcu-update it checks the MCU's firmware updated from Flipper OS, as
 the device's own update does it (needs passt): the MCU's updater answers over
@@ -97,9 +98,13 @@ machine plays: the device comes back in Rockusb's Loader mode (bcdUSB 2.01);
 its chip-info, flash-info, capability and storage (the UFS's LU 0); 64 KiB
 written far out on the UFS read back the same and are in its image, then
 erased; the same on the card, after a switch of storage; a read past the
-end fails; its reset restarts the RK3576, which, blank, waits in its MaskROM
-again. Then Stop, and the MCU's Maskrom (MASKROM_EN) puts it in its USB
-download again.
+end fails. With a kept card (build/linux-check/sd.img), its first 12 MiB
+(Flipper OS's U-Boot) written to the blank card through it: a reset into
+the MaskROM (rkdeveloptool's rd 3) stays there, the card notwithstanding;
+the usbplug again, and its reset boots U-Boot from the card. (Without one,
+its reset finds nothing to boot, and the boot ROM waits in its MaskROM.)
+Then Stop, and the MCU's Maskrom (MASKROM_EN) puts it in its USB download
+again.
 
 A first boot takes several minutes (Flipper OS sets itself up); the first
 run keeps its card as build/linux-check/sd.img, as it is after the checked
@@ -829,6 +834,21 @@ def uboot_checks(check, d, out, port):
     check("... its menu again, and from there the kernel",
           uboot_pick(panel, linux, want, lmark) is not None and
           wait_text(linux, r"Booting Linux", 300, lmark))
+    lmark = len(text_of(linux))
+    if not check("... to its login again",
+                 wait_text(linux, r"login:", 1200, lmark) and con.ready(300)):
+        return con
+    # the device tree's reboot mode: BOOT_BROM_DOWNLOAD in PMU0_GRF, which
+    # the boot ROM takes at the reset
+    qmark = len(text_of(qlog))
+    seen = text_of(d / "qemu.out").count("flipper-one: USB: 2207:350e")
+    con.send("sudo systemctl reboot --reboot-argument=maskrom")
+    check("a reboot into the MaskROM (systemctl's --reboot-argument=maskrom): "
+          "the RK3576 starts again there, from the boot mode Linux wrote",
+          wait_text(qlog, r"waits in its MaskROM", 300, qmark))
+    check("... which the computer enumerates (2207:350e)",
+          st.until(lambda: text_of(d / "qemu.out").count(
+              "flipper-one: USB: 2207:350e") > seen, 30))
     return con
 
 
@@ -923,6 +943,8 @@ def maskrom_checks(check, d, out, port, loader):
                                                mark))
         if not loader:
             seen = enumerated()
+            (d / "ddr.bin").write_bytes(bytes(range(256)) * 20)
+            (d / "usbplug.bin").write_bytes(b"usbplug" + bytes(1000))
             fo_rockusb.write_area(c, 0x472, b"usbplug" + bytes(1000))
             check("0x472 code with no FIT in it, a usbplug: the device "
                   "leaves the bus and comes back (the machine's Loader mode)",
@@ -1055,25 +1077,70 @@ def loader_checks(check, d, port, rock, enumerated):
           "switch of storage; the UFS; SATA (a SCSI disk to the usbplug)",
           "switch storage" in out and "12 (ufs)" in out and "'SATA '" in out,
           out)
-    mark, seen = len(text_of(qlog)), enumerated()
-    out = run("reset")
-    check("reset: the RK3576 starts again, finds nothing to boot, and waits "
-          "in its MaskROM", out == "reset" and
-          wait_text(qlog, r"finds nothing to boot", 15, mark) and
-          wait_text(qlog, r"waits in its MaskROM", 10, mark), out)
+
+    def maskrom_again(what, seen):
+        c = None
+        try:
+            check(f"{what}: which the computer enumerates again",
+                  st.until(lambda: enumerated() > seen, 15))
+            c = fo_rockusb.connect(port=port)
+            desc = c.control(0x80, 6, 0x0100, 0, 18)
+            check("... a MaskROM again (bcdUSB 2.00)",
+                  desc[2:4] == b"\x00\x02", desc[:4].hex(" "))
+        except (OSError, ValueError) as e:
+            check(f"{what}: the MaskROM", False, str(e))
+        finally:
+            if c:
+                c.close()
+
+    kept = TEMPLATE / "sd.img"
+    if not kept.exists():
+        mark, seen = len(text_of(qlog)), enumerated()
+        out = run("reset")
+        check("reset: the RK3576 starts again, finds nothing to boot, and "
+              "waits in its MaskROM", out == "reset" and
+              wait_text(qlog, r"finds nothing to boot", 15, mark) and
+              wait_text(qlog, r"waits in its MaskROM", 10, mark), out)
+        maskrom_again("the reset", seen)
+        return
+    with open(kept, "rb") as f:         # (U-Boot's part of it alone)
+        boot = f.read(12 << 20)
     c = None
     try:
-        check("... which the computer enumerates again",
-              st.until(lambda: enumerated() > seen, 15))
         c = fo_rockusb.connect(port=port)
-        desc = c.control(0x80, 6, 0x0100, 0, 18)
-        check("... a MaskROM again (bcdUSB 2.00)", desc[2:4] == b"\x00\x02",
-              desc[:4].hex(" "))
+        ld = fo_rockusb.Loader(c)
+        ld.command(0x2A, 0, False, opcode=2)
+        t0 = time.monotonic()
+        ld.write_lba(0, boot)
+        took = time.monotonic() - t0
+        check(f"Flipper OS's U-Boot (the kept card's first 12 MiB) written to "
+              f"the card ({took:.1f} s), as rkdeveloptool's wl would",
+              image_at("sd.img", 0, len(boot)) == boot)
     except (OSError, ValueError) as e:
-        check("the MaskROM after the Loader's reset", False, str(e))
+        check("U-Boot written to the card", False, str(e))
     finally:
         if c:
             c.close()
+    mark, seen = len(text_of(qlog)), enumerated()
+    out = run("reset", "maskrom")
+    check("reset maskrom (rkdeveloptool's rd 3): the RK3576 starts again in "
+          "its MaskROM, the card's U-Boot notwithstanding",
+          out == "reset (maskrom)" and
+          wait_text(qlog, r"waits in its MaskROM", 15, mark) and
+          "SPL" not in text_of(qlog)[mark:], out)
+    maskrom_again("reset maskrom", seen)
+    seen = enumerated()
+    out = run("download-sram", str(d / "ddr.bin")) + "\n" + \
+        run("download-ddr", str(d / "usbplug.bin"))
+    check("the usbplug again (download-sram, download-ddr): the Loader mode",
+          wait_text(qlog, r"a usbplug, which the machine plays", 15, mark) and
+          st.until(lambda: enumerated() > seen, 15), out)
+    mark = len(text_of(qlog))
+    out = run("reset")
+    check("reset: the boot ROM boots the card, U-Boot as the PC wrote it",
+          out == "reset" and
+          wait_text(qlog, r"SPL: U-Boot at 0x40800000", 15, mark) and
+          wait_text(qlog, r"the RK3576 starts", 10, mark), out)
 
 
 def log_checks(check, d):
@@ -1082,6 +1149,14 @@ def log_checks(check, d):
                      r"rcu: INFO", k)
     check("no oops, panic or RCU stall in the kernel's log", not bad,
           ", ".join(sorted(set(bad))))
+    # the warnings that were the emulator's own (log 96): the DDR blob's
+    # word (the DRAM's kind), the UFS's clock gating wait, the GMACs' CSR
+    # clock
+    mine = re.findall(r"unsupported memory type|Undefined ref clk gating|"
+                      r"clk_csr value out of range", k)
+    check("none of the warnings that were the emulator's (the DRAM's kind, "
+          "the UFS's clock gating wait, the GMACs' CSR clock)", not mine,
+          ", ".join(sorted(set(mine))))
     check("no crash in the MCU's log", not st.CRASH.search(st.log_text(d)))
     late = k.count("Interrupt latency")
     print(f"      (the SD driver's interrupt-latency warnings: {late})")
