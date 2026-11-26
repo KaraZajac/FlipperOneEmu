@@ -1705,3 +1705,31 @@ register headers.
     - **Found on the way:** a session closed while a frame is on its way still
       sends the rest of it before the CLI's prompt comes back. The smoke test waits
       for that prompt.
+
+80. **The Desktop profile's 10-bit framebuffers.**
+    - **What the 45-minute run found.** KWin had set its own framebuffers: Cluster0
+      at 1280x720, and a 32x32 cursor on Esmart0. Both are AR30 (ARGB2101010):
+      KWin takes 10 bits where a plane offers them, as the VOP2's cluster windows do.
+      The VOP2 model drew window formats 0-2 only (ARGB8888, RGB888, RGB565), so the
+      monitor showed none of it. It now draws format 3 too, the 2101010 kind (AR30
+      and XR30, and with red and blue swapped AB30 and XB30), at its top 8 bits.
+    - **Plasma itself does not come up here.** plasmashell never finished starting:
+      its user service's start timed out each time, about 40 s (27 s of CPU), and
+      systemd restarted it 53 times in 45 minutes. kded6's EGL had no GPU to open
+      ("failed to get driver name for fd -1"): Mesa draws with llvmpipe, which TCG
+      then runs. Under TCG the Desktop profile is past use. That is not the
+      emulator's to change: a drop-in with a longer TimeoutStartSec would let it
+      come up, slowly.
+    - **A check of the formats.** A DRM client in Python (raw ioctls: a dumb buffer,
+      ADDFB2, SETCRTC) puts four bands (red, green, blue, 50 % grey) in a given
+      format on the HDMI connector's CRTC, and the host samples the picture.
+      XR24, AB30 (10-bit, red and blue swapped), RG24: (255,0,0), (0,255,0),
+      (0,0,255), (128,128,128). RG16: (248,0,0), (0,252,0), (0,0,248), at 565's
+      precision. AR30 and XR30, red and blue in their place: the same four.
+    - **Sampled wrong first.** QEMU's screendump PNG filters its rows (Up, Paeth),
+      and a reader that skips only the filter byte read the bands as black. The
+      Linux check's "not black" counts filtered bytes on purpose: every filter
+      makes a black picture all zeros. For colours, a reader has to undo them.
+    - **The Linux check** now shows AR30 bands this way, after the console's
+      picture (scripts/drm_bands.py, sent in over the console), and reads the
+      four colours back with the filters undone. It passes (42 checks).

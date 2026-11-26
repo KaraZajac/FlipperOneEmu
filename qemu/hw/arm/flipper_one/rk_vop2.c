@@ -19,14 +19,17 @@
  * - Scanout: video port 0 (HDMI) goes to a QEMU console, composed when the
  *   console asks (a screendump, a display): its size from its active area,
  *   its background, then the windows its OVL_LAYER_SEL stacks (Cluster0/1,
- *   Esmart0/2; linear ARGB8888/XRGB8888, RGB888 and RGB565, red and blue
- *   swapped or not), read from memory through the VOP's IOMMU, scaled to
- *   their display size (nearest). No AFBC, YUV, mirroring or alpha.
+ *   Esmart0/2; linear ARGB8888/XRGB8888, ARGB2101010/XRGB2101010 (shown at
+ *   8 bits: a compositor's 10-bit framebuffer, KWin's), RGB888 and RGB565,
+ *   red and blue swapped or not), read from memory through the VOP's IOMMU,
+ *   scaled to their display size (nearest). No AFBC, YUV, mirroring or
+ *   alpha.
  *
  * Copyright (c) 2026, Kara Zajac
  * SPDX-License-Identifier: BSD-3-Clause
  */
 #include "qemu/osdep.h"
+#include "qemu/bswap.h"
 #include "qapi/error.h"
 #include "qemu/timer.h"
 #include "hw/core/irq.h"
@@ -278,7 +281,8 @@ static void vop2_window(RkVop2State *s, hwaddr base, uint32_t *fb,
     case 0: bpp = 4; break;             /* ARGB8888/XRGB8888 */
     case 1: bpp = 3; break;             /* RGB888 */
     case 2: bpp = 2; break;             /* RGB565 */
-    default: return;                    /* (10-bit, YUV: not shown) */
+    case 3: bpp = 4; break;             /* (X|A)RGB2101010 */
+    default: return;                    /* (YUV: not shown) */
     }
     line = g_malloc(src_w * bpp);
     for (int y = 0; y < dst_h && dst_y + y < fb_h; y++) {
@@ -296,6 +300,12 @@ static void vop2_window(RkVop2State *s, hwaddr base, uint32_t *fb,
                 r = (v >> 11) << 3;
                 g = ((v >> 5) & 0x3f) << 2;
                 b = (v & 0x1f) << 3;
+            } else if (format == 3) {
+                uint32_t v = ldl_le_p(p);
+
+                r = (v >> 22) & 0xff;       /* (the top 8 of each 10) */
+                g = (v >> 12) & 0xff;
+                b = (v >> 2) & 0xff;
             } else {
                 b = p[0];
                 g = p[1];

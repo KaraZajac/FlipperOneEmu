@@ -19,8 +19,9 @@ Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
   its UFS is a 64 GB disk; an NVMe in the M.2 slot (PCIe0, `run --nvme`)
   is a 256 GB one, and 4 MiB written to it read back the same; a monitor
   in the HDMI port (`run --hdmi`) lights at 1280x720 with the console on
-  it, the Flipper's screen still fb0, its picture not black, and Linux
-  sees it pulled out and plugged in again; USB0 is in
+  it, the Flipper's screen still fb0, its picture not black, a 10-bit
+  framebuffer (AR30, as a compositor's) shown as drawn, and Linux sees it
+  pulled out and plugged in again; USB0 is in
   its device role with its Type-C port, USB1's root hubs are there, and the
   battery reads (its chain waits on USB0's role switch); each Ethernet port
   has its RTL8211F, and with passt installed port 1 is on this PC's network
@@ -84,6 +85,7 @@ over 200 s (400 s for a first boot). Exit status 0 = pass. Screenshots go
 to --out.
 """
 import argparse
+import base64
 import json
 import math
 import os
@@ -289,6 +291,48 @@ def png_lit(path):
     return size, 1 - raw.count(0) / len(raw) if raw else 0.0
 
 
+def png_pixels(path, points):
+    """the RGB at each (x, y) of an 8-bit RGB or RGBA PNG (QEMU's
+    screendump), its rows' filters undone; None if it cannot be read"""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    p, idat, w, h, bpp = 8, b"", 0, 0, 3
+    while data[:8] == b"\x89PNG\r\n\x1a\n" and p + 8 <= len(data):
+        n, kind = struct.unpack(">I4s", data[p:p + 8])
+        if kind == b"IHDR":
+            w, h, _, ctype = struct.unpack(">IIBB", data[p + 8:p + 18])
+            bpp = 4 if ctype == 6 else 3
+        elif kind == b"IDAT":
+            idat += data[p + 8:p + 8 + n]
+        p += 12 + n
+    if not idat:
+        return None
+    raw, stride, rows = zlib.decompress(idat), w * bpp, []
+    prev = bytearray(stride)
+    for y in range(h):
+        f = raw[y * (stride + 1)]
+        line = bytearray(raw[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
+        for x in range(stride):
+            a = line[x - bpp] if x >= bpp else 0
+            up, c = prev[x], prev[x - bpp] if x >= bpp else 0
+            if f == 1:
+                line[x] = (line[x] + a) & 255
+            elif f == 2:
+                line[x] = (line[x] + up) & 255
+            elif f == 3:
+                line[x] = (line[x] + (a + up) // 2) & 255
+            elif f == 4:
+                q = a + up - c
+                pa, pb, pc = abs(q - a), abs(q - up), abs(q - c)
+                line[x] = (line[x] + (a if pa <= pb and pa <= pc else
+                                      up if pb <= pc else c)) & 255
+        rows.append(line)
+        prev = line
+    return [tuple(rows[y][x * bpp:x * bpp + 3]) for x, y in points]
+
+
 def copy_card(src, dst):
     subprocess.run(["cp", "--reflink=auto", "--sparse=always", str(src),
                     str(dst)], check=True)
@@ -380,6 +424,29 @@ def checks(check, d, out, first_boot, off, net):
     size, lit = png_lit(out / "hdmi.png")
     check("... and its picture is the console's (1280x720, not black)",
           size == (1280, 720) and lit > 0.001, f"{size} {lit:.4f}")
+    # a compositor's 10-bit framebuffer (AR30, KWin's): four bands from a
+    # DRM client (scripts/drm_bands.py, sent in over the console), as drawn
+    blob = base64.b64encode((ROOT / "scripts" / "drm_bands.py")
+                            .read_bytes()).decode()
+    con.run("rm -f /tmp/drm.b64", 30)
+    for k in range(0, len(blob), 2000):
+        con.run(f"echo {blob[k:k + 2000]} >> /tmp/drm.b64", 30)
+    con.send("base64 -d /tmp/drm.b64 > /tmp/drm_bands.py && sudo python3 "
+             f"/tmp/drm_bands.py AR30 {round(15 * slow)} > /tmp/drm.out 2>&1 &")
+    shown = st.until(lambda: (con.run("cat /tmp/drm.out", 30) or [""])[0]
+                     .startswith("shown: AR30"), 30 * slow, 1)
+    time.sleep(2)
+    subprocess.run([sys.executable, str(st.LAUNCHER), "shot", "-n", d.name,
+                    "--hdmi", str(out / "hdmi-ar30.png")],
+                   stdout=subprocess.DEVNULL)
+    bands = png_pixels(out / "hdmi-ar30.png", [(160, 360), (480, 360),
+                                                (800, 360), (1120, 360)])
+    check("... and a compositor's 10-bit framebuffer (AR30): its red, green, "
+          "blue and grey bands, as drawn",
+          shown and bands == [(255, 0, 0), (0, 255, 0), (0, 0, 255),
+                              (128, 128, 128)],
+          f"{bands} {con.run('cat /tmp/drm.out', 30)}")
+    st.until(lambda: not con.run("pgrep -f drm_bands.py", 30), 30 * slow, 1)
     panel.s.sendall(b"hdmi 0\n")
     gone = st.until(lambda: con.run(f"cat {hdmi}/status") ==
                     ["disconnected"], 60 * slow, 2)
