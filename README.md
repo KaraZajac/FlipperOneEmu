@@ -59,19 +59,21 @@ minute and a half to two (TCG emulates eight cores). The MCU switches the RK3576
 off as on the device: Flipper OS's power-off and reboot work, and so does the MCU's own
 Stop. Its Wi-Fi and Bluetooth are the MT7921's, on USB1 while Linux unblocks its
 rfkill: the chip takes its real firmware from mt7921u and btusb; NetworkManager has its
-Wi-Fi (FlipCTL's Wi-Fi menu with it) and BlueZ its controller, which scan (no radio:
-nothing is ever found). It also boots as the device does, through U-Boot from the card
-(its boot menu on the Flipper's screen; with KASLR, and so KPTI, about three minutes
-here), and Flipper OS installs onto it as the docs do it: in its MaskROM, rockusb's
-download-boot of the installer's loader (`scripts/fo_rockusb.py`, over USB/IP); the
-installer provisions the UFS, installs Flipper OS and updates the MCU's firmware over
-I2C, and the boot ROM then boots the UFS. Flipper OS updates the MCU's firmware as on
-the device, and Rockusb's Loader mode (a Rockchip loader's usbplug, or U-Boot's
-rockusb) reads and writes the UFS or the card from the PC. The RK3576's DisplayPort
-(over the USB-C port) and more come next. [RESEARCH.md](RESEARCH.md) is the survey this
-starts from: the device, what Flipper Devices publishes, and what emulating it takes.
-[PLAN.md](PLAN.md) is the order of work; the MCU comes first.
-[docs/BRINGUP_LOG.md](docs/BRINGUP_LOG.md) is what was found on the way.
+Wi-Fi (FlipCTL's Wi-Fi menu with it) and BlueZ its controller. With `--wifi` an access
+point is near it, an open network on this PC's network (through passt), which the Wi-Fi
+finds and joins; nothing else is ever found (no radio). It also boots as the device
+does, through U-Boot from the card (its boot menu on the Flipper's screen; with KASLR,
+and so KPTI, about three minutes here), and Flipper OS installs onto it as the docs do
+it: in its MaskROM, rockusb's download-boot of the installer's loader
+(`scripts/fo_rockusb.py`, over USB/IP); the installer provisions the UFS, installs
+Flipper OS and updates the MCU's firmware over I2C, and the boot ROM then boots the
+UFS. Flipper OS updates the MCU's firmware as on the device, and Rockusb's Loader mode
+(a Rockchip loader's usbplug, or U-Boot's rockusb) reads and writes the UFS or the card
+from the PC. The RK3576's DisplayPort (over the USB-C port) and more come next.
+[RESEARCH.md](RESEARCH.md) is the survey this starts from: the device, what Flipper
+Devices publishes, and what emulating it takes. [PLAN.md](PLAN.md) is the order of
+work; the MCU comes first. [docs/BRINGUP_LOG.md](docs/BRINGUP_LOG.md) is what was found
+on the way.
 
 ## Trying it
 
@@ -116,6 +118,10 @@ the MCU switches its power on, and Flipper OS's interface replaces that screen.
 scripts/fetch_os.py                  # a Flipper OS build: its kernel, initrd and device trees
 ./flipperoneemu run --linux --net ... # ... with its first Ethernet port on this PC's
                                      # network (NAT, through passt: installed with podman)
+./flipperoneemu run --linux --wifi ... # ... and an access point near it: an open
+                                     # network, FlipperOneEmu, on this PC's network (through
+                                     # passt), which its Wi-Fi (the MT7921) finds and joins:
+                                     # FlipCTL's Network > Wi-Fi, or nmcli dev wifi connect
 ./flipperoneemu run --linux --lan ... # ... and a cable in its second port, to a LAN at
                                      # devices/NAME/lan.sock (QEMU's stream netdev): a VM
                                      # joins it with -netdev stream,addr.type=unix,

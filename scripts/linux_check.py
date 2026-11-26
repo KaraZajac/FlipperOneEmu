@@ -29,8 +29,10 @@ Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
   Bluetooth is on USB1 with its firmware loaded, hci0, BlueZ's controller
   powered, a scan starts and finds nothing; its Wi-Fi is mt7921u's with its
   firmware running, wlx000ce7464f02, NetworkManager's, and a scan completes
-  and finds nothing; with its rfkill blocked the chip leaves USB, unblocked
-  it comes back cold; each Ethernet port
+  and finds nothing, or with passt (`run --wifi`) the access point near it,
+  which NetworkManager joins (an address by DHCP, a gateway that answers);
+  with its rfkill blocked the chip leaves USB, unblocked it comes back cold;
+  each Ethernet port
   has its RTL8211F, and with passt installed port 1 is on this PC's network
   (`run --net`): a link, an address by DHCP, a gateway that answers; port 2
   has a cable to a LAN of its own (`run --lan`), where scripts/lan_host.py
@@ -104,13 +106,13 @@ its chip-info, flash-info, capability and storage (the UFS's LU 0); 64 KiB
 written far out on the UFS read back the same and are in its image, then
 erased; the same on the card, after a switch of storage; a read past the
 end fails; fo_rockusb.py's write-bmap writes an image's mapped ranges onto
-the card, and leaves its other blocks. With a kept card (build/linux-check/sd.img), its first 12 MiB
-(Flipper OS's U-Boot) written to the blank card through it: a reset into
-the MaskROM (rkdeveloptool's rd 3) stays there, the card notwithstanding;
-the usbplug again, and its reset boots U-Boot from the card. (Without one,
-its reset finds nothing to boot, and the boot ROM waits in its MaskROM.)
-Then Stop, and the MCU's Maskrom (MASKROM_EN) puts it in its USB download
-again.
+the card, and leaves its other blocks. With a kept card
+(build/linux-check/sd.img), its first 12 MiB (Flipper OS's U-Boot) written
+to the blank card through it: a reset into the MaskROM (rkdeveloptool's rd
+3) stays there, the card notwithstanding; the usbplug again, and its reset
+boots U-Boot from the card. (Without one, its reset finds nothing to boot,
+and the boot ROM waits in its MaskROM.) Then Stop, and the MCU's Maskrom
+(MASKROM_EN) puts it in its USB download again.
 
 A first boot takes several minutes (Flipper OS sets itself up); the first
 run keeps its card as build/linux-check/sd.img, as it is after the checked
@@ -545,9 +547,10 @@ def checks(check, d, out, first_boot, off, net):
     wifi = con.run("W=$(ls /sys/class/ieee80211/phy0/device/net/ | head -1); "
                    "echo $W; sudo dmesg -t | grep -c 'WM Firmware Version'; "
                    "nmcli -t -f DEVICE,TYPE,STATE dev | grep \"^$W:\"; "
-                   "out=$(sudo timeout 60 iw dev $W scan); "
+                   "for i in 1 2 3 4 5; do out=$(sudo timeout 60 iw dev $W "
+                   "scan) && break; sleep 3; done; "   # (NetworkManager's own)
                    "echo \"scan $? $(echo -n \"$out\" | grep -c '^BSS')\"",
-                   120) or []
+                   150) or []
     check("Wi-Fi: the MT7921's (mt7921u), its firmware running, its interface "
           "named by its MAC (wlx000ce7464f02)",
           wifi[:1] == ["wlx000ce7464f02"] and len(wifi) == 4 and
@@ -555,8 +558,27 @@ def checks(check, d, out, first_boot, off, net):
     check("... NetworkManager's, disconnected",
           len(wifi) == 4 and wifi[2] == "wlx000ce7464f02:wifi:disconnected",
           str(wifi))
-    check("... a scan completes, and finds nothing (no radio)",
-          wifi[-1:] == ["scan 0 0"], str(wifi))
+    if not net:
+        check("... a scan completes, and finds nothing (no radio)",
+              wifi[-1:] == ["scan 0 0"], str(wifi))
+    else:
+        # --wifi: an access point near it (an open network), its uplink
+        # through passt
+        check("... a scan finds the access point near it (run --wifi)",
+              wifi[-1:] == ["scan 0 1"], str(wifi))
+        join = con.run("W=$(ls /sys/class/ieee80211/phy0/device/net/ | head "
+                       "-1); sudo timeout 90 nmcli dev wifi connect "
+                       "FlipperOneEmu ifname $W >/dev/null 2>&1; echo $?; "
+                       "sleep 3; ip -4 -br addr show $W | awk '{print $3}'; "
+                       "G=$(ip route | awk '/^default/ && /wl/ {print $3; "
+                       "exit}'); ping -c 2 -W 2 -I $W $G >/dev/null 2>&1; "
+                       "echo ping $?; sudo iw dev $W link | grep -E "
+                       "'SSID|signal' | xargs", 150) or []
+        check("... NetworkManager joins it (FlipperOneEmu, -42 dBm): an "
+              "address by DHCP, and the gateway answers (passt)",
+              len(join) == 4 and join[0] == "0" and "/" in join[1] and
+              join[2] == "ping 0" and "SSID: FlipperOneEmu" in join[3] and
+              "signal: -42 dBm" in join[3], str(join))
     cycle = con.run("sudo rfkill block wlan; sleep 3; "
                     "lsusb -d 0e8d:7961 | wc -l; ls /sys/class/bluetooth | "
                     "wc -l; sudo rfkill unblock wlan; "
@@ -1330,7 +1352,8 @@ def main():
            "--linux"] + (["--uboot", "--usbip", str(port)] if args.uboot else
                          mask + ["--net"] if args.mcu_update else mask + [
            "--audio", str(d / "audio.wav"), "--mic", str(d / "mic.wav"),
-           "--nvme", "--hdmi", "--lan"] + (["--net"] if net else []))
+           "--nvme", "--hdmi", "--lan"] +
+           (["--net", "--wifi"] if net else []))
     if args.maskrom:                    # (no card: the launcher's blank one)
         port = st.free_port()
         run = [sys.executable, str(st.LAUNCHER), "run", "-n", name,

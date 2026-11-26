@@ -167,6 +167,10 @@ def cmd_run(args):
         # this PC's port (on its loopback only) to the device's SSH
         cmd += ["-nic", "passt,model=gmac0" +
                 (f",tcp-ports=127.0.0.1/{args.ssh}:22" if args.ssh else "")]
+    if getattr(args, "wifi", False):
+        # the MT7921's access point: its uplink, through passt as the
+        # Ethernet port's (a -nic of model mt7921: the chip takes it)
+        cmd += ["-nic", "passt,model=mt7921"]
     if getattr(args, "lan", False):
         # a cable in the second port, to a socket: a LAN that another VM, or
         # scripts/lan_host.py, joins at the other end (no one there: no link)
@@ -675,6 +679,10 @@ def main():
             p.add_argument("--net", action="store_true",
                            help="a cable in the first Ethernet port, to this "
                                 "PC's network (through passt)")
+            p.add_argument("--wifi", action="store_true",
+                           help="an access point near the Flipper (an open "
+                                "network, FlipperOneEmu), on this PC's network "
+                                "(through passt): its Wi-Fi finds it and joins")
             p.add_argument("--lan", action="store_true",
                            help="a cable in the second Ethernet port, to a LAN "
                                 "at devices/NAME/lan.sock (QEMU's stream netdev): "

@@ -2541,3 +2541,44 @@ register headers.
          NetworkManager's, a scan that completes and finds nothing, the
          Bluetooth as before, and rfkill's cycle with both (508 s).
        - Its U-Boot mode (522 s), MaskROM mode and the smoke test pass.
+
+102. **An access point near the Flipper: its Wi-Fi finds it and joins it.**
+     - **What.** With `run --wifi` the MT7921 model has an uplink (a `-nic`
+       of model mt7921, passt as for the Ethernet port). With it, an open
+       11g network is near: FlipperOneEmu, BSSID 02:0c:e7:46:4f:a0, on
+       channel 6. The driver's side was read from mt76 and mac80211 first,
+       into a second device-side spec (RX, TX, TX status, association).
+     - **As the chip receives and sends frames** (mt7921.c):
+       - Received frames go on IN 0x84 with an RXD of type 2, the channel,
+         and RX group 3 (OFDM 6 Mbit/s, RCPI 0x82 on two chains: -42 dBm),
+         the 802.11 frame at offset 32.
+       - A scan that covers channel 6 gets the AP's beacon. mac80211 takes
+         beacons into its BSS table whenever they come, unlike probe
+         responses.
+       - Frames the host sends come as a TXD and the frame at offset 68:
+         802.11 for management frames, and for data before the station is
+         authorized; 802.3 after.
+       - Each frame that asks for its TX status (TXD5's TX_STATUS_HOST and
+         PID) gets it, acked, echoing its WLAN index and PID. It goes before
+         the AP's answer, which comes 30 ms later: mac80211 weighs them in
+         that order.
+       - The firmware's CNM asks for remain-on-channel before
+         authentication and association. Each acquire is granted at once
+         (an unsolicited UNI event, eid 0x27).
+     - **The AP:** open authentication, then association (AID 1). It is
+       legacy 11g, with no HT and no WMM: no block-ack sessions, non-QoS
+       data. The station's data goes to the uplink as Ethernet frames, and
+       the uplink's to the station as 802.11 data (FromDS, LLC/SNAP):
+       unicast to it, multicast, broadcast.
+     - **Checked.**
+       - In Flipper OS, NetworkManager lists FlipperOneEmu (channel 6,
+         signal 97, open). `nmcli dev wifi connect` joins it: authenticate,
+         authenticated, associate, "RX AssocResp ... aid=1", associated,
+         each on its first try.
+       - DHCP from passt gives an address with the default route through
+         the Wi-Fi; the gateway answers pings.
+       - `iw link`: connected on 2437 MHz, -42 dBm.
+       - QEMU's log has nothing from the chip.
+       - linux_check adds `--wifi` where passt is installed: a scan finds the
+         AP, and NetworkManager joins it (526 s). Its U-Boot mode (561 s),
+         MaskROM mode and the smoke test pass.

@@ -202,9 +202,11 @@ screen and its CLI.
       ASID, a boot half again as long (log 96): an ASID-aware TLB
 - ◐ Wi-Fi (the MT7921 on USB, its Bluetooth there too, log 99): mt7921u on its
       interface 3, its real firmware through the emulated MCU, the interface
-      NetworkManager's and FlipCTL's, scans that complete and find nothing
-      (2026-11-26, log 101); an access point to find and join (802.11 frames received
-      and sent, TX status, ROC), bridged to this PC's network
+      NetworkManager's and FlipCTL's, scans that complete (2026-11-26, log 101); an
+      access point near it (`run --wifi`): an open 11g network that a scan finds and
+      NetworkManager joins (802.11 frames received and sent, TX status, ROC grants),
+      bridged to this PC's network through passt (2026-11-26, log 102); WPA2, other
+      networks, HT rates
 
 ## Not planned
 - The RK3576's mask ROM and DDR training blob (closed), SPL and TF-A's BL31: the machine

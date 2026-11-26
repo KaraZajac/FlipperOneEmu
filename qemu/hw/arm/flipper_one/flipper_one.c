@@ -1608,6 +1608,8 @@ static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
         DeviceState *bt = qdev_new(TYPE_MT7921);
 
         qdev_prop_set_string(bt, "port", "2");
+        /* (its access point's uplink: a -nic of model mt7921, if any) */
+        qemu_configure_nic_device(bt, false, "mt7921");
         qdev_realize_and_unref(bt, BUS(&s->rk3576.usb[1].xhci.xhci.bus),
                                &error_fatal);
         s->mt7921 = USB_DEVICE(bt);

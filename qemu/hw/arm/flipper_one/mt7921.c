@@ -47,8 +47,20 @@
  * firmware is the guest's own, its patch and RAM code taken as they come
  * and dropped; then the NIC's capabilities (its MAC address, two streams,
  * 2.4 and 5 GHz), and what bringing the interface up and scanning send. A
- * scan ends after a while with no network found: no radio. Commands it
- * does not know get an answer as if done, and are logged.
+ * scan ends after a while. Commands it does not know get an answer as if
+ * done, and are logged.
+ *
+ * With an uplink (its "netdev", a -nic of model mt7921) an access point is
+ * near it: an open 11g network ("ap-ssid", FlipperOneEmu, on "ap-channel"
+ * 6), whose beacon each scan of its channel finds. Frames go as the chip
+ * receives them (an RXD of type 2, the channel, RCPI for -42 dBm, the
+ * 802.11 frame) on 0x84; those the host sends come as a TXD and the frame
+ * (802.11, or 802.3 once the station is authorized), and each that asks
+ * for its TX status gets it, acked, before the AP answers (mac80211
+ * weighs them in that order): the AP's authentication and association
+ * responses, 30 ms on. The remain-on-channel the firmware's CNM asks for
+ * is granted at once. Data is bridged: the station's to the uplink as
+ * Ethernet frames, the uplink's to the station as 802.11 ones.
  *
  * Copyright (c) 2026, Kara Zajac
  * SPDX-License-Identifier: BSD-3-Clause
@@ -63,6 +75,7 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/usb/usb.h"
 #include "hw/usb/desc.h"
+#include "net/net.h"
 #include "flipper_one.h"
 
 OBJECT_DECLARE_SIMPLE_TYPE(MT7921State, MT7921)
@@ -113,9 +126,24 @@ struct MT7921State {
     uint8_t wifi_mac[6];
     uint32_t conn_on_misc;              /* bits 2:0: the MCU's state */
     bool wifi_patched;                  /* the ROM's patch is in */
-    GQueue wevq;                        /* MCU events, a transfer each */
+    GQueue wq[2];                       /* transfers for IN 0x84 (frames,
+                                           TX status, events) and 0x85 */
     QEMUTimer *scan;                    /* a scan's end */
+    /* the access point near it, with an uplink (its NIC's netdev) */
+    NICConf conf;
+    NICState *nic;
+    char *ap_ssid;                      /* "ap-ssid" */
+    uint8_t ap_chan;                    /* "ap-channel" */
+    uint8_t bssid[6];
+    uint8_t sta[6];                     /* the station, as its frames say */
+    int sta_state;                      /* AP_NONE, AP_AUTH, AP_ASSOC */
+    uint16_t ap_seq;
+    QEMUTimer *beacon;                  /* a beacon, in a scan */
+    QEMUTimer *ap_reply;                /* the AP's answer, then */
+    GByteArray *ap_pending;
 };
+
+enum { AP_NONE, AP_AUTH, AP_ASSOC };
 
 /* ------------------------------------------------------------ USB side */
 
@@ -940,6 +968,10 @@ static uint32_t mt7921_reg(MT7921State *s, uint32_t a)
     case 0x820d4230:                            /* WTBL update: never busy */
         return reg_get(s, a) & ~BIT(31);
     default:
+        if (a >= 0x820d8000 && a < 0x820d8000 + 20 * 0x100 &&
+            (a & 0xff) == 0x78) {               /* a WTBL's DW30: the ack's */
+            return 0x8282;                      /* RCPI (-42 dBm) */
+        }
         return reg_get(s, a);
     }
 }
@@ -956,7 +988,7 @@ static void mt7921_reg_write(MT7921State *s, uint32_t a, uint32_t v)
 
 /* --------------------------------------------------- its Wi-Fi's MCU */
 
-#define WIFI_EVQ_MAX    64                  /* events waiting, at most */
+#define WIFI_Q_MAX      256                 /* transfers waiting, at most */
 #define SCAN_NS         (1500 * SCALE_MS)   /* a scan's length */
 
 /* the IN endpoint the MCU's events go to: 0x84 once WFDMA's HOST_CONFIG
@@ -966,40 +998,57 @@ static int wifi_event_ep(MT7921State *s)
     return reg_get(s, 0x7c027030) & BIT(6) ? 4 : 5;
 }
 
-/* an event: its RXD (type 7, the exact length) and header (@28 eid, @29
- * the command's seq, @32 ext_eid, or a status), its payload at @36 */
-static void wifi_event(MT7921State *s, uint8_t eid, uint8_t seq, uint8_t b32,
-                       const void *pl, int n)
+/* a transfer for IN 0x84 (@q 0) or 0x85 (1): a header, a body */
+static void wifi_in(MT7921State *s, int q, const void *h, int hn,
+                    const void *b, int bn)
 {
     GByteArray *e;
-    uint8_t h[36] = { 0 };
 
-    if (g_queue_get_length(&s->wevq) >= WIFI_EVQ_MAX) {
-        qemu_log_mask(LOG_GUEST_ERROR, "mt7921: Wi-Fi events not taken: "
-                      "0x%02x dropped\n", eid);
+    if (g_queue_get_length(&s->wq[q]) >= WIFI_Q_MAX) {
+        qemu_log_mask(LOG_GUEST_ERROR, "mt7921: Wi-Fi transfers not taken: "
+                      "one dropped\n");
         return;
     }
+    e = g_byte_array_sized_new(hn + bn);
+    g_byte_array_append(e, h, hn);
+    if (bn) {
+        g_byte_array_append(e, b, bn);
+    }
+    g_queue_push_tail(&s->wq[q], e);
+    usb_wakeup(usb_ep_get(USB_DEVICE(s), USB_TOKEN_IN, q ? 5 : 4), 0);
+}
+
+/* an event: its RXD (type 7, the exact length) and header (@28 eid, @29
+ * the command's seq, @30 its option, @32 ext_eid, or a status), its
+ * payload at @36 */
+static void wifi_event_opt(MT7921State *s, uint8_t eid, uint8_t seq,
+                           uint8_t option, uint8_t b32, const void *pl, int n)
+{
+    uint8_t h[36] = { 0 };
+
     stl_le_p(h, 0x38000000 | (36 + n));
     stw_le_p(h + 24, 36 + n - 24);
     h[28] = eid;
     h[29] = seq;
+    h[30] = option;
     h[32] = b32;
-    e = g_byte_array_sized_new(36 + n);
-    g_byte_array_append(e, h, 36);
-    if (n) {
-        g_byte_array_append(e, pl, n);
-    }
-    g_queue_push_tail(&s->wevq, e);
-    usb_wakeup(usb_ep_get(USB_DEVICE(s), USB_TOKEN_IN,
-                          wifi_event_ep(s)), 0);
+    wifi_in(s, wifi_event_ep(s) == 4 ? 0 : 1, h, 36, pl, n);
+}
+
+static void wifi_event(MT7921State *s, uint8_t eid, uint8_t seq, uint8_t b32,
+                       const void *pl, int n)
+{
+    wifi_event_opt(s, eid, seq, 0, b32, pl, n);
 }
 
 static void wifi_flush(MT7921State *s)
 {
     GByteArray *e;
 
-    while ((e = g_queue_pop_head(&s->wevq))) {
-        g_byte_array_free(e, true);
+    for (int q = 0; q < 2; q++) {
+        while ((e = g_queue_pop_head(&s->wq[q]))) {
+            g_byte_array_free(e, true);
+        }
     }
 }
 
@@ -1010,6 +1059,9 @@ static void wifi_reset(MT7921State *s)
     s->conn_on_misc = 1;                        /* (powered, nothing on) */
     wifi_flush(s);
     timer_del(s->scan);
+    timer_del(s->beacon);
+    timer_del(s->ap_reply);
+    s->sta_state = AP_NONE;
 }
 
 static void scan_done(void *opaque)
@@ -1018,6 +1070,273 @@ static void scan_done(void *opaque)
     uint8_t done[476] = { 0 };                  /* (no network found) */
 
     wifi_event(s, 0x0d, 0, 0, done, sizeof(done));      /* SCAN_DONE */
+}
+
+/* ------------------------------------------------- the access point */
+
+static bool ap_on(MT7921State *s)
+{
+    return s->nic && qemu_get_queue(s->nic)->peer;
+}
+
+/* a frame as the chip receives it, on 0x84: its RXD (type 2, group 3: the
+ * rate, OFDM 6 Mbit/s, and RCPI 0x82 on two chains: -42 dBm), the AP's
+ * channel, @addr_type (1: unicast to the station, 2: multicast, 3:
+ * broadcast) */
+static void ap_rx(MT7921State *s, const uint8_t *f, int n, int addr_type)
+{
+    uint8_t h[32] = { 0 };
+
+    stl_le_p(h, 0x10000000 | (32 + n));
+    stl_le_p(h + 4, BIT(13));
+    stl_le_p(h + 12, s->ap_chan << 8 | addr_type << 16);
+    stl_le_p(h + 24, 0x0100000b);
+    stl_le_p(h + 28, 0x8282);
+    wifi_in(s, 0, h, 32, f, n);
+}
+
+static int ap_hdr(MT7921State *s, uint8_t *f, uint16_t fc, const uint8_t *a1,
+                  const uint8_t *a2, const uint8_t *a3)
+{
+    stw_le_p(f, fc);
+    stw_le_p(f + 2, 0);
+    memcpy(f + 4, a1, 6);
+    memcpy(f + 10, a2, 6);
+    memcpy(f + 16, a3, 6);
+    stw_le_p(f + 22, (s->ap_seq++ & 0xfff) << 4);
+    return 24;
+}
+
+/* its rates: 1, 2, 5.5, 11 (basic), 6, 9, 12, 18; then 24, 36, 48, 54 */
+static const uint8_t ap_rates[] = { 1, 8, 0x82, 0x84, 0x8b, 0x96,
+                                    0x0c, 0x12, 0x18, 0x24 };
+static const uint8_t ap_xrates[] = { 50, 4, 0x30, 0x48, 0x60, 0x6c };
+static const uint8_t bcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
+
+static void ap_beacon(void *opaque)
+{
+    MT7921State *s = opaque;
+    uint8_t f[256];
+    int n, l = MIN(strlen(s->ap_ssid), 32);
+
+    n = ap_hdr(s, f, 0x0080, bcast, s->bssid, s->bssid);
+    stq_le_p(f + n, qemu_clock_get_us(QEMU_CLOCK_VIRTUAL));
+    stw_le_p(f + n + 8, 100);                   /* every 100 TU */
+    stw_le_p(f + n + 10, 0x0421);               /* ESS, short preamble and
+                                                   slot */
+    n += 12;
+    f[n++] = 0;                                 /* its SSID */
+    f[n++] = l;
+    memcpy(f + n, s->ap_ssid, l);
+    n += l;
+    memcpy(f + n, ap_rates, sizeof(ap_rates));
+    n += sizeof(ap_rates);
+    f[n++] = 3;                                 /* its channel */
+    f[n++] = 1;
+    f[n++] = s->ap_chan;
+    f[n++] = 5;                                 /* TIM: none buffered */
+    f[n++] = 4;
+    f[n++] = 0, f[n++] = 1, f[n++] = 0, f[n++] = 0;
+    f[n++] = 42;                                /* ERP: nothing to protect */
+    f[n++] = 1;
+    f[n++] = 0;
+    memcpy(f + n, ap_xrates, sizeof(ap_xrates));
+    n += sizeof(ap_xrates);
+    ap_rx(s, f, n, 3);
+}
+
+/* the AP's answer, a moment after the TX status of what it answers */
+static void ap_reply_now(void *opaque)
+{
+    MT7921State *s = opaque;
+
+    if (s->ap_pending && s->ap_pending->len) {
+        ap_rx(s, s->ap_pending->data, s->ap_pending->len, 1);
+        g_byte_array_set_size(s->ap_pending, 0);
+    }
+}
+
+static void ap_reply(MT7921State *s, const uint8_t *f, int n)
+{
+    g_byte_array_set_size(s->ap_pending, 0);
+    g_byte_array_append(s->ap_pending, f, n);
+    timer_mod(s->ap_reply, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+              30 * SCALE_MS);
+}
+
+/* an Ethernet frame of the station's, to the uplink */
+static void ap_uplink(MT7921State *s, const uint8_t *eth, int n)
+{
+    if (s->sta_state == AP_ASSOC && n >= 14 && ap_on(s)) {
+        qemu_send_packet(qemu_get_queue(s->nic), eth, n);
+    }
+}
+
+/* an 802.11 frame the station sent: to the AP, or through it */
+static void ap_frame(MT7921State *s, const uint8_t *f, int n)
+{
+    static const uint8_t snap[6] = { 0xaa, 0xaa, 0x03, 0, 0, 0 };
+    uint8_t r[64], eth[2400];
+    uint16_t fc;
+    int h, m;
+
+    if (n < 24 || !ap_on(s) || memcmp(f + 4, s->bssid, 6)) {
+        return;                                 /* (addr1: not the AP) */
+    }
+    fc = lduw_le_p(f);
+    switch (fc & 0xfc) {
+    case 0xb0:                                  /* authentication: open */
+        if (n < 30 || lduw_le_p(f + 24) != 0 || lduw_le_p(f + 26) != 1) {
+            break;
+        }
+        memcpy(s->sta, f + 10, 6);
+        s->sta_state = AP_AUTH;
+        m = ap_hdr(s, r, 0x00b0, s->sta, s->bssid, s->bssid);
+        stw_le_p(r + m, 0);                     /* open, 2, success */
+        stw_le_p(r + m + 2, 2);
+        stw_le_p(r + m + 4, 0);
+        ap_reply(s, r, m + 6);
+        break;
+    case 0x00:                                  /* (re)association */
+    case 0x20:
+        if (s->sta_state == AP_NONE || memcmp(f + 10, s->sta, 6)) {
+            break;
+        }
+        s->sta_state = AP_ASSOC;
+        m = ap_hdr(s, r, (fc & 0xfc) + 0x10, s->sta, s->bssid, s->bssid);
+        stw_le_p(r + m, 0x0421);                /* its capability */
+        stw_le_p(r + m + 2, 0);                 /* success */
+        stw_le_p(r + m + 4, 0xc001);            /* AID 1 */
+        m += 6;
+        memcpy(r + m, ap_rates, sizeof(ap_rates));
+        m += sizeof(ap_rates);
+        memcpy(r + m, ap_xrates, sizeof(ap_xrates));
+        m += sizeof(ap_xrates);
+        ap_reply(s, r, m);
+        break;
+    case 0xa0:                                  /* disassociation */
+    case 0xc0:                                  /* deauthentication */
+        if (!memcmp(f + 10, s->sta, 6)) {
+            s->sta_state = AP_NONE;
+        }
+        break;
+    case 0x08:                                  /* data (ToDS), QoS too */
+    case 0x88:
+        h = 24 + ((fc & 0xfc) == 0x88 ? 2 : 0) +
+            ((fc & 0x88) == 0x88 && (fc & 0x8000) ? 4 : 0);
+        if (!(fc & 0x0100) || n < h + 8 || memcmp(f + h, snap, 6) ||
+            n - h - 6 + 12 > (int)sizeof(eth)) {
+            break;
+        }
+        memcpy(eth, f + 16, 6);                 /* DA: addr3 */
+        memcpy(eth + 6, f + 10, 6);             /* SA: addr2 */
+        memcpy(eth + 12, f + h + 6, n - h - 6); /* EtherType, payload */
+        ap_uplink(s, eth, n - h - 6 + 12);
+        break;
+    default:                                    /* (null data, actions) */
+        break;
+    }
+}
+
+/* the uplink's frame: to the station, if it is associated (unicast to it,
+ * multicast, broadcast) */
+static bool ap_can_receive(NetClientState *nc)
+{
+    return true;
+}
+
+static ssize_t ap_receive(NetClientState *nc, const uint8_t *buf, size_t size)
+{
+    MT7921State *s = qemu_get_nic_opaque(nc);
+    static const uint8_t snap[6] = { 0xaa, 0xaa, 0x03, 0, 0, 0 };
+    uint8_t f[2400];
+    bool group = buf[0] & 1;
+    int n;
+
+    if (s->sta_state != AP_ASSOC || size < 14 || size - 12 + 30 > sizeof(f) ||
+        (!group && memcmp(buf, s->sta, 6))) {
+        return size;
+    }
+    n = ap_hdr(s, f, 0x0208, buf, s->bssid, buf + 6);   /* data, FromDS */
+    memcpy(f + n, snap, 6);
+    memcpy(f + n + 6, buf + 12, size - 12);
+    ap_rx(s, f, n + 6 + size - 12,
+          !group ? 1 : memcmp(buf, bcast, 6) ? 2 : 3);
+    return size;
+}
+
+static NetClientInfo ap_net_info = {
+    .type = NET_CLIENT_DRIVER_NIC,
+    .size = sizeof(NICState),
+    .can_receive = ap_can_receive,
+    .receive = ap_receive,
+};
+
+/* a TX status, acked (OFDM 6 Mbit/s), for @wcid's frame @pid: a packet of
+ * type 0 on 0x84, one record */
+static void wifi_txs(MT7921State *s, uint16_t wcid, uint8_t pid)
+{
+    uint8_t r[40] = { 0 };
+
+    stl_le_p(r, 40);
+    stl_le_p(r + 8, 0x004b | BIT(15));
+    stl_le_p(r + 16, (uint32_t)(wcid & 0x3ff) << 16);
+    stl_le_p(r + 20, (uint32_t)pid << 24);
+    stl_le_p(r + 24, (uint32_t)qemu_clock_get_us(QEMU_CLOCK_VIRTUAL));
+    wifi_in(s, 0, r, 40, NULL, 0);
+}
+
+/* a frame the host sends: a 4-byte length, the TXD (16 words: DW0 its
+ * length + 64, DW1 the WLAN index and the header's format, 0 802.3 or 2
+ * 802.11; DW3 NO_ACK; DW5 the PID and TX_STATUS_HOST), the frame at 68 */
+static void wifi_tx(MT7921State *s, const uint8_t *b, int len)
+{
+    uint32_t txd0, txd1, txd5;
+    int n;
+
+    if (len < 68 + 14) {
+        return;
+    }
+    txd0 = ldl_le_p(b + 4);
+    txd1 = ldl_le_p(b + 8);
+    txd5 = ldl_le_p(b + 24);
+    n = MIN((int)(txd0 & 0xffff) - 64, len - 68);
+    if (n < 14) {
+        return;
+    }
+    if ((txd5 & BIT(10)) && (txd5 & 0xff) >= 3) {
+        wifi_txs(s, txd1 & 0x3ff, txd5 & 0xff);
+    }
+    if (((txd1 >> 16) & 3) == 0) {             /* 802.3: as it is */
+        ap_uplink(s, b + 68, n);
+    } else {
+        ap_frame(s, b + 68, n);
+    }
+}
+
+/* does the scan (START_HW_SCAN's request) look on the AP's channel? (@158
+ * channel_type 0: all of them; else @159 channels_num, @160 {band,
+ * channel}, and past 32 @826 ext_channels_num, @830 the rest) */
+static bool scan_has_chan(MT7921State *s, const uint8_t *pl, int n)
+{
+    int num, ext;
+
+    if (n < 160 || pl[158] == 0) {
+        return true;
+    }
+    num = MIN(pl[159], 32);
+    for (int i = 0; i < num && 161 + 2 * i < n; i++) {
+        if (pl[160 + 2 * i] == 1 && pl[161 + 2 * i] == s->ap_chan) {
+            return true;
+        }
+    }
+    ext = n > 826 ? pl[826] : 0;
+    for (int i = 0; i < ext && 831 + 2 * i < n; i++) {
+        if (pl[830 + 2 * i] == 1 && pl[831 + 2 * i] == s->ap_chan) {
+            return true;
+        }
+    }
+    return false;
 }
 
 /* its NIC's capabilities: its MAC address; two streams, HT, VHT and HE, 80
@@ -1090,7 +1409,11 @@ static void wifi_ce(MT7921State *s, uint8_t cid, bool set, uint8_t seq,
             wifi_event(s, 0x01, seq, 0, r, 8);
         }
         break;
-    case 0x03:                                  /* START_HW_SCAN */
+    case 0x03:                                  /* START_HW_SCAN: the AP's */
+        if (ap_on(s) && scan_has_chan(s, pl, n)) {      /* beacon in it */
+            timer_mod(s->beacon, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                      SCAN_NS / 4);
+        }
         timer_mod(s->scan, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + SCAN_NS);
         break;
     case 0x1b:                                  /* CANCEL_HW_SCAN (the
@@ -1145,11 +1468,30 @@ static void wifi_ext(MT7921State *s, uint8_t ext, uint8_t seq,
 }
 
 /* a UNI command: its answer names it, status 0 */
-static void wifi_uni(MT7921State *s, uint16_t cid, uint8_t seq, int n)
+static void wifi_uni(MT7921State *s, uint16_t cid, uint8_t seq,
+                     const uint8_t *pl, int n)
 {
-    uint8_t r[8] = { cid };
+    uint8_t r[8] = { cid }, g[24] = { 0 };
 
     switch (cid) {
+    case 0x27:                                  /* ROC: an acquire (its */
+        if (n >= 28 && lduw_le_p(pl + 4) == 0) {        /* tag 0) granted */
+            stw_le_p(g + 4, 0);                 /* (UNI_EVENT_ROC_GRANT) */
+            stw_le_p(g + 6, 20);
+            g[8] = pl[8];                       /* bss_idx, tokenid */
+            g[9] = pl[9];
+            g[11] = pl[10];                     /* the channel, sco, band, */
+            g[12] = pl[11];                     /* width, centres */
+            g[13] = pl[12];
+            g[14] = pl[13];
+            g[15] = pl[14];
+            g[16] = pl[15];
+            g[17] = pl[19];                     /* reqtype */
+            g[18] = pl[24];                     /* dbdcband */
+            stl_le_p(g + 20, ldl_le_p(pl + 20));        /* max_interval */
+            wifi_event_opt(s, 0x27, 0, 0x04, 0, g, sizeof(g));
+        }
+        break;
     case 0x01:                                  /* DEV_INFO_UPDATE */
     case 0x02:                                  /* BSS_INFO_UPDATE */
     case 0x03:                                  /* STA_REC_UPDATE */
@@ -1183,7 +1525,7 @@ static void wifi_command(MT7921State *s, const uint8_t *b, int len)
     l = MIN(ldl_le_p(b) & 0xffff, (uint32_t)len - 4);
     seq = t[39];
     if (t[43] & 2) {                            /* UNI */
-        wifi_uni(s, lduw_le_p(t + 34), seq, l >= 48 ? l - 48 : 0);
+        wifi_uni(s, lduw_le_p(t + 34), seq, t + 48, l >= 48 ? l - 48 : 0);
     } else if (l >= 64) {
         if (t[36] == 0xed) {
             wifi_ext(s, t[41], seq, t + 64, l - 64);
@@ -1273,9 +1615,8 @@ static void mt7921_handle_data(USBDevice *dev, USBPacket *p)
     if (p->pid == USB_TOKEN_IN && (p->ep->nr == 4 || p->ep->nr == 5)) {
         GByteArray *e;                          /* the Wi-Fi's MCU events */
 
-        if (p->ep->nr != wifi_event_ep(s) ||
-            !(e = g_queue_pop_head(&s->wevq))) {
-            p->status = USB_RET_NAK;            /* (no frame is received) */
+        if (!(e = g_queue_pop_head(&s->wq[p->ep->nr == 4 ? 0 : 1]))) {
+            p->status = USB_RET_NAK;            /* (nothing to take) */
             return;
         }
         usb_packet_copy(p, e->data, MIN(e->len, p->iov.size));
@@ -1289,10 +1630,17 @@ static void mt7921_handle_data(USBDevice *dev, USBPacket *p)
         wifi_command(s, b, p->iov.size);
         return;
     }
+    if (p->pid == USB_TOKEN_OUT && p->ep->nr >= 4 && p->ep->nr <= 9 &&
+        !(p->ep->nr == 4 && (reg_get(s, 0x74000008) & BIT(3)))) {
+        g_autofree uint8_t *b = g_malloc(p->iov.size);  /* a frame (not */
+                                                        /* the firmware) */
+        usb_packet_copy(p, b, p->iov.size);
+        wifi_tx(s, b, p->iov.size);
+        return;
+    }
     if (p->pid == USB_TOKEN_OUT) {              /* ACL, ISO, the Wi-Fi's
                                                    firmware data (0x04 while
-                                                   FW_DL_EN) and frames: no
-                                                   link takes them */
+                                                   FW_DL_EN): taken */
         p->actual_length = p->iov.size;
         return;
     }
@@ -1322,6 +1670,9 @@ void mt7921_power(USBDevice *dev, bool on)
         usb_device_detach(dev);
         controller_reset(s);
         timer_del(s->scan);
+        timer_del(s->beacon);
+        timer_del(s->ap_reply);
+        s->sta_state = AP_NONE;
         return;
     }
     /* a cold chip: no patch, Bluetooth off, the Wi-Fi's MCU unpowered */
@@ -1367,8 +1718,21 @@ static void mt7921_realize(USBDevice *dev, Error **errp)
     s->inquiry = timer_new_ns(QEMU_CLOCK_VIRTUAL, inquiry_done, s);
     s->page = timer_new_ns(QEMU_CLOCK_VIRTUAL, page_done, s);
     s->scan = timer_new_ns(QEMU_CLOCK_VIRTUAL, scan_done, s);
+    s->beacon = timer_new_ns(QEMU_CLOCK_VIRTUAL, ap_beacon, s);
+    s->ap_reply = timer_new_ns(QEMU_CLOCK_VIRTUAL, ap_reply_now, s);
+    s->ap_pending = g_byte_array_new();
     s->regs = g_hash_table_new(g_direct_hash, g_direct_equal);
-    g_queue_init(&s->wevq);
+    g_queue_init(&s->wq[0]);
+    g_queue_init(&s->wq[1]);
+    /* the AP's BSSID: a locally administered one of MediaTek's OUI */
+    memcpy(s->bssid, (uint8_t[]){ 0x02, 0x0c, 0xe7, 0x46, 0x4f, 0xa0 }, 6);
+    memcpy(s->conf.macaddr.a, s->bssid, 6);
+    s->nic = qemu_new_nic(&ap_net_info, &s->conf,
+                          object_get_typename(OBJECT(dev)), DEVICE(dev)->id,
+                          &DEVICE(dev)->mem_reentrancy_guard, s);
+    if (!s->ap_ssid) {
+        s->ap_ssid = g_strdup("FlipperOneEmu");
+    }
     controller_reset(s);
     dev->auto_attach = false;                   /* (powered by the board) */
 }
@@ -1376,6 +1740,9 @@ static void mt7921_realize(USBDevice *dev, Error **errp)
 static const Property mt7921_props[] = {
     DEFINE_PROP_STRING("bdaddr", MT7921State, bdaddr_prop),
     DEFINE_PROP_STRING("wifi-mac", MT7921State, wifi_mac_prop),
+    DEFINE_PROP_STRING("ap-ssid", MT7921State, ap_ssid),
+    DEFINE_PROP_UINT8("ap-channel", MT7921State, ap_chan, 6),
+    DEFINE_NIC_PROPERTIES(MT7921State, conf),
 };
 
 static void mt7921_class_init(ObjectClass *oc, const void *data)
