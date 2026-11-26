@@ -170,7 +170,10 @@ def cmd_run(args):
     if getattr(args, "wifi", False):
         # the MT7921's access point: its uplink, through passt as the
         # Ethernet port's (a -nic of model mt7921: the chip takes it)
-        cmd += ["-nic", "passt,model=mt7921"]
+        if not 8 <= len(args.wifi_psk) <= 63 or "," in args.wifi_psk:
+            die("--wifi-psk: 8 to 63 characters, no comma")
+        cmd += ["-nic", "passt,model=mt7921",
+                "-global", f"mt7921.ap-psk={args.wifi_psk}"]
     if getattr(args, "lan", False):
         # a cable in the second port, to a socket: a LAN that another VM, or
         # scripts/lan_host.py, joins at the other end (no one there: no link)
@@ -680,9 +683,15 @@ def main():
                            help="a cable in the first Ethernet port, to this "
                                 "PC's network (through passt)")
             p.add_argument("--wifi", action="store_true",
-                           help="an access point near the Flipper (an open "
-                                "network, FlipperOneEmu), on this PC's network "
-                                "(through passt): its Wi-Fi finds it and joins")
+                           help="an access point near the Flipper, on this "
+                                "PC's network (through passt): an open network, "
+                                "FlipperOneEmu, and a WPA2 one, "
+                                "FlipperOneEmu-WPA2; its Wi-Fi finds and joins "
+                                "them")
+            p.add_argument("--wifi-psk", metavar="PASSPHRASE",
+                           default="flipperone",
+                           help="the WPA2 network's passphrase (8-63 "
+                                "characters; flipperone unless told)")
             p.add_argument("--lan", action="store_true",
                            help="a cable in the second Ethernet port, to a LAN "
                                 "at devices/NAME/lan.sock (QEMU's stream netdev): "

@@ -2582,3 +2582,36 @@ register headers.
        - linux_check adds `--wifi` where passt is installed: a scan finds the
          AP, and NetworkManager joins it (526 s). Its U-Boot mode (561 s),
          MaskROM mode and the smoke test pass.
+
+103. **A WPA2 network beside the open one; FlipCTL joins them.**
+     - **FlipCTL first.** With log 102's AP, FlipCTL's own Network > Wi-Fi >
+       See visible networks lists FlipperOneEmu. Picking it shows a spinner,
+       then the network's page: Disconnect, Forget this network, Auto join
+       ON, Password open, DHCP, its IPv4 address.
+     - **WPA2.** With a passphrase (`ap-psk`; the launcher's `--wifi`
+       passes `--wifi-psk`'s, flipperone unless told) a second network is
+       beside it: FlipperOneEmu-WPA2, the next BSSID, the Privacy bit, an
+       RSN element (CCMP, PSK).
+     - **The handshake is its AP's.** After the association, it sends
+       EAPOL-Key message 1 (its ANonce). Message 2 brings the station's
+       SNonce, and the AP derives the PTK: the PRF over the addresses and
+       nonces, from the PMK. The PMK is PBKDF2-SHA1 of the passphrase,
+       salted with the SSID. Message 2's MIC is checked against the KCK: a
+       wrong one means a wrong passphrase, and a deauthentication (reason
+       15). Message 3 carries the AP's RSN element and the GTK, wrapped
+       with AES (RFC 3394) under the KEK. Message 4 ends it.
+       - QEMU here has no gnutls, nettle or gcrypt. HMAC-SHA1 is glib's,
+         and the AES is QEMU's own, as its TCG's AES instructions use.
+     - **The keys go to the chip, which ciphers on the air.** On USB the
+       frames stay clear. From the handshake's end, the AP's are marked as
+       the chip decrypted them: RXD1's SEC_MODE is CCMP, with the Protected
+       bit set. mt7921 then takes the IV and MIC as stripped, and mac80211
+       needs no PN.
+     - **Checked.**
+       - Both networks are listed (WPA2, open). With the passphrase,
+         NetworkManager joins the WPA2 one: DHCP, and the gateway answers.
+       - A wrong passphrase: "Secrets were required", and the device is
+         disconnected.
+       - QEMU's log has nothing from the chip.
+       - linux_check joins the open network, then the WPA2 one (423 s).
+         Its U-Boot mode (460 s), MaskROM mode and the smoke test pass.

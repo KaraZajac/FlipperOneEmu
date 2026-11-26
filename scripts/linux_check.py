@@ -30,7 +30,8 @@ Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
   powered, a scan starts and finds nothing; its Wi-Fi is mt7921u's with its
   firmware running, wlx000ce7464f02, NetworkManager's, and a scan completes
   and finds nothing, or with passt (`run --wifi`) the access point near it,
-  which NetworkManager joins (an address by DHCP, a gateway that answers);
+  whose open network NetworkManager joins (an address by DHCP, a gateway that
+  answers), then its WPA2 one (the 4-way handshake);
   with its rfkill blocked the chip leaves USB, unblocked it comes back cold;
   each Ethernet port
   has its RTL8211F, and with passt installed port 1 is on this PC's network
@@ -564,8 +565,8 @@ def checks(check, d, out, first_boot, off, net):
     else:
         # --wifi: an access point near it (an open network), its uplink
         # through passt
-        check("... a scan finds the access point near it (run --wifi)",
-              wifi[-1:] == ["scan 0 1"], str(wifi))
+        check("... a scan finds the access point near it, its two networks "
+              "(run --wifi)", wifi[-1:] == ["scan 0 2"], str(wifi))
         join = con.run("W=$(ls /sys/class/ieee80211/phy0/device/net/ | head "
                        "-1); sudo timeout 90 nmcli dev wifi connect "
                        "FlipperOneEmu ifname $W >/dev/null 2>&1; echo $?; "
@@ -579,6 +580,16 @@ def checks(check, d, out, first_boot, off, net):
               len(join) == 4 and join[0] == "0" and "/" in join[1] and
               join[2] == "ping 0" and "SSID: FlipperOneEmu" in join[3] and
               "signal: -42 dBm" in join[3], str(join))
+        wpa = con.run("W=$(ls /sys/class/ieee80211/phy0/device/net/ | head "
+                      "-1); sudo timeout 90 nmcli dev wifi connect "
+                      "FlipperOneEmu-WPA2 password flipperone ifname $W "
+                      ">/dev/null 2>&1; echo $?; sleep 3; G=$(ip route | awk "
+                      "'/^default/ && /wl/ {print $3; exit}'); ping -c 2 -W 2 "
+                      "-I $W $G >/dev/null 2>&1; echo ping $?; sudo iw dev $W "
+                      "link | grep SSID | xargs", 150) or []
+        check("... and its WPA2 one (FlipperOneEmu-WPA2: the 4-way "
+              "handshake), the gateway answering through it",
+              wpa == ["0", "ping 0", "SSID: FlipperOneEmu-WPA2"], str(wpa))
     cycle = con.run("sudo rfkill block wlan; sleep 3; "
                     "lsusb -d 0e8d:7961 | wc -l; ls /sys/class/bluetooth | "
                     "wc -l; sudo rfkill unblock wlan; "

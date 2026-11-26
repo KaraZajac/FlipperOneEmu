@@ -62,11 +62,22 @@
  * is granted at once. Data is bridged: the station's to the uplink as
  * Ethernet frames, the uplink's to the station as 802.11 ones.
  *
+ * With a passphrase ("ap-psk") a second network is beside it, WPA2-PSK
+ * (CCMP), its SSID the first's with "-WPA2", its BSSID the next one: its
+ * beacon has an RSN element, and after the association its AP runs the
+ * 4-way handshake (the PMK from the passphrase, PBKDF2; the PTK, the
+ * PRF's; EAPOL-Key messages 1 and 3, their MICs HMAC-SHA1's, the GTK
+ * wrapped with AES; a wrong MIC, a wrong passphrase: deauthenticated).
+ * The keys go to the chip, which ciphers on the air: on USB the frames
+ * stay clear, the AP's marked as the chip decrypted them (RXD1's
+ * SEC_MODE CCMP, the Protected bit).
+ *
  * Copyright (c) 2026, Kara Zajac
  * SPDX-License-Identifier: BSD-3-Clause
  */
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
+#include "crypto/aes.h"
 #include "qemu/error-report.h"
 #include "qemu/guest-random.h"
 #include "qemu/log.h"
@@ -137,6 +148,17 @@ struct MT7921State {
     uint8_t bssid[6];
     uint8_t sta[6];                     /* the station, as its frames say */
     int sta_state;                      /* AP_NONE, AP_AUTH, AP_ASSOC */
+    int sta_bss;                        /* ... on which network: 0 open,
+                                           1 WPA2 */
+    /* the WPA2 network: its passphrase ("ap-psk"), the handshake's state */
+    char *ap_psk;
+    char *ssid2;
+    uint8_t bssid2[6];
+    uint8_t pmk[32], anonce[32], kck[16], kek[16], gtk[16];
+    uint64_t replay;
+    bool sta_secure;                    /* the handshake done */
+    QEMUTimer *eapol;                   /* its message 1, after the
+                                           association's answer */
     uint16_t ap_seq;
     QEMUTimer *beacon;                  /* a beacon, in a scan */
     QEMUTimer *ap_reply;                /* the AP's answer, then */
@@ -1061,7 +1083,9 @@ static void wifi_reset(MT7921State *s)
     timer_del(s->scan);
     timer_del(s->beacon);
     timer_del(s->ap_reply);
+    timer_del(s->eapol);
     s->sta_state = AP_NONE;
+    s->sta_secure = false;
 }
 
 static void scan_done(void *opaque)
@@ -1079,20 +1103,136 @@ static bool ap_on(MT7921State *s)
     return s->nic && qemu_get_queue(s->nic)->peer;
 }
 
+/* its networks: 0, open; 1, WPA2 (with a passphrase) */
+static int ap_nets(MT7921State *s)
+{
+    return s->ap_psk && *s->ap_psk ? 2 : 1;
+}
+
+static const uint8_t *ap_bssid(MT7921State *s, int i)
+{
+    return i ? s->bssid2 : s->bssid;
+}
+
+/* the network a frame is addressed to (addr1), or -1 */
+static int ap_net_of(MT7921State *s, const uint8_t *a)
+{
+    for (int i = 0; i < ap_nets(s); i++) {
+        if (!memcmp(a, ap_bssid(s, i), 6)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* the station's frames may pass to the uplink, and back: associated, and
+ * on the WPA2 network its handshake done */
+static bool ap_port_open(MT7921State *s)
+{
+    return s->sta_state == AP_ASSOC && (s->sta_bss == 0 || s->sta_secure);
+}
+
+/* ------------------------------------------------- WPA2's cryptography */
+
+static void hmac_sha1(const uint8_t *key, int kn, const uint8_t *a, int an,
+                      const uint8_t *b, int bn, uint8_t out[20])
+{
+    GHmac *h = g_hmac_new(G_CHECKSUM_SHA1, key, kn);
+    gsize l = 20;
+
+    g_hmac_update(h, a, an);
+    if (bn) {
+        g_hmac_update(h, b, bn);
+    }
+    g_hmac_get_digest(h, out, &l);
+    g_hmac_unref(h);
+}
+
+/* PBKDF2 with HMAC-SHA1: WPA2's PMK, from the passphrase and the SSID */
+static void pbkdf2_sha1(const char *pass, const char *salt, int iters,
+                        uint8_t *out, int on)
+{
+    int pn = strlen(pass), sn = strlen(salt);
+    uint8_t u[20], x[20], blk[4];
+
+    for (int b = 1, pos = 0; pos < on; b++, pos += 20) {
+        stl_be_p(blk, b);
+        hmac_sha1((const uint8_t *)pass, pn, (const uint8_t *)salt, sn,
+                  blk, 4, u);
+        memcpy(x, u, 20);
+        for (int i = 1; i < iters; i++) {
+            hmac_sha1((const uint8_t *)pass, pn, u, 20, NULL, 0, u);
+            for (int j = 0; j < 20; j++) {
+                x[j] ^= u[j];
+            }
+        }
+        memcpy(out + pos, x, MIN(20, on - pos));
+    }
+}
+
+/* the PRF (IEEE 802.11's, HMAC-SHA1): @label, 0, @data, a counter */
+static void wpa_prf(const uint8_t *key, const char *label,
+                    const uint8_t *data, int dn, uint8_t *out, int on)
+{
+    uint8_t m[128], d[20];
+    int ln = strlen(label) + 1;                 /* (its 0 too) */
+
+    memcpy(m, label, ln);
+    memcpy(m + ln, data, dn);
+    for (int i = 0, pos = 0; pos < on; i++, pos += 20) {
+        m[ln + dn] = i;
+        hmac_sha1(key, 32, m, ln + dn + 1, NULL, 0, d);
+        memcpy(out + pos, d, MIN(20, on - pos));
+    }
+}
+
+/* AES key wrap (RFC 3394) of @n bytes (a multiple of 8) with @kek */
+static void aes_wrap(const uint8_t *kek, const uint8_t *in, int n,
+                     uint8_t *out)
+{
+    AES_KEY k;
+    uint8_t a[8], b[16], c[16];
+    int blocks = n / 8;
+
+    AES_set_encrypt_key(kek, 128, &k);
+    memset(a, 0xa6, 8);
+    memcpy(out + 8, in, n);
+    for (int j = 0; j < 6; j++) {
+        for (int i = 1; i <= blocks; i++) {
+            uint64_t tt = (uint64_t)blocks * j + i;
+
+            memcpy(b, a, 8);
+            memcpy(b + 8, out + 8 * i, 8);
+            AES_encrypt(b, c, &k);
+            for (int x = 0; x < 8; x++) {
+                a[x] = c[x] ^ (tt >> (8 * (7 - x)));
+            }
+            memcpy(out + 8 * i, c + 8, 8);
+        }
+    }
+    memcpy(out, a, 8);
+}
+
 /* a frame as the chip receives it, on 0x84: its RXD (type 2, group 3: the
  * rate, OFDM 6 Mbit/s, and RCPI 0x82 on two chains: -42 dBm), the AP's
  * channel, @addr_type (1: unicast to the station, 2: multicast, 3:
  * broadcast) */
-static void ap_rx(MT7921State *s, const uint8_t *f, int n, int addr_type)
+static void ap_rx_sec(MT7921State *s, const uint8_t *f, int n, int addr_type,
+                      bool decrypted)
 {
     uint8_t h[32] = { 0 };
 
     stl_le_p(h, 0x10000000 | (32 + n));
-    stl_le_p(h + 4, BIT(13));
+    stl_le_p(h + 4, BIT(13) | (decrypted ? 4 << 16 : 0));  /* (CCMP) */
     stl_le_p(h + 12, s->ap_chan << 8 | addr_type << 16);
     stl_le_p(h + 24, 0x0100000b);
     stl_le_p(h + 28, 0x8282);
     wifi_in(s, 0, h, 32, f, n);
+}
+
+static void ap_rx(MT7921State *s, const uint8_t *f, int n, int addr_type)
+{
+    ap_rx_sec(s, f, n, addr_type, false);
 }
 
 static int ap_hdr(MT7921State *s, uint8_t *f, uint16_t fc, const uint8_t *a1,
@@ -1113,21 +1253,26 @@ static const uint8_t ap_rates[] = { 1, 8, 0x82, 0x84, 0x8b, 0x96,
 static const uint8_t ap_xrates[] = { 50, 4, 0x30, 0x48, 0x60, 0x6c };
 static const uint8_t bcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
 
-static void ap_beacon(void *opaque)
-{
-    MT7921State *s = opaque;
-    uint8_t f[256];
-    int n, l = MIN(strlen(s->ap_ssid), 32);
+/* WPA2's RSN element: CCMP for groups and pairs, PSK */
+static const uint8_t rsn_ie[] = { 48, 20, 1, 0, 0x00, 0x0f, 0xac, 4,
+                                  1, 0, 0x00, 0x0f, 0xac, 4,
+                                  1, 0, 0x00, 0x0f, 0xac, 2, 0, 0 };
 
-    n = ap_hdr(s, f, 0x0080, bcast, s->bssid, s->bssid);
+static void ap_beacon_of(MT7921State *s, int net)
+{
+    const char *ssid = net ? s->ssid2 : s->ap_ssid;
+    uint8_t f[256];
+    int n, l = MIN(strlen(ssid), 32);
+
+    n = ap_hdr(s, f, 0x0080, bcast, ap_bssid(s, net), ap_bssid(s, net));
     stq_le_p(f + n, qemu_clock_get_us(QEMU_CLOCK_VIRTUAL));
     stw_le_p(f + n + 8, 100);                   /* every 100 TU */
-    stw_le_p(f + n + 10, 0x0421);               /* ESS, short preamble and
-                                                   slot */
+    stw_le_p(f + n + 10, net ? 0x0431 : 0x0421);    /* ESS, (privacy,) short
+                                                       preamble and slot */
     n += 12;
     f[n++] = 0;                                 /* its SSID */
     f[n++] = l;
-    memcpy(f + n, s->ap_ssid, l);
+    memcpy(f + n, ssid, l);
     n += l;
     memcpy(f + n, ap_rates, sizeof(ap_rates));
     n += sizeof(ap_rates);
@@ -1140,9 +1285,121 @@ static void ap_beacon(void *opaque)
     f[n++] = 42;                                /* ERP: nothing to protect */
     f[n++] = 1;
     f[n++] = 0;
+    if (net) {
+        memcpy(f + n, rsn_ie, sizeof(rsn_ie));
+        n += sizeof(rsn_ie);
+    }
     memcpy(f + n, ap_xrates, sizeof(ap_xrates));
     n += sizeof(ap_xrates);
     ap_rx(s, f, n, 3);
+}
+
+static void ap_beacon(void *opaque)
+{
+    MT7921State *s = opaque;
+
+    for (int i = 0; i < ap_nets(s); i++) {
+        ap_beacon_of(s, i);
+    }
+}
+
+/* an EAPOL-Key message to the station (RSN, version 2: HMAC-SHA1 MICs,
+ * AES-wrapped key data): @info, the replay counter, the ANonce, @kd */
+static void eapol_send(MT7921State *s, uint16_t info, const uint8_t *kd,
+                       int kn, bool mic)
+{
+    static const uint8_t snap[8] = { 0xaa, 0xaa, 0x03, 0, 0, 0, 0x88, 0x8e };
+    uint8_t f[400], d[20], *e, *k;
+    int n;
+
+    n = ap_hdr(s, f, 0x0208, s->sta, s->bssid2, s->bssid2);
+    memcpy(f + n, snap, 8);
+    e = f + n + 8;
+    memset(e, 0, 4 + 95 + kn);
+    e[0] = 2;                                   /* 802.1X-2004, Key */
+    e[1] = 3;
+    stw_be_p(e + 2, 95 + kn);
+    k = e + 4;
+    k[0] = 2;                                   /* RSN */
+    stw_be_p(k + 1, info);
+    stw_be_p(k + 3, 16);                        /* (CCMP's key) */
+    stq_be_p(k + 5, ++s->replay);
+    memcpy(k + 13, s->anonce, 32);
+    stw_be_p(k + 93, kn);
+    memcpy(k + 95, kd, kn);
+    if (mic) {
+        hmac_sha1(s->kck, 16, e, 4 + 95 + kn, NULL, 0, d);
+        memcpy(k + 77, d, 16);
+    }
+    ap_rx(s, f, n + 8 + 4 + 95 + kn, 1);
+}
+
+static void eapol_msg1(void *opaque)
+{
+    MT7921State *s = opaque;
+
+    if (s->sta_state != AP_ASSOC || s->sta_bss != 1) {
+        return;
+    }
+    qemu_guest_getrandom_nofail(s->anonce, 32);
+    eapol_send(s, 0x008a, NULL, 0, false);      /* pairwise, ack */
+}
+
+/* the station's message: 2 (its SNonce: the PTK; its MIC, the passphrase
+ * right: message 3), or 4 (done) */
+static void eapol_rx(MT7921State *s, const uint8_t *e, int n)
+{
+    uint8_t ptk[48], b[76], m[400], d[20], kd[48], wrapped[56];
+    const uint8_t *k = e + 4, *aa = s->bssid2, *spa = s->sta;
+    uint16_t info;
+    int len;
+
+    if (s->sta_bss != 1 || s->sta_state != AP_ASSOC || n < 4 + 95 ||
+        e[1] != 3 || k[0] != 2) {
+        return;
+    }
+    info = lduw_be_p(k + 1);
+    len = MIN(4 + lduw_be_p(e + 2), MIN(n, (int)sizeof(m)));
+    if (!(info & 0x0100) || (info & 0x0080)) {  /* a MIC, no ack: ours */
+        return;
+    }
+    if (!(info & 0x0200)) {                     /* message 2: the PTK */
+        bool lo = memcmp(aa, spa, 6) < 0;
+        bool nlo = memcmp(s->anonce, k + 13, 32) < 0;
+
+        memcpy(b, lo ? aa : spa, 6);
+        memcpy(b + 6, lo ? spa : aa, 6);
+        memcpy(b + 12, nlo ? s->anonce : k + 13, 32);
+        memcpy(b + 44, nlo ? k + 13 : s->anonce, 32);
+        wpa_prf(s->pmk, "Pairwise key expansion", b, 76, ptk, 48);
+        memcpy(s->kck, ptk, 16);
+        memcpy(s->kek, ptk + 16, 16);
+    }
+    memcpy(m, e, len);                          /* its MIC, checked */
+    memset(m + 4 + 77, 0, 16);
+    hmac_sha1(s->kck, 16, m, len, NULL, 0, d);
+    if (memcmp(d, k + 77, 16)) {                /* the passphrase wrong */
+        uint8_t f[26];
+        int h = ap_hdr(s, f, 0x00c0, s->sta, s->bssid2, s->bssid2);
+
+        stw_le_p(f + h, 15);                    /* 4-way handshake timeout */
+        ap_rx(s, f, h + 2, 1);
+        s->sta_state = AP_NONE;
+        return;
+    }
+    if (info & 0x0200) {                        /* message 4: done */
+        s->sta_secure = true;
+        return;
+    }
+    /* message 3: its RSN element, the GTK (key 1), padded to 8, wrapped */
+    memcpy(kd, rsn_ie, sizeof(rsn_ie));
+    memcpy(kd + 22, (uint8_t[]){ 0xdd, 22, 0x00, 0x0f, 0xac, 1, 1, 0 }, 8);
+    memcpy(kd + 30, s->gtk, 16);
+    kd[46] = 0xdd;
+    kd[47] = 0;
+    aes_wrap(s->kek, kd, 48, wrapped);
+    eapol_send(s, 0x13ca, wrapped, 56, true);   /* install, ack, MIC,
+                                                   secure, encrypted */
 }
 
 /* the AP's answer, a moment after the TX status of what it answers */
@@ -1167,7 +1424,9 @@ static void ap_reply(MT7921State *s, const uint8_t *f, int n)
 /* an Ethernet frame of the station's, to the uplink */
 static void ap_uplink(MT7921State *s, const uint8_t *eth, int n)
 {
-    if (s->sta_state == AP_ASSOC && n >= 14 && ap_on(s)) {
+    if (n >= 14 && lduw_be_p(eth + 12) == 0x888e) {
+        eapol_rx(s, eth + 14, n - 14);          /* (EAPOL: the AP's) */
+    } else if (ap_port_open(s) && n >= 14 && ap_on(s)) {
         qemu_send_packet(qemu_get_queue(s->nic), eth, n);
     }
 }
@@ -1178,10 +1437,10 @@ static void ap_frame(MT7921State *s, const uint8_t *f, int n)
     static const uint8_t snap[6] = { 0xaa, 0xaa, 0x03, 0, 0, 0 };
     uint8_t r[64], eth[2400];
     uint16_t fc;
-    int h, m;
+    int h, m, net;
 
-    if (n < 24 || !ap_on(s) || memcmp(f + 4, s->bssid, 6)) {
-        return;                                 /* (addr1: not the AP) */
+    if (n < 24 || !ap_on(s) || (net = ap_net_of(s, f + 4)) < 0) {
+        return;                                 /* (addr1: not an AP) */
     }
     fc = lduw_le_p(f);
     switch (fc & 0xfc) {
@@ -1191,7 +1450,9 @@ static void ap_frame(MT7921State *s, const uint8_t *f, int n)
         }
         memcpy(s->sta, f + 10, 6);
         s->sta_state = AP_AUTH;
-        m = ap_hdr(s, r, 0x00b0, s->sta, s->bssid, s->bssid);
+        s->sta_bss = net;
+        s->sta_secure = false;
+        m = ap_hdr(s, r, 0x00b0, s->sta, ap_bssid(s, net), ap_bssid(s, net));
         stw_le_p(r + m, 0);                     /* open, 2, success */
         stw_le_p(r + m + 2, 2);
         stw_le_p(r + m + 4, 0);
@@ -1199,12 +1460,15 @@ static void ap_frame(MT7921State *s, const uint8_t *f, int n)
         break;
     case 0x00:                                  /* (re)association */
     case 0x20:
-        if (s->sta_state == AP_NONE || memcmp(f + 10, s->sta, 6)) {
+        if (s->sta_state == AP_NONE || net != s->sta_bss ||
+            memcmp(f + 10, s->sta, 6)) {
             break;
         }
         s->sta_state = AP_ASSOC;
-        m = ap_hdr(s, r, (fc & 0xfc) + 0x10, s->sta, s->bssid, s->bssid);
-        stw_le_p(r + m, 0x0421);                /* its capability */
+        s->sta_secure = false;
+        m = ap_hdr(s, r, (fc & 0xfc) + 0x10, s->sta, ap_bssid(s, net),
+                   ap_bssid(s, net));
+        stw_le_p(r + m, net ? 0x0431 : 0x0421); /* its capability */
         stw_le_p(r + m + 2, 0);                 /* success */
         stw_le_p(r + m + 4, 0xc001);            /* AID 1 */
         m += 6;
@@ -1213,19 +1477,33 @@ static void ap_frame(MT7921State *s, const uint8_t *f, int n)
         memcpy(r + m, ap_xrates, sizeof(ap_xrates));
         m += sizeof(ap_xrates);
         ap_reply(s, r, m);
+        if (net) {                              /* then the handshake */
+            timer_mod(s->eapol, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                      80 * SCALE_MS);
+        }
         break;
     case 0xa0:                                  /* disassociation */
     case 0xc0:                                  /* deauthentication */
         if (!memcmp(f + 10, s->sta, 6)) {
             s->sta_state = AP_NONE;
+            s->sta_secure = false;
         }
         break;
     case 0x08:                                  /* data (ToDS), QoS too */
     case 0x88:
         h = 24 + ((fc & 0xfc) == 0x88 ? 2 : 0) +
             ((fc & 0x88) == 0x88 && (fc & 0x8000) ? 4 : 0);
+        if ((fc & 0x4000) && n >= h + 16 && memcmp(f + h, snap, 6) &&
+            !memcmp(f + h + 8, snap, 6)) {
+            h += 8;                             /* (the room for CCMP's
+                                                   header, the chip's) */
+        }
         if (!(fc & 0x0100) || n < h + 8 || memcmp(f + h, snap, 6) ||
             n - h - 6 + 12 > (int)sizeof(eth)) {
+            break;
+        }
+        if (lduw_be_p(f + h + 6) == 0x888e) {   /* EAPOL: the AP's */
+            eapol_rx(s, f + h + 8, n - h - 8);
             break;
         }
         memcpy(eth, f + 16, 6);                 /* DA: addr3 */
@@ -1253,15 +1531,16 @@ static ssize_t ap_receive(NetClientState *nc, const uint8_t *buf, size_t size)
     bool group = buf[0] & 1;
     int n;
 
-    if (s->sta_state != AP_ASSOC || size < 14 || size - 12 + 30 > sizeof(f) ||
+    if (!ap_port_open(s) || size < 14 || size - 12 + 30 > sizeof(f) ||
         (!group && memcmp(buf, s->sta, 6))) {
         return size;
     }
-    n = ap_hdr(s, f, 0x0208, buf, s->bssid, buf + 6);   /* data, FromDS */
+    n = ap_hdr(s, f, s->sta_bss ? 0x4208 : 0x0208, buf,     /* data, FromDS, */
+               ap_bssid(s, s->sta_bss), buf + 6);   /* (protected) */
     memcpy(f + n, snap, 6);
     memcpy(f + n + 6, buf + 12, size - 12);
-    ap_rx(s, f, n + 6 + size - 12,
-          !group ? 1 : memcmp(buf, bcast, 6) ? 2 : 3);
+    ap_rx_sec(s, f, n + 6 + size - 12,
+              !group ? 1 : memcmp(buf, bcast, 6) ? 2 : 3, s->sta_bss);
     return size;
 }
 
@@ -1422,6 +1701,7 @@ static void wifi_ce(MT7921State *s, uint8_t cid, bool set, uint8_t seq,
         break;
     case 0x0a:                                  /* SET_RX_FILTER */
     case 0x0f:                                  /* SET_CHAN_DOMAIN */
+    case 0x17:                                  /* SET_BSS_ABORT */
     case 0x1d:                                  /* SET_EDCA_PARMS */
     case 0x5d:                                  /* SET_RATE_TX_POWER */
     case 0x61:                                  /* SCHED_SCAN_ENABLE */
@@ -1672,7 +1952,9 @@ void mt7921_power(USBDevice *dev, bool on)
         timer_del(s->scan);
         timer_del(s->beacon);
         timer_del(s->ap_reply);
+        timer_del(s->eapol);
         s->sta_state = AP_NONE;
+        s->sta_secure = false;
         return;
     }
     /* a cold chip: no patch, Bluetooth off, the Wi-Fi's MCU unpowered */
@@ -1733,6 +2015,15 @@ static void mt7921_realize(USBDevice *dev, Error **errp)
     if (!s->ap_ssid) {
         s->ap_ssid = g_strdup("FlipperOneEmu");
     }
+    /* the WPA2 network beside it: its SSID, BSSID, PMK, GTK */
+    s->ssid2 = g_strdup_printf("%s-WPA2", s->ap_ssid);
+    memcpy(s->bssid2, s->bssid, 6);
+    s->bssid2[5]++;
+    s->eapol = timer_new_ns(QEMU_CLOCK_VIRTUAL, eapol_msg1, s);
+    if (ap_nets(s) > 1) {
+        pbkdf2_sha1(s->ap_psk, s->ssid2, 4096, s->pmk, 32);
+        qemu_guest_getrandom_nofail(s->gtk, 16);
+    }
     controller_reset(s);
     dev->auto_attach = false;                   /* (powered by the board) */
 }
@@ -1742,6 +2033,7 @@ static const Property mt7921_props[] = {
     DEFINE_PROP_STRING("wifi-mac", MT7921State, wifi_mac_prop),
     DEFINE_PROP_STRING("ap-ssid", MT7921State, ap_ssid),
     DEFINE_PROP_UINT8("ap-channel", MT7921State, ap_chan, 6),
+    DEFINE_PROP_STRING("ap-psk", MT7921State, ap_psk),
     DEFINE_NIC_PROPERTIES(MT7921State, conf),
 };
 
