@@ -1651,3 +1651,30 @@ register headers.
       own build. It checks the updater's answers, the upload and the staging, the
       boot ROM's switch and the buy, and Flipper OS reading slot B and a
       flash-update boot after it.
+
+78. **U-Boot's menu, lighter; and the Desktop profile.**
+    - **The Desktop profile**, U-Boot's first entry, boots in the emulator. SDDM
+      starts, and a Plasma Wayland session on the HDMI seat, with no failed unit. The
+      login came at 7 minutes on a quiet PC and 13 on a busy one. Ten minutes in,
+      its desktop was not on the monitor yet: KWin had set no framebuffer of its
+      own, and the DRM state was still the console's (XR24, linear, 1280x720). With
+      no GPU, Plasma draws with llvmpipe, whose code TCG then runs: slow enough that
+      this waits for a long run on a quiet PC.
+    - **U-Boot's keys.** QEMU sampled while U-Boot sits at its boot menu: its core
+      waited on the BQL in more than half the samples, inside MMIO accesses, while
+      the main loop ran the MCU's PIO capture of the display link's frames. U-Boot
+      redraws its unchanging menu five to six times a second. Each frame is 37 KB,
+      written a word at a time into SPI0's FIFO, and each was captured whole: read
+      from the counters with gdb, 61 frames in 11 s, 4 of them dropped.
+    - **The change.** The machine no longer sends a frame that is the same as the
+      last one sent within a second: the MCU's screen would not change, and the
+      capture is its costliest work. One a second still goes. At the idle menu that
+      is one frame sent a second, the other five or six skipped, none dropped, and
+      U-Boot draws faster with its core less often waiting. FlipCTL's frames under
+      Linux go the same way when they repeat.
+    - **And now its keys repeat.** U-Boot, quicker, saw the check's 0.25 s key held
+      long enough to repeat it. The check saw the selection reach its entry, pressed
+      OK, and booted the next one (one of OS-03's, which does not boot). It now
+      holds a key 0.15 s, and presses OK only once the selection has stayed on its
+      entry for 1.5 s. The checks pass: the smoke test, the Linux check
+      (41, FlipCTL's drawing and its key among them) and the U-Boot one (15).

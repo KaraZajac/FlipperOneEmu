@@ -577,15 +577,20 @@ def uboot_pick(panel, linux, want, mark, shot=None):
     seq = next((int(n) for n, f in listed if want in f), None)
     if seq is None:
         return None
-    end = time.time() + 120
+    end, stable = time.time() + 120, 0
     while True:
         cur = uboot_selected(panel)
-        if cur == seq:
-            break
+        if cur == seq:                  # (and still, 1.5 s on: no repeat of
+            stable += 1                 # the last key on its way)
+            if stable == 4:
+                break
+            time.sleep(0.5)
+            continue
+        stable = 0
         if time.time() > end:
             return None
         if cur is not None:
-            panel.tap("down" if cur < seq else "up", 0.25)
+            panel.tap("down" if cur < seq else "up", 0.15)
         moved = time.time() + 6
         while time.time() < moved and uboot_selected(panel) == cur:
             time.sleep(0.2)

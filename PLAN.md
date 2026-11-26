@@ -147,8 +147,9 @@ screen and its CLI.
 - ◐ PCIe0 and the M.2 slot, HDMI: QEMU's DesignWare host with Rockchip's registers, an
       NVMe in the slot (`run --nvme`) (2026-11-25); HDMI: the VOP2, its IOMMU, the
       transmitter and a monitor (`run --hdmi`, `shot --hdmi`), Flipper OS's console
-      on it (2026-11-25); DP over the USB-C port (the RTC: M3; the main bus's
-      chips: M2)
+      on it (2026-11-25); DP over the USB-C port, once the MCU firmware's USB-PD
+      negotiates its alternate mode (its PD service is a stub so far) (the RTC: M3; the
+      main bus's chips: M2)
 - ☑ Speed while FlipCTL draws: the display link's bursts go to the MCU's PIO as a
       wave, paced so that the CPUs get the BQL between them, and Linux's SPI DMA
       no longer runs whole inside its register write (QEMU patch 0012): the sound

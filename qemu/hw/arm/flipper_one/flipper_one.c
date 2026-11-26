@@ -73,7 +73,9 @@ struct FlipperOneState {
     FoHostSpi linux_frames;     /* its frames, as they go to the MCU */
     GByteArray *frame;          /* ... one coming in over its SPI0 */
     bool frame_active;          /* ... between "active" falling and rising */
-    uint64_t frames_sent, frames_dropped;
+    uint64_t frames_sent, frames_dropped, frames_same;
+    GByteArray *last_frame;     /* ... the last one sent, and when */
+    int64_t last_frame_ms;
     struct arm_boot_info binfo; /* ... a kernel started on it directly */
     Clock *mcu_clk;
     FlipperOnePanelState *panel;
@@ -519,8 +521,14 @@ static void flipper_one_link_stop(void *opaque)
  * "active" going low and back high, the RK3576's GPIO0_D1 (pin 25); the
  * frame then goes to the MCU as the RK3576 sends it, edge by edge on its
  * GPIO25 (active), 26 (SCK) and 28 (MOSI) (host_spi.c), after the frame
- * before it. Frames that come while two wait to go are dropped.
+ * before it. Frames that come while two wait to go are dropped. And a
+ * frame the same as the last one sent, within a second of it, is not sent
+ * again: the MCU's screen would not change, and its PIO's capture of a
+ * frame is the machine's dearest work. (U-Boot redraws its unchanging boot
+ * menu five times a second, each frame a word at a time into SPI0's FIFO:
+ * captured, they kept its core waiting on the BQL, and its keys unread.)
  */
+#define FRAME_SAME_MS   1000
 #define FRAME_MAX       65536
 
 static void flipper_one_spi0_out(void *opaque, int cs, const uint8_t *data,
@@ -545,13 +553,27 @@ static void flipper_one_rk_gpio(void *opaque, int bank, int pin, bool level)
         g_byte_array_set_size(s->frame, 0);
     } else if (s->frame_active) {
         s->frame_active = false;
+        int64_t now = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
+
         if (!s->frame->len) {
+            return;
+        }
+        if (s->last_frame && s->last_frame->len == s->frame->len &&
+            now - s->last_frame_ms < FRAME_SAME_MS &&
+            !memcmp(s->last_frame->data, s->frame->data, s->frame->len)) {
+            s->frames_same++;
             return;
         }
         if (fo_host_spi_waiting(&s->linux_frames) >= 2) {
             s->frames_dropped++;
             return;
         }
+        if (!s->last_frame) {
+            s->last_frame = g_byte_array_sized_new(FO_LCD_H * (FO_LCD_W + 2));
+        }
+        g_byte_array_set_size(s->last_frame, 0);
+        g_byte_array_append(s->last_frame, s->frame->data, s->frame->len);
+        s->last_frame_ms = now;
         fo_host_spi_send(&s->linux_frames, s->frame);   /* (its now) */
         s->frame = g_byte_array_sized_new(FO_LCD_H * (FO_LCD_W + 2));
     }
@@ -809,6 +831,10 @@ static void fo_rk_power_bh(void *opaque)
     }
     rk3576_reset_devices(&s->rk3576);
     s->frame_active = false;
+    if (s->last_frame) {                        /* (a new start's first frame
+                                                   goes, whatever it is) */
+        g_byte_array_set_size(s->last_frame, 0);
+    }
     if (want == RK_OFF) {
         rk3576_power_lost(&s->rk3576);
     } else if (s->uboot) {                      /* the DDR blob, then SPL */
