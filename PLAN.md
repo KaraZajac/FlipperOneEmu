@@ -175,7 +175,7 @@ screen and its CLI.
       endpoint that asks for it, a transfer ended at its last TRB (2026-11-26, log
       95); the MT7921's Bluetooth (mt7921.c): on USB1 while its rfkill's GPIO
       powers it, its real firmware through MediaTek's WMT, BlueZ's controller
-      (2026-11-26, log 99); its Wi-Fi; the board's hubs
+      (2026-11-26, log 99); its Wi-Fi (M5's last item); the board's hubs
 - ◐ Audio: the SAIs (0, 2, 6) and the NAU8822: Flipper OS's sound card plays, out of
       QEMU's audio (`run --audio`) (2026-11-25); the internal and the headset's
       microphones, from a WAV file (`run --mic`) (2026-11-25); this PC's own
@@ -200,8 +200,11 @@ screen and its CLI.
       other CPUs' TLB flushes under the BQL, MMIO's; KPTI (KASLR forces it under
       U-Boot, as on the device): QEMU flushes its whole TLB at every switch of
       ASID, a boot half again as long (log 96): an ASID-aware TLB
-- ☐ Wi-Fi (the MT7921 on USB: its Bluetooth is there, log 99; its interface 3 and
-      mt7921u's MCU protocol to come)
+- ◐ Wi-Fi (the MT7921 on USB, its Bluetooth there too, log 99): mt7921u on its
+      interface 3, its real firmware through the emulated MCU, the interface
+      NetworkManager's and FlipCTL's, scans that complete and find nothing
+      (2026-11-26, log 101); an access point to find and join (802.11 frames received
+      and sent, TX status, ROC), bridged to this PC's network
 
 ## Not planned
 - The RK3576's mask ROM and DDR training blob (closed), SPL and TF-A's BL31: the machine

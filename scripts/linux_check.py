@@ -27,8 +27,10 @@ Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
   its device role with its Type-C port, USB1's root hubs are there, and the
   battery reads (its chain waits on USB0's role switch); the MT7921's
   Bluetooth is on USB1 with its firmware loaded, hci0, BlueZ's controller
-  powered, a scan starts and finds nothing, and with its rfkill blocked the
-  chip leaves USB, unblocked it comes back cold; each Ethernet port
+  powered, a scan starts and finds nothing; its Wi-Fi is mt7921u's with its
+  firmware running, wlx000ce7464f02, NetworkManager's, and a scan completes
+  and finds nothing; with its rfkill blocked the chip leaves USB, unblocked
+  it comes back cold; each Ethernet port
   has its RTL8211F, and with passt installed port 1 is on this PC's network
   (`run --net`): a link, an address by DHCP, a gateway that answers; port 2
   has a cable to a LAN of its own (`run --lan`), where scripts/lan_host.py
@@ -538,6 +540,23 @@ def checks(check, d, out, first_boot, off, net):
     check("... a scan (inquiry and LE) starts, and finds nothing",
           any("Discovery started" in x for x in scan) and
           not any("[NEW] Device" in x for x in scan), " / ".join(scan[-3:]))
+    # its Wi-Fi: mt7921u on interface 3 of the same chip, its firmware
+    # running; NetworkManager's; a scan that finds nothing (no radio)
+    wifi = con.run("W=$(ls /sys/class/ieee80211/phy0/device/net/ | head -1); "
+                   "echo $W; sudo dmesg -t | grep -c 'WM Firmware Version'; "
+                   "nmcli -t -f DEVICE,TYPE,STATE dev | grep \"^$W:\"; "
+                   "out=$(sudo timeout 60 iw dev $W scan); "
+                   "echo \"scan $? $(echo -n \"$out\" | grep -c '^BSS')\"",
+                   120) or []
+    check("Wi-Fi: the MT7921's (mt7921u), its firmware running, its interface "
+          "named by its MAC (wlx000ce7464f02)",
+          wifi[:1] == ["wlx000ce7464f02"] and len(wifi) == 4 and
+          wifi[1].isdigit() and int(wifi[1]) >= 1, str(wifi))
+    check("... NetworkManager's, disconnected",
+          len(wifi) == 4 and wifi[2] == "wlx000ce7464f02:wifi:disconnected",
+          str(wifi))
+    check("... a scan completes, and finds nothing (no radio)",
+          wifi[-1:] == ["scan 0 0"], str(wifi))
     cycle = con.run("sudo rfkill block wlan; sleep 3; "
                     "lsusb -d 0e8d:7961 | wc -l; ls /sys/class/bluetooth | "
                     "wc -l; sudo rfkill unblock wlan; "

@@ -2491,3 +2491,53 @@ register headers.
      - **Checked.** linux_check's MaskROM mode fills the card with a marker,
        then write-bmaps a 4 MiB image with two mapped ranges onto it: the
        ranges are the image's, and the rest keeps the marker (16 s).
+
+101. **The MT7921's Wi-Fi: wlan0 from its real firmware; scans find nothing.**
+     - **What.** The MT7921's Wi-Fi is interface 3 of the same USB device,
+       driven by mt7921u. Flipper OS has its firmware (firmware-mediatek's
+       WIFI_MT7961_patch_mcu_1_2_hdr.bin and WIFI_RAM_CODE_MT7961_1.bin) and
+       NetworkManager with wpa_supplicant. FlipCTL's Network menu has a Wi-Fi
+       entry. The driver's protocol is mt76's, read from its source by a
+       research pass into a device-side spec (endpoints, requests, registers,
+       the MCU's framing, the command sequence, the scan).
+     - **The chip's Wi-Fi** (mt7921.c):
+       - Interface 3 (ff/ff/ff), its bulk endpoints in the order mt76 takes
+         their roles from: IN 0x84 (frames, and the MCU's events once
+         HOST_CONFIG bit 6 is set) and 0x85; OUT 0x08 (MCU commands), 0x04
+         (the firmware's data while FW_DL_EN, then best effort), 0x05-0x07,
+         0x09.
+       - One register space, through the Wi-Fi's requests (0x63 and 0x66 of
+         type 0xdf and 0x5f), the "uhw" ones and the Bluetooth's. Its ID and
+         revision; CONN_ON_MISC's state (powered, then the RAM firmware
+         running); the busy bits never set; WFSYS's init done. The WFSYS
+         reset (a pulse on WF_SUBSYS_RST) puts the MCU back in its ROM. No
+         request is ever stalled: mt7921u would take its bus for hung.
+       - Its MCU: commands as mt76 frames them (a 4-byte length, the TXD,
+         the MCU's header in its legacy, CE, EXT or UNI form), and events
+         back on 0x84 (RXD0 of type 7 with the exact length, the command's
+         seq echoed). The ROM's patch semaphore (2: download it), the patch
+         and RAM regions' targets, patch finish, FW start. Its eids avoid
+         the driver's unsolicited ones: patch finish's own 0x07 would be
+         taken for a low-power event.
+       - The NIC's capabilities: its MAC address (MediaTek's OUI, "FO", 2),
+         two streams, HT, VHT and HE, 2.4 and 5 GHz. Then what bringing the
+         interface up sends (MAC init, the RX path, device and BSS info),
+         answered, and the waited register reads of the TX-power tables.
+       - A scan (START_HW_SCAN) ends 1.5 s later with SCAN_DONE and no
+         network found: no radio.
+     - **Linux's side.** mt7921u's probe resets the whole USB device;
+       btusb is rebound, and the Bluetooth's patch is still there. udev
+       names the interface by its MAC (Debian's rule for USB network
+       devices: wlx000ce7464f02), as on the device. NetworkManager manages
+       it and scans it with a random MAC.
+     - **Checked.**
+       - `iw dev wlx000ce7464f02 scan` completes in 2.8 s with nothing found;
+         the phy has both bands, their channels listed.
+       - FlipCTL's Network > Wi-Fi: "Wi-Fi < ON >", and its visible networks:
+         "No networks".
+       - QEMU's log has nothing from the chip: no command or request it did
+         not know.
+       - linux_check: the Wi-Fi's firmware running, its interface
+         NetworkManager's, a scan that completes and finds nothing, the
+         Bluetooth as before, and rfkill's cycle with both (508 s).
+       - Its U-Boot mode (522 s), MaskROM mode and the smoke test pass.
