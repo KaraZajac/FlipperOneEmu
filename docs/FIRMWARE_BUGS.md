@@ -23,6 +23,10 @@ keeps its row, with the build that fixed it.
 | --- | --- | --- | --- | --- |
 | FW-01 | After a NACK on the main board's bus, that bus's state machine runs off its program, and every later transfer on the bus times out until the MCU restarts | dev 87f6cca3 | bus lost | no |
 | FW-02 | The RPC's screen stream loses a frame drawn while it is still sending the one before; when the screen then stays as it is, the computer's view of it stays stale until the next change | dev 2e3290e4 | stale screen over RPC | no |
+| FW-03 | An RPC session over the CLI does not end on its close request: the CLI's prompt does not come back until another byte comes, and that byte is lost | dev 2e3290e4 | RPC session left open | no |
+| FW-04 | Bytes that reach the USB serial port before its CLI session is up are never read, and the port takes no more input until the MCU restarts | dev 2e3290e4 | USB CLI deaf | no |
+| FW-05 | The USB serial port closed while the firmware is still sending leaves every later session there mute (no banner, no answers) until the MCU restarts | dev 2e3290e4 | USB CLI mute | no |
+| FW-06 | An RPC session that ends while a message is half received logs "Received empty message (tag=0)": the cut-off message is decoded as a whole, empty one | dev 2e3290e4 | false error in the log | no |
 | OS-01 | Past a thermal zone's last trip, Linux cannot set the TSADC's alarm ("Failed to set trips: -34") and leaves it armed below the temperature, so it goes off at every sample until the chip is off | Flipper OS 2501 | log errors, alarm left on | no |
 | OS-02 | With no computer on the USB gadget, the getty on its serial port (flipserial0) blocks while holding the console's lock, and now and then the debug UART's and tty1's gettys never start: no login | Flipper OS 2501 | no console login | no |
 | OS-03 | The image's boot entries for the 6.1.172 kernel (one per profile) cannot boot: their `vmlinuz` is the kernel's configuration, and their device-tree directory has no Flipper One tree. U-Boot lists them in its boot menu, and picking one fails ("Bad Linux ARM64 Image magic!") | Flipper OS 2501 | four of nine boot entries do not boot | no |
@@ -95,6 +99,118 @@ keeps its row, with the build that fixed it.
   the GUI's current frame if one was lost (`gui_update()` draws it again). A
   computer can ask for a fresh frame meanwhile: a stop and a start of the stream.
 - **Log:** entry 79.
+
+### FW-03: an RPC session ends on its close request only when another byte comes
+
+- **What happens:** a computer ends its RPC session (the CLI's `rpc`) with an
+  `RpcSessionCloseRequest`. The firmware stops the screen stream, but the session
+  goes on: the CLI's prompt does not come back. Over the UART it lasts until another
+  byte comes, and the session drops that byte, so the first character of the next
+  command is lost. Over USB it lasts until the port is closed.
+- **Why:** `rpc_cli.c` reads with `pipe_receive(pipe, buffer, 1)`, after
+  `pipe_set_state_check_period(pipe, 50)`, under the comment "Wake up every 50 ms to
+  check connection and close_request". But `pipe_receive()` (lib/containers/pipe.c)
+  loops until all the bytes asked for have come or the pipe is broken: the period is
+  only how often it looks at the pipe's state, and it does not return. So
+  `session_close_request` (set by `rpc_session_close_handler()` through the session's
+  close callback) is looked at only after one more byte. The loop then breaks before
+  feeding it to the session, and the byte is dropped.
+- **When:** every close request.
+- **What of the emulator is in its path:** nothing. The UART and the USB serial port
+  carry the bytes as they come.
+- **Seen on:** dev-25112026-2e3290e4, in the emulator. Not tried on a real Flipper One.
+- **A fix, for the firmware:** a receive that gives up after the period (the pipe's
+  stream buffer read with that timeout), so that the loop looks at the flag every
+  50 ms as meant. A computer can meanwhile send one byte after the request, half a
+  second on: scripts/fo_rpc.py does, and reads to the prompt.
+- **Log:** entry 84.
+
+### FW-04: the USB serial port loses input that comes before its session
+
+- **What happens:** a program opens the MCU's USB serial port and writes at once.
+  It gets the CLI's banner, but no answer, then or later: the port takes no more input
+  until the MCU restarts. Its output still works.
+- **Why:** opening the port raises DTR. TinyUSB's line-state callback signals
+  `Connected` to `cli_vcp.c`, and the data's arrival signals `Rx`, both on one event
+  flag. `cli_vcp_event_happened()` takes the flags together and handles `Rx` before
+  `Connected`. With no session yet (`own_pipe` NULL), `cli_vcp_maybe_receive_data()`
+  returns without reading, and the bytes stay in TinyUSB's receive FIFO (64 bytes).
+  TinyUSB arms the OUT endpoint again only when a whole 64-byte packet fits in that
+  FIFO (`_prep_out_transaction()`), and with one byte in it only 63 do. So the
+  endpoint stays unarmed, the computer's next bytes are NAKed, and no `Rx` comes
+  again. Nothing else reads the FIFO: the shell's space-freed callback needs data
+  in the pipe first.
+- **Seen through gdb** (`./flipperoneemu gdb`): the CDC's receive FIFO at write 9,
+  read 8, the one byte, and EP2 OUT neither busy nor claimed. In a session that works
+  it is busy.
+- **When:** the bytes come in one batch with `Connected`, before the CLI's thread has
+  handled it. The USB service's thread and the CLI's have the same priority (16), so
+  the CLI's runs only once the USB task is through with what it has queued.
+- **What of the emulator is in its path:** the computer here (usb_host.c) sends its
+  first bulk OUT 20 µs after DTR's control transfer. A PC's program writes only after
+  its `open()` returns, so on a real PC the window should be narrower: this would be
+  rare there, not usual. Not tried on a real Flipper One.
+- **A fix, for the firmware:** once the session's pipe is up in the `Connected`
+  handler, read what is waiting (`cli_vcp_maybe_receive_data()`); or handle
+  `Connected` before `Rx`. The emulator's tools wait for the banner before they write
+  (scripts/fo_rpc.py, the smoke test).
+- **Seen on:** dev-25112026-2e3290e4, in the emulator.
+- **Log:** entry 84.
+
+### FW-05: the USB serial port closed while output is on its way
+
+- **What happens:** the USB serial port is closed while the firmware is still sending
+  (a long `help`, a frame of the RPC's stream, the prompt). Every later session on
+  the port is mute: no banner, no answers, until the MCU restarts.
+- **Why:** `cli_vcp.c` sets `is_currently_transmitting` when it hands a packet to
+  TinyUSB. The next `cli_vcp_maybe_send_data()` that finds the pipe empty clears it,
+  after the packet's TxDone. With the port closed the computer stops reading, and the
+  packet stays in flight. The `Disconnected` handler frees the pipe and leaves the
+  flag. When the port is opened again, the computer reads and the packet completes.
+  If its TxDone is handled while there is no session (before `Connected`),
+  `cli_vcp_maybe_send_data()` finds no pipe and returns, and the flag stays set. The
+  new session's banner then waits in the pipe for a TxDone that never comes, since
+  nothing is in flight: `cli_vcp_data_from_shell()` signals a send only when the flag
+  is clear.
+- **Seen through gdb:** the CliVcp (through the CDC driver's `cb_ctx[0]`) with
+  `is_currently_transmitting` true, `is_connected` false and `own_pipe` NULL;
+  TinyUSB's transmit FIFO empty and EP2 IN not busy; the CLI's thread waiting in its
+  event loop.
+- **When:** in the emulator, the computer raises DTR and then reads (usb_host.c), so
+  the TxDone and `Connected` race: within a few closes in the middle of `help`. On a
+  Linux PC it should be every time. Its cdc-acm submits its reads in its port's
+  `activate()`, and `tty_port_open()` raises DTR only after that, in
+  `tty_port_block_til_ready()`, so the packet's TxDone comes before `Connected`. Not
+  tried on a real Flipper One.
+- **A fix, for the firmware:** clear the flag in the `Disconnected` handler, and
+  where `cli_vcp_maybe_send_data()` finds no pipe.
+- **Seen on:** dev-25112026-2e3290e4, in the emulator.
+- **Log:** entry 84.
+
+### FW-06: a message cut off by the session's end, decoded as an empty one
+
+- **What happens:** an RPC session ends (its close request, or the port closed)
+  while the firmware has a message's length and not yet its bytes. The log then has
+  `[E][RpcSrv] Received empty message (tag=0)`, though nothing empty was sent.
+- **Why:** the session's worker decodes with nanopb from `rpc_pb_stream_read()`
+  (applications/services/rpc/rpc.c). When the session ends there, that function sets
+  `istream->bytes_left = 0` and returns false. nanopb takes a failed read with no
+  bytes left for the message's end: the decode succeeds, with no field. So
+  `which_content` is 0 and the worker logs the error (it is ending anyway).
+- **When:** a byte goes to the session after its last whole message, and the
+  session ends before more come. Here: a byte sent after a close request (FW-03's
+  way out) while the request waited behind a stop of the screen stream. The stop
+  waits for the frame on its way, seconds over the UART. Caught in the emulator with
+  gdb at the log line: the decoder had taken the stop (`02 2a 00`), the close request
+  (`02 32 00`) and then that byte (`0d`) as the next message's length.
+- **What of the emulator is in its path:** nothing. The bytes came in whole and in
+  order.
+- **Seen on:** dev-25112026-2e3290e4, in the emulator. Not tried on a real Flipper One.
+- **A fix, for the firmware:** on the session's end, leave `bytes_left` as it is (the
+  read fails, and so does the decode, whose error the worker already leaves unlogged
+  while it ends). Or log the empty message only when the session is not ending.
+  scripts/fo_rpc.py reads a stream to its end before it sends a close request.
+- **Log:** entry 84.
 
 ### OS-01: the TSADC's alarm, past the last trip, with a sensor's trim
 

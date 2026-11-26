@@ -22,7 +22,7 @@ Boots a throwaway device, devices/smoke-PID (removed at the end unless
   the front-panel link; a headset in the jack, its mic, a button on it;
 - Power's Flipper OS menu over the frame, and Stop there: the MCU's desktop;
   the RPC (the CLI's `rpc`, scripts/fo_rpc.py): the screen streamed, as it
-  shows;
+  shows, and keys pressed through it;
 - a charger plugged in, then pulled out: the charger's interrupts through
   the main board's expander, `power show` charging;
 - a computer plugged in: it enumerates the MCU's USB device, and the CLI
@@ -260,6 +260,7 @@ def cli(d, command, done, timeout, ctrl_c=False, usb=False):
     s.settimeout(0.2)
     if usb:
         time.sleep(0.5)                 # DTR up: the session's banner first
+        #                                 (a byte before it: FW-04)
     s.sendall(command.encode() + b"\r")
     out, end = b"", time.time() + timeout
     while time.time() < end:
@@ -320,6 +321,9 @@ def main():
                     "(default: a new folder in the system's temp)")
     ap.add_argument("--uf2", help="the MCU firmware (default: the newest "
                     "recovery .uf2 fetched)")
+    ap.add_argument("--gdb", type=int, metavar="PORT",
+                    help="the device's gdb stub, for `./flipperoneemu gdb "
+                    "-n smoke-PID` (the first start only)")
     args = ap.parse_args()
 
     name = f"smoke-{os.getpid()}"
@@ -334,6 +338,8 @@ def main():
            "--usbip", str(port)]
     if args.uf2:
         run += ["--uf2", args.uf2]
+    if args.gdb:
+        run += ["--gdb", str(args.gdb)]
     t0 = time.time()
     if subprocess.run(run).returncode:
         sys.exit("the device did not start")
@@ -550,7 +556,7 @@ def body(check, name, d, out, port):
     time.sleep(1.0)
     panel.save(out / "desktop.png")
 
-    # ------------------------------------------- the RPC: the screen
+    # ------------------------------------------- the RPC: the screen, keys
     # (the CLI's `rpc`, as a computer's app speaks it; over the UART here,
     # a frame each 3.5 s or so at its 115200 baud)
     try:
@@ -560,6 +566,34 @@ def body(check, name, d, out, port):
         check("the RPC (the CLI's `rpc`): the screen streamed, as it shows",
               first is not None and first[:2] == (FRAME_W, H) and
               shows_gui(first[2], panel.screen()), first and first[:2])
+        # keys, judged on the screen itself (the stream's frames of them come
+        # seconds later here), in the desktop's Power tab: its menu holds
+        # still, where the desktop's sleeping face moves. Down, Up and Back
+        # through the RPC; each one should change the screen at once
+        body = lambda: panel.screen()[16 * LCD_W:]     # (not the status bar)
+
+        def settled(timeout=6, still=1.0):
+            """the screen once it has held still for @still seconds"""
+            end = time.time() + timeout
+            a, since = body(), time.time()
+            while time.time() < end:
+                time.sleep(0.1)
+                if body() != a:
+                    a, since = body(), time.time()
+                elif time.time() - since >= still:
+                    return a
+            return None
+
+        def key(name):
+            before = settled()
+            rpc.press(name)
+            return before is not None and until(lambda: body() != before, 2)
+        desk = body()
+        panel.tap("power")
+        until(lambda: body() != desk, 3)
+        keys = {k: key(k) for k in ("down", "up", "back")}
+        check("... and keys through it: Down, Up and Back in the Power tab",
+              all(keys.values()), str(keys))
         rpc.stop_screen()
         rpc.close()
         # (a frame on its way still ends before the CLI's prompt is back)
@@ -588,8 +622,8 @@ def body(check, name, d, out, port):
     found = until(lambda: "flipper-one: USB: 37c1:f101" in
                   (d / "qemu.out").read_text(errors="replace"), 10)
     check("a computer plugged in enumerates the MCU's USB (37C1:F101)", found)
-    # (to the prompt after it: a transmission left half-read stays the
-    # firmware's until the next reset, which then leaves its USB CLI mute)
+    # (to the prompt after it: a port closed with output on its way leaves
+    # the firmware's USB CLI mute until the MCU restarts, FW-05)
     text = cli(d, "help", r"Available commands:(.|\n)*gpio(.|\n)*control>:",
                10, usb=True)
     check("the CLI answers on its USB serial port",
@@ -696,9 +730,13 @@ def log_checks(check, d):
         lines.pop()             # still being written: the firmware has just
                                 # started again, and its CPU app asks for its
                                 # slot then ("... but sel")
-    errors = [line for line in lines
+    errors = [i for i, line in enumerate(lines)
               if "[E]" in line and not KNOWN_ERRORS.search(line)]
-    check("no error in the log", not errors, "; ".join(errors[:3]))
+    check("no error in the log", not errors,
+          "; ".join(lines[i] for i in errors[:3]))
+    if errors:                  # what came before the first: its story
+        print("\n".join("        " + re.sub(r"\x1b\[[0-9;]*m", "", x)
+                        for x in lines[max(0, errors[0] - 12):errors[0] + 1]))
 
 
 def bootsel(check, name, d):

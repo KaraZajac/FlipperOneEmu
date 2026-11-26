@@ -217,13 +217,18 @@ static void rp2350_wrap(RP2350State *s, RP2Wrap *w, const char *name,
     memory_region_add_subregion(&s->bus, base, &w->mr);
 }
 
-/* UART1 has the firmware's CLI: the first serial port; UART0 the second */
+/* UART1 has the firmware's CLI: the first serial port; UART0 the second.
+ * Their lines do not wait for the program on the other end (patch 0016):
+ * what it has not read waits in 1 MiB, and past that is lost. Else a
+ * program connected to cli.sock that stops reading stops the machine at
+ * the firmware's next byte (QEMU's PL011 waits for the chardev, BQL held) */
 static void rp2350_uarts_realize(RP2350State *s)
 {
     for (int i = 0; i < 2; i++) {
         DeviceState *dev = qdev_new(TYPE_PL011);
         g_autofree char *name = g_strdup_printf("rp2350.uart%d", i);
 
+        qdev_prop_set_uint32(dev, "tx-buffer", 1 * MiB);
         qdev_prop_set_chr(dev, "chardev", serial_hd(i ? 0 : 1));
         qdev_connect_clock_in(dev, "clk", s->sysclk);
         sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);

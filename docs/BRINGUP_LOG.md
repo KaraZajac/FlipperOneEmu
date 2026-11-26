@@ -1795,3 +1795,53 @@ register headers.
         vPortSuppressTicksAndSleep (furi_hal_os.c:70).
       - `gdb --linux` has three inferiors, the A53s and A72s with their threads.
       - After gdb detaches, the MCU answers its CLI.
+
+84. **The RPC's keys; a PL011 that stopped the machine; four firmware bugs.**
+    - **Keys arrive at once.** Timed against the screen itself (the panel link), not
+      the stream: Power and Back by turns on the MCU's desktop, through the RPC.
+      Over the UART and over USB, with the screen streamed and without, each took
+      effect within its 0.15 s press, ten of ten in each, as long as the program read
+      what came back.
+    - **Without a reader, nothing at all.** A program that stopped reading its
+      socket, as fo_rpc's `--press` does between keys, filled it. QEMU's PL011 hands
+      each byte to its chardev with `qemu_chr_fe_write_all()`, which waits for the
+      chardev with the BQL held. So at the firmware's next byte the whole machine
+      stopped: every CPU and the main loop, until the program read. That was log
+      79's "late or not at all", not the firmware.
+    - **The fix: QEMU patch 0016.** A PL011 property, `tx-buffer`: what the chardev
+      cannot take waits in a buffer (1 MiB for the RP2350's UARTs), and past it is
+      lost, with a warning, as on a line that nobody reads. The RK3576's UARTs are
+      QEMU's 16550, which waits for its chardev without the BQL: a program that
+      stops reading linux.sock still stalls Linux's console, not the machine. That
+      one is left open.
+    - **USB needs the Linux side off.** While the Linux side has power, the board's
+      mux gives the USB-C port's data to the RK3576, so a computer reaches the MCU's
+      USB only with the Linux side stopped, as on the device.
+    - **FW-03, the close request.** The `rpc` loop's 50 ms "wake-up" never happens:
+      `pipe_receive()` returns only with its bytes or a broken pipe. So a close
+      request takes effect at the next byte, which is then lost (log 79's garbled
+      CLI after a close).
+    - **FW-04, input before the session.** Bytes that come with DTR's rise are handled
+      before the session exists and left in TinyUSB's FIFO. TinyUSB arms the OUT
+      endpoint again only when a whole packet fits, so the port takes nothing more
+      until the MCU restarts.
+    - **FW-05, output in flight at a close.** A packet in flight when the port closes
+      completes when it opens again. If its TxDone is handled before the session
+      exists, `is_currently_transmitting` stays set and every later session is mute
+      (the smoke test's old note about "a transmission left half-read").
+    - **FW-06, a message cut off by the session's end.** It is decoded as an empty
+      one and logged as an error. That turned up in the smoke test now and then:
+      fo_rpc's byte after a close request came while the request still waited behind
+      a stop of the stream, and so went to the RPC as a length.
+    - **How they were found.** With `./flipperoneemu gdb` (log 83): TinyUSB's FIFOs
+      and endpoint states, the CliVcp's fields (through the CDC driver's
+      `cb_ctx[0]`), FreeRTOS's task lists and a task's stack, beside the CLI's `top`.
+      For FW-06, a breakpoint at the log line, its Python dumping the bytes the
+      decoder had taken, in a smoke test run with its new `--gdb PORT`.
+    - **scripts/fo_rpc.py steps round them.** Over USB it waits for the session's
+      banner before it writes. Its close stops a stream and reads it to its end,
+      then sends the request, a byte half a second on, and reads to the prompt.
+    - **The smoke test checks keys now.** In the desktop's Power tab, Down, Up and Back
+      through the RPC each change the screen; the menu holds still where the
+      desktop's sleeping face moves. On an error in the log, it prints the lines
+      before it.

@@ -199,6 +199,7 @@ yet.
 | 0013 | target/arm: an exception return without the BQL when the PMU is idle |
 | 0014 | hw/sd/sd: a multi-block transfer's bytes a block at a time |
 | 0015 | hw/ufs: answer a LUN with no logical unit, and the configuration descriptor (U-Boot's scan) |
+| 0016 | hw/char/pl011: a transmit that does not wait for the chardev (a program that stops reading cli.sock stopped the machine) |
 
 ## Layout
 

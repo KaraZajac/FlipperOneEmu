@@ -63,10 +63,11 @@ screen and its CLI.
       supplies on the control expander, 2026-11-24); the headphone jack: its switch,
       and a headset's mic and buttons on the ADC (2026-11-24)
 - ☑ The desktop and menus, the buttons and the touchpad from the window (2026-11-24)
-- ◐ RPC: the screen stream and input, through the CLI's `rpc`: the screen streamed
+- ☑ RPC: the screen stream and input, through the CLI's `rpc`: the screen streamed
       over the CLI's UART, frame for frame as it shows (scripts/fo_rpc.py, the smoke
-      test; the firmware's FW-02) (2026-11-25); keys through it arrive late over the
-      UART while frames go, to look into; over USB
+      test; the firmware's FW-02) (2026-11-25); keys through it, at once, over the UART
+      and over USB (the smoke test presses them); the UART's line no longer waits for
+      its reader (QEMU patch 0016); the firmware's FW-03 to FW-06 (2026-11-26, log 84)
 - ☑ USB: the RP2350's controller as a device, and a computer at the cable's end that
       enumerates it: the firmware's CDC port (`37C1:F101`) on `devices/NAME/usb.sock`
       (2026-11-24); BOOTSEL: the boot ROM's own USB boot enumerates (2026-11-24); USB/IP,

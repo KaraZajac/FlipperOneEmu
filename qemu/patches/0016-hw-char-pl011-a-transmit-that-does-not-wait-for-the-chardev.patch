@@ -1,0 +1,138 @@
+From: FlipperOneEmu
+Subject: [PATCH] hw/char/pl011: a transmit that does not wait for the chardev
+
+The PL011 hands each byte the guest sends to its chardev with
+qemu_chr_fe_write_all(), which waits until the chardev has taken it,
+with the BQL held. A program connected to a socket chardev that stops
+reading fills the socket, and from then on the guest's next byte stops
+the whole machine, every CPU and the main loop, until the program reads.
+A UART's line does not wait for its receiver.
+
+A property, "tx-buffer", makes it so: with N bytes, what the chardev
+does not take at once waits in a buffer that a watch on the chardev
+empties as it can take more, and past N bytes what comes is lost (a
+warning says so, once). The guest sees its byte sent at once, as before.
+With 0, the default, nothing changes.
+
+---
+--- a/include/hw/char/pl011.h	2026-11-25 23:56:10.277225457 -0500
++++ b/include/hw/char/pl011.h	2026-11-25 23:56:43.793622674 -0500
+@@ -52,6 +52,15 @@
+     Clock *clk;
+     bool migrate_clk;
+     bool logged_disabled_uart;
++    /*
++     * "tx-buffer": with 0, each byte waits for the chardev to take it (with
++     * the BQL held); else what the chardev cannot take at once waits here,
++     * up to that many bytes, and what comes past them is lost (once said)
++     */
++    uint32_t tx_buffer_size;
++    GByteArray *tx_buf;
++    guint tx_watch;
++    bool logged_tx_lost;
+     const unsigned char *id;
+     /*
+      * Since some users embed this struct directly, we must
+--- a/hw/char/pl011.c	2026-11-25 23:56:10.273754864 -0500
++++ b/hw/char/pl011.c	2026-11-25 23:56:43.793424388 -0500
+@@ -30,6 +30,7 @@
+ #include "chardev/char-fe.h"
+ #include "chardev/char-serial.h"
+ #include "qemu/log.h"
++#include "qemu/error-report.h"
+ #include "qemu/module.h"
+ #include "trace.h"
+ 
+@@ -224,6 +225,40 @@
+     pl011_fifo_rx_put(s, value);
+ }
+ 
++static gboolean pl011_tx_writable(void *do_not_use, GIOCondition cond,
++                                  void *opaque);
++
++/* what waits in tx_buf, to the chardev as far as it takes it now */
++static void pl011_tx_flush(PL011State *s)
++{
++    while (s->tx_buf->len) {
++        int w = qemu_chr_fe_write(&s->chr, s->tx_buf->data, s->tx_buf->len);
++
++        if (w <= 0) {
++            if (!s->tx_watch) {
++                s->tx_watch = qemu_chr_fe_add_watch(&s->chr,
++                                                    G_IO_OUT | G_IO_HUP,
++                                                    pl011_tx_writable, s);
++                if (!s->tx_watch) {     /* a chardev that cannot wait */
++                    g_byte_array_set_size(s->tx_buf, 0);
++                }
++            }
++            return;
++        }
++        g_byte_array_remove_range(s->tx_buf, 0, w);
++    }
++}
++
++static gboolean pl011_tx_writable(void *do_not_use, GIOCondition cond,
++                                  void *opaque)
++{
++    PL011State *s = opaque;
++
++    s->tx_watch = 0;
++    pl011_tx_flush(s);
++    return G_SOURCE_REMOVE;
++}
++
+ static void pl011_write_txdata(PL011State *s, uint8_t data)
+ {
+     if (!(s->cr & CR_UARTEN)) {
+@@ -250,11 +285,28 @@
+                       "PL011 data written to disabled TX UART\n");
+     }
+ 
+-    /*
+-     * XXX this blocks entire thread. Rewrite to use
+-     * qemu_chr_fe_write and background I/O callbacks
+-     */
+-    qemu_chr_fe_write_all(&s->chr, &data, 1);
++    if (s->tx_buffer_size) {
++        /*
++         * A line does not wait for its receiver: what the chardev does not
++         * take at once waits in tx_buf, and past tx-buffer bytes is lost
++         */
++        if (s->tx_buf->len < s->tx_buffer_size) {
++            g_byte_array_append(s->tx_buf, &data, 1);
++            pl011_tx_flush(s);
++        } else if (!s->logged_tx_lost) {
++            warn_report("%s: %u bytes not taken by its chardev: what the "
++                        "guest sends past them is lost",
++                        object_get_canonical_path(OBJECT(s)),
++                        s->tx_buffer_size);
++            s->logged_tx_lost = true;
++        }
++    } else {
++        /*
++         * XXX this blocks entire thread. Rewrite to use
++         * qemu_chr_fe_write and background I/O callbacks
++         */
++        qemu_chr_fe_write_all(&s->chr, &data, 1);
++    }
+     pl011_loopback_tx(s, data);
+     s->int_level |= INT_TX;
+     pl011_update(s);
+@@ -640,6 +692,7 @@
+ static const Property pl011_properties[] = {
+     DEFINE_PROP_CHR("chardev", PL011State, chr),
+     DEFINE_PROP_BOOL("migrate-clk", PL011State, migrate_clk, true),
++    DEFINE_PROP_UINT32("tx-buffer", PL011State, tx_buffer_size, 0),
+ };
+ 
+ static void pl011_init(Object *obj)
+@@ -664,6 +717,9 @@
+ {
+     PL011State *s = PL011(dev);
+ 
++    if (s->tx_buffer_size) {
++        s->tx_buf = g_byte_array_new();
++    }
+     qemu_chr_fe_set_handlers(&s->chr, pl011_can_receive, pl011_receive,
+                              pl011_event, NULL, s, NULL, true);
+ }

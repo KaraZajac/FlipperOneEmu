@@ -15,11 +15,13 @@ for the screen (StartVirtualDisplayRequest) and saves the frames it gets as
 PNGs (256x144, 8-bit grey), presses buttons (a ButtonEvent each of PRESS,
 SHORT and RELEASE: the firmware derives nothing from an injected event), and
 closes the session (RpcSessionCloseRequest). BUTTON: ok, back, key1, key2,
-power, key4, key5, sw, down, right, left, up, ptt. Over the UART (115200
-baud) a frame takes about 3.5 s, and keys sent while frames go can be late
-to arrive; --usb is the computer's own way. A frame drawn while one is on
-its way is lost (the firmware's FW-02, docs/FIRMWARE_BUGS.md): --frames
-waits for the screen's next change. Standard library only.
+power, key4, key5, sw, down, right, left, up, ptt. Keys take effect at once
+either way; over the UART a frame takes about 3.5 s, and --usb is the
+computer's own way (the Linux side stopped: while it runs, the USB-C port
+is its). A frame drawn while one is on its way is lost (the firmware's
+FW-02, docs/FIRMWARE_BUGS.md): --frames waits for the screen's next change.
+The session's opening and closing step round FW-03, FW-04 and FW-06.
+Standard library only.
 """
 import argparse
 import pathlib
@@ -34,6 +36,7 @@ BUTTONS = ["ok", "back", "key1", "key2", "power", "key4", "key5", "sw", "down",
            "right", "left", "up", "ptt"]
 PRESS, RELEASE, SHORT = 0, 1, 2
 READY = 0xFD                            # the firmware's "RPC mode" marker
+PROMPT = b"control>:"
 
 
 def varint(n):
@@ -105,11 +108,25 @@ class Rpc:
         self.s = socket.socket(socket.AF_UNIX)
         self.s.connect(str(path))
         self.buf = b""
-        self.s.sendall(b"\r")
-        time.sleep(0.5)
-        self._drain()
-        self.s.sendall(b"rpc\r")
+        self.streaming = False
         end = time.time() + timeout
+        if pathlib.Path(path).name == "usb.sock":
+            # the port opened (DTR up), the firmware starts a CLI session:
+            # its banner, then its prompt. A byte that comes before the
+            # session is up is never read, and the port takes nothing more
+            # until the MCU restarts (FW-04): nothing is sent until then
+            while PROMPT not in self.buf:
+                if time.time() > end:
+                    raise TimeoutError("no CLI session on the USB serial "
+                                       "port: " + self.buf[-200:].decode(
+                                           errors="replace"))
+                self._recv(end - time.time())
+        else:
+            self.s.sendall(b"\r")
+            time.sleep(0.5)
+        self._drain()
+        self.buf = b""
+        self.s.sendall(b"rpc\r")
         while READY not in self.buf:
             if time.time() > end:
                 raise TimeoutError("no RPC session: " +
@@ -171,9 +188,21 @@ class Rpc:
 
     def start_screen(self):
         self.send(4)                    # StartVirtualDisplayRequest
+        self.streaming = True
 
     def stop_screen(self):
         self.send(5)
+        self.streaming = False
+
+    def _quiet(self, gap=1.0, timeout=15):
+        """read on until nothing has come for @gap seconds"""
+        end = time.time() + timeout
+        while time.time() < end:
+            n = len(self.buf)
+            self._recv(gap)
+            if len(self.buf) == n:
+                return True
+        return False
 
     def press(self, button, hold=0.15):
         """PRESS, then after @hold SHORT and RELEASE, as a key pressed"""
@@ -184,8 +213,29 @@ class Rpc:
             self.send(2, field(1, 0, b) + field(2, 0, action))
 
     def close(self):
-        self.send(6)                    # RpcSessionCloseRequest
-        time.sleep(0.3)
+        """RpcSessionCloseRequest, and the CLI's prompt back. A stream is
+        stopped first and read to its end: the firmware takes a stop only
+        once its frame on the way is out, and a request behind the stop
+        waits as long. Then the request. The firmware's loop looks at it
+        only when a byte comes (FW-03): one after it, which the loop then
+        drops, ends the session. A byte that came before the request was
+        taken would go to the RPC as data (and, cut off by the session's
+        end, log an error, FW-06): then another"""
+        if self.streaming:
+            self.stop_screen()
+        self._quiet()
+        self.send(6)
+        for _ in range(3):
+            time.sleep(0.5)
+            self.s.sendall(b"\r")
+            end = time.time() + 1.5
+            while PROMPT not in self.buf[-4096:] and time.time() < end:
+                try:
+                    self._recv(end - time.time())
+                except EOFError:
+                    break
+            if PROMPT in self.buf[-4096:]:
+                break
         self.s.close()
 
 
@@ -223,7 +273,6 @@ def main():
                     rpc.press(b)
                     time.sleep(0.5)
     finally:
-        rpc.stop_screen()
         rpc.close()
     return 0
 
