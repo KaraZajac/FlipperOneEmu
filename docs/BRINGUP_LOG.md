@@ -2050,3 +2050,58 @@ register headers.
       the upload's status every 10 s. Most of the link's time now goes on
       Linux's side, between one count and the next.
     - **Checked.** The smoke test, linux_check and its MCU-update mode (94 s) pass.
+    - **And in the installer** (a fresh install of release candidate 0.1.0-rc4,
+      Minimal, on a new device's UFS): its MCU step stages 0.16.0 in 55 s, from
+      erase done to image staged, inside its 180 s. The installer ends with
+      "installation complete".
+
+90. **The boot ROM's USB download: rockusb's download-boot, as the docs install
+    Flipper OS.**
+    - **What the docs do.** "How to install linux image": the board in its
+      MaskROM (on the Flipper One, the MCU's Maskrom), `rockusb list`, and
+      `rockusb download-boot installer-falcon-loader.bin`; the installer's
+      interface comes up on the screen. The boot ROM's USB download
+      (RK3576-Boot-ROM.md): USB0 a device, 2207:350e; vendor requests (0x40,
+      0x0c) bring code, 0x471 for SRAM (the DDR blob, which returns to the boot
+      ROM) and 0x472 for DRAM (SPL); 4096 bytes at most each, a shorter one
+      ending the payload, a CRC-16 (CCITT) at its end, two zero bytes taken
+      unchecked. rockusb and rkdeveloptool send it so; rkdeveloptool calls a
+      device with bcdUSB's bit 0 clear "Maskrom".
+    - **The model** (rk3576_maskrom.c). While the boot ROM waits there, from
+      MASKROM_EN at the rail's start or with nothing to boot on the UFS's boot
+      LU and the card (`run --uboot` on a new device), the cable reaches it
+      through the USB mux, and the computer on the cable enumerates it: a
+      Rockusb device in its MaskROM (bcdUSB 2.00, a vendor interface ff/06/05
+      with a bulk endpoint each way, no strings). A payload that fails its CRC
+      is dropped. One that passes runs, the machine's to say how. 0x471 code:
+      the machine does the DDR blob's work (`rk3576_ddr_blob()`), and the boot
+      ROM waits for more. 0x472 code: the boot ROM is left. The machine plays
+      SPL in its Falcon mode on the FIT that the code carries after SPL's own
+      (the installer's loader: 'ddr', 80 KiB; 'spl', 17.4 MiB, its FIT at
+      0x31700 with its images), as `--installer` does from a file. Other 0x472
+      code (rkdeveloptool's usbplug, SPL with U-Boot) it cannot run, and it
+      says so.
+    - **The computer's side.** The virtual PC's control transfers now go to
+      4096 bytes. `scripts/fo_rockusb.py` speaks rockusb's `list` and
+      `download-boot` over USB/IP from userspace: a loader's entries, the 0x471
+      ones with their delays, then the 0x472 ones. It waits a moment for a
+      refused import: after another client lets go, the computer takes the
+      device back with a reset and enumerates it again first (some 120 ms).
+      `usbip attach` gives the device to this PC's kernel for the real
+      rockusb.
+    - **Result.** `download-boot installer-falcon-loader.bin`: 'ddr' (CRC
+      good) in 0.1 s, 'spl' in 13 s (its last two bytes zero: the docs'
+      self-cancelling CRC, so the boot ROM skips its slow check). SPL in Falcon
+      mode starts the installer's kernel. Its interface comes up on the
+      Flipper's screen 30 s later, with the UFS (59.4 GiB) as its target, as
+      `--installer` has it.
+    - **Checked.** `linux_check.py --maskrom [--loader FILE]`: a blank
+      device's boot ROM waits in its USB download; the computer enumerates it;
+      `fo_rockusb.py list` finds a Rockusb device; 0x471 code with a wrong CRC
+      is dropped, and with its CRC runs; then either the loader's download-boot
+      brings up the installer, or 0x472 code with no FIT in it is refused.
+      Stop, then the MCU's Maskrom (MASKROM_EN), puts it in its USB download
+      again (once the CPU app has settled: Stop is its Power menu's). 62 s with
+      the installer's loader, 11 s without. The smoke test, linux_check, its
+      U-Boot mode (the boot ROM's choice of medium, split from SPL's part) and
+      its MCU-update mode pass.

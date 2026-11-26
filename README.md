@@ -11,55 +11,55 @@ It is the sibling of [FlipperZeroEmu](https://github.com/KaraZajac/FlipperZeroEm
 does the same for the Flipper Zero.
 
 **Status (2026-11-25): the whole Flipper One runs: its MCU firmware and Flipper OS,
-with FlipCTL on the screen.** The RP2350's own boot ROM verifies
-the flash's partition table and starts the MCU firmware on the emulated chip. The
-firmware starts FreeRTOS, logs through its PIO UART, draws on the screen in the window
-(over HSTX and DMA to the emulated JD9853 panel), lights the backlight, answers on its
-CLI, and takes the window's buttons (through the control bus's I2C expander) and
-touchpad (through its IQS7211E): its desktop, menus and touchpad test work. Its haptic
-driver buzzes (the window shakes), its 17 LEDs light in the window as it drives them,
-and its settings are kept in the flash across restarts. Its main bus (I2C from a PIO
-program) reaches the main board's expander, which powers the Linux side, the battery's
-gauge (the status bar shows its charge), its charger, the system rail's current meter,
-the five power monitors on the Linux side's rails (`power consumption`; the CPU rails
-follow how many cores run) and the USB-C port's chips: the self-check finds every chip. A charger can be plugged
-into its USB-C port, and the battery charges; a computer plugged in gets its USB serial
-port, also as a real USB device on this PC (USB/IP), and the firmware can be updated as
-picotool updates it, through the RP2350's boot ROM. Its `power reboot` power-cycles the
-board through the charger, and its power off (ship mode) turns it off until a charger
-is plugged in; after either, as on the device, Flipper OS stays off until the Power
-tab's Start Flipper OS (the emulator itself starts as a device in use, Flipper OS on).
-The MCU's Maskrom puts the RK3576 in its MaskROM (BOOT0). The RK3576 (four Cortex-A53s and four A72s) boots a published
-Flipper OS build from its image on an emulated microSD card, to its login: its own
-kernel and device tree, Debian 13 under systemd, and FlipCTL, which draws Flipper OS's
-interface on the Flipper's screen (its frames go over the display SPI to the MCU
-firmware, which shows them) and answers its keys (which the MCU firmware passes on over
-their I2C link). Its CPU clusters' clocks come from TF-A's SCMI (cpufreq), its
-temperature sensors, calibrated from its OTP, read the chip warming as its cores run,
-its SARADC reads the boot-order strap, the MCU's BOOT1 and the board's revision (which
-U-Boot tells the board by), and its 64 GB UFS, provisioned as the Flipper OS installer has it
-(a system LU, boot LUs A and B, recovery), is blank until something is installed on it.
-Its two Ethernet ports have their PHYs, and with `--net` the first is on this PC's
-network: DHCP, DNS, and the internet through NAT. Its USB controllers come up (USB
-devices can be plugged into the second from QEMU's monitor), and with them its Type-C
-port, charger and battery: FlipCTL shows the charge, the power flow and both
-temperatures. A computer plugged into the USB-C port while Flipper OS runs reaches
-the RK3576, as on the device (the MCU switches the port's USB to it with its rail),
-and enumerates Flipper OS's USB gadget at high speed: its serial port's login on
-`devices/NAME/usb.sock`, and over USB/IP the whole gadget on this PC: its network
-(NCM, with a DHCP server on Flipper OS's side), MTP and the serial port. Its sound card
-(the NAU8822 codec on SAI2) plays, at 48 kHz: to a WAV file, or nowhere (`run --audio`);
-its microphones (the internal one, and a headset's in the jack) hear a WAV file
-(`run --mic`). An NVMe SSD can be put in its M.2 slot (`run --nvme`), on PCIe0, and
-a monitor in its HDMI port (`run --hdmi`): Linux lights it at 1280x720 with its
-console on it, and `shot --hdmi` takes its picture.
-It reaches its login in two to three minutes, the first boot included
-(TCG emulates eight cores). The MCU switches the RK3576 on and off as on the device:
-Flipper OS's power-off and reboot work, and so does the MCU's own Stop (now and then a
-power-off or reboot waits 90 s for BlueZ's `mpris-proxy`, which has no Bluetooth
-adapter: the Wi-Fi and Bluetooth chip is on USB, not modelled yet). The RK3576's
-DisplayPort (over the USB-C port) and more come next. [RESEARCH.md](RESEARCH.md) is the survey
-this starts from:
+with FlipCTL on the screen.** The RP2350's own boot ROM verifies the flash's partition
+table and starts the MCU firmware on the emulated chip. The firmware starts FreeRTOS,
+logs through its PIO UART, draws on the screen in the window (over HSTX and DMA to the
+emulated JD9853 panel), lights the backlight, answers on its CLI, and takes the
+window's buttons (through the control bus's I2C expander) and touchpad (through its
+IQS7211E): its desktop, menus and touchpad test work. Its haptic driver buzzes (the
+window shakes), its 17 LEDs light in the window as it drives them, and its settings are
+kept in the flash across restarts. Its main bus (I2C from a PIO program) reaches the
+main board's expander, which powers the Linux side, the battery's gauge (the status bar
+shows its charge), its charger, the system rail's current meter, the five power
+monitors on the Linux side's rails (`power consumption`; the CPU rails follow how many
+cores run) and the USB-C port's chips: the self-check finds every chip. A charger can
+be plugged into its USB-C port, and the battery charges; a computer plugged in gets its
+USB serial port, also as a real USB device on this PC (USB/IP), and the firmware can be
+updated as picotool updates it, through the RP2350's boot ROM. Its `power reboot`
+power-cycles the board through the charger, and its power off (ship mode) turns it off
+until a charger is plugged in; after either, as on the device, Flipper OS stays off
+until the Power tab's Start Flipper OS (the emulator itself starts as a device in use,
+Flipper OS on). The MCU's Maskrom puts the RK3576 in its MaskROM (BOOT0), where its
+boot ROM takes a USB download, as rockusb's download-boot sends one. The RK3576 (four
+Cortex-A53s and four A72s) boots a published Flipper OS build from its image on an
+emulated microSD card, to its login: its own kernel and device tree, Debian 13 under
+systemd, and FlipCTL, which draws Flipper OS's interface on the Flipper's screen (its
+frames go over the display SPI to the MCU firmware, which shows them) and answers its
+keys (which the MCU firmware passes on over their I2C link). Its CPU clusters' clocks
+come from TF-A's SCMI (cpufreq), its temperature sensors, calibrated from its OTP, read
+the chip warming as its cores run, its SARADC reads the boot-order strap, the MCU's
+BOOT1 and the board's revision (which U-Boot tells the board by), and its 64 GB UFS,
+provisioned as the Flipper OS installer has it (a system LU, boot LUs A and B,
+recovery), is blank until something is installed on it. Its two Ethernet ports have
+their PHYs, and with `--net` the first is on this PC's network: DHCP, DNS, and the
+internet through NAT. Its USB controllers come up (USB devices can be plugged into the
+second from QEMU's monitor), and with them its Type-C port, charger and battery:
+FlipCTL shows the charge, the power flow and both temperatures. A computer plugged into
+the USB-C port while Flipper OS runs reaches the RK3576, as on the device (the MCU
+switches the port's USB to it with its rail), and enumerates Flipper OS's USB gadget at
+high speed: its serial port's login on `devices/NAME/usb.sock`, and over USB/IP the
+whole gadget on this PC: its network (NCM, with a DHCP server on Flipper OS's side),
+MTP and the serial port. Its sound card (the NAU8822 codec on SAI2) plays, at 48 kHz:
+to a WAV file, or nowhere (`run --audio`); its microphones (the internal one, and a
+headset's in the jack) hear a WAV file (`run --mic`). An NVMe SSD can be put in its M.2
+slot (`run --nvme`), on PCIe0, and a monitor in its HDMI port (`run --hdmi`): Linux
+lights it at 1280x720 with its console on it, and `shot --hdmi` takes its picture. It
+reaches its login in two to three minutes, the first boot included (TCG emulates eight
+cores). The MCU switches the RK3576 on and off as on the device: Flipper OS's power-off
+and reboot work, and so does the MCU's own Stop (now and then a power-off or reboot
+waits 90 s for BlueZ's `mpris-proxy`, which has no Bluetooth adapter: the Wi-Fi and
+Bluetooth chip is on USB, not modelled yet). The RK3576's DisplayPort (over the USB-C
+port) and more come next. [RESEARCH.md](RESEARCH.md) is the survey this starts from:
 the device, what Flipper Devices publishes, and what emulating it takes.
 [PLAN.md](PLAN.md) is the order of work; the MCU comes first.
 [docs/BRINGUP_LOG.md](docs/BRINGUP_LOG.md) is what was found on the way.
@@ -151,10 +151,17 @@ scripts/fetch_os.py                  # a Flipper OS build: its kernel, initrd an
                                      # falcon-installer/, BUILD/flipper-one/), the machine
                                      # as SPL in Falcon mode. Its interface on the screen
                                      # (the pad, OK, Back): it installs Flipper OS on the
-                                     # UFS. Its MCU update outlasts its 180 s here (PLAN)
+                                     # UFS, and the MCU's firmware
 ./flipperoneemu run --uboot          # ... a device's own storage, as its boot ROM boots
                                      # it: the UFS's boot LU (once installed), or else the
-                                     # microSD card
+                                     # microSD card; with neither (a new device), or with
+                                     # the MCU's Maskrom, it waits in its MaskROM, USB0 a
+                                     # device (2207:350e) for a USB download:
+scripts/fo_rockusb.py --port 3240 download-boot installer-falcon-loader.bin  # rockusb's,
+                                     # over USB/IP (`run --uboot --usbip 3240 --net`, a
+                                     # computer plugged in: Ctrl+Shift+U): the installer
+                                     # starts, the docs' way (`list` finds the device;
+                                     # sudo scripts/usbip_attach.py: the real rockusb)
 ./flipperoneemu console [-n NAME] [CMD]  # Linux's console (the RK3576's UART0); Ctrl-] leaves
 ./flipperoneemu console --usb ...    # ... Flipper OS's serial port on its USB gadget
                                      # (a computer plugged in: Ctrl+Shift+U)
@@ -185,6 +192,9 @@ scripts/fo_rpc.py [-n NAME] [--frames N] [--press KEY ...]  # the firmware's RPC
 scripts/smoke_test.py                # a throwaway device, checked: PASS or FAIL
 scripts/linux_check.py               # ... with Flipper OS too: boot, screen, keys, sensors,
                                      # USB, reboot, power-off (keeps a booted card in build/)
+scripts/linux_check.py --maskrom [--loader FILE]  # ... or a new device's boot ROM in
+                                     # its USB download: the maskrom protocol, a loader's
+                                     # download-boot (the installer's), the MCU's Maskrom
 ```
 
 A device is a folder, `devices/NAME`: the MCU's flash (made from the newest recovery

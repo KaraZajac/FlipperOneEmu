@@ -106,8 +106,10 @@ struct FlipperOneState {
                                        bus's expander, the main one's */
     bool maskrom_strap;         /* MASKROM_EN (BOOT0, the main expander's pin
                                    15): SARADC_VIN0_BOOT pulled to ground */
-    bool in_maskrom;            /* ... the RK3576 started with it: its boot
-                                   ROM waits for USB, nothing more runs */
+    bool in_maskrom;            /* ... the RK3576 started with it, or had
+                                   nothing to boot: its boot ROM waits for
+                                   a USB download (rk3576_maskrom.c) */
+    bool dram_up;               /* ... which has run the DDR blob */
     int headset;                /* in the jack: FO_HEADSET_... */
     DeviceState *codec;         /* ... its mic on the NAU8822's RMICP */
     bool hdmi;                  /* a monitor in the HDMI port */
@@ -215,6 +217,9 @@ static void flipper_one_usb_data(FlipperOneState *s)
         fo_usb_host_connect(s->usb_host, NULL, NULL);
     } else if (!s->usb20_sel) {
         fo_usb_host_connect(s->usb_host, &rp2350_usb_ops, &s->mcu);
+    } else if (s->rk3576.maskrom.on) {          /* (its boot ROM's) */
+        fo_usb_host_connect(s->usb_host, &rk_maskrom_usb_ops,
+                            &s->rk3576.maskrom);
     } else {
         fo_usb_host_connect(s->usb_host, &rk_dwc3_usb_ops,
                             &s->rk3576.usb[0]);
@@ -865,6 +870,28 @@ static BlockBackend *fo_ufs_boot_lu(void)
                                                      : NULL;
 }
 
+/* the medium the boot ROM boots (boot_blk): false if none has an image,
+ * and it falls back to its USB download */
+static bool fo_boot_rom(FlipperOneState *s)
+{
+    s->boot_blk = fo_ufs_boot_lu();
+    if (!fo_bootable(s->boot_blk)) {
+        s->boot_blk = s->sd_blk;
+    }
+    if (!fo_bootable(s->boot_blk)) {
+        s->boot_blk = NULL;
+        qemu_log("flipper-one: the boot ROM finds nothing to boot on the "
+                 "UFS's boot LU or the microSD card: it waits in its MaskROM, "
+                 "for a USB download\n");
+        return false;
+    }
+    qemu_log("flipper-one: the boot ROM boots %s\n",
+             s->boot_blk == s->sd_blk ? "the microSD card"
+                                      : "the UFS's boot LU");
+    return true;
+}
+
+/* SPL, from the medium the boot ROM chose: U-Boot proper from its FIT */
 static hwaddr fo_spl(FlipperOneState *s)
 {
     g_autofree char *compat = g_strdup_printf("flipper,one-rev-%s",
@@ -876,18 +903,6 @@ static hwaddr fo_spl(FlipperOneState *s)
     hwaddr addr = 0, entry, fdt_at;
     uint32_t len, size;
 
-    s->boot_blk = fo_ufs_boot_lu();
-    if (!fo_bootable(s->boot_blk)) {
-        s->boot_blk = s->sd_blk;
-    }
-    if (!fo_bootable(s->boot_blk)) {
-        return fo_spl_fail("nothing to boot on the UFS's boot LU or the "
-                           "microSD card (the boot ROM would wait in its "
-                           "MaskROM)");
-    }
-    qemu_log("flipper-one: the boot ROM boots %s\n",
-             s->boot_blk == s->sd_blk ? "the microSD card"
-                                      : "the UFS's boot LU");
     if (blk_pread(s->boot_blk, FO_SPL_FIT, sizeof(head), head, 0) < 0 ||
         fdt_magic(head) != FDT_MAGIC) {
         return fo_spl_fail("no u-boot.itb 8 MiB in");
@@ -1063,22 +1078,15 @@ static hwaddr fo_falcon_image(FlipperOneState *s, int node, bool tree)
     return load + len;
 }
 
-static hwaddr fo_falcon(FlipperOneState *s)
+static hwaddr fo_falcon_boot(FlipperOneState *s)
 {
     g_autofree char *compat = g_strdup_printf("flipper,one-rev-%s",
                                               s->rev ?: FO_REV_DEFAULT);
-    g_autoptr(GError) err = NULL;
-    const void *fit;
+    const void *fit = s->falcon_fit;
     const char *name, *type;
     int images, confs, conf = -1, node;
     hwaddr entry = 0, fdt_at = 0;
 
-    if (!s->falcon_fit &&
-        !g_file_get_contents(s->falcon, (char **)&s->falcon_fit,
-                             &s->falcon_len, &err)) {
-        return fo_spl_fail(err->message);
-    }
-    fit = s->falcon_fit;
     if (s->falcon_len < sizeof(struct fdt_header) || fdt_check_header(fit) ||
         fdt_totalsize(fit) > s->falcon_len) {
         return fo_spl_fail("the installer is not a FIT");
@@ -1133,6 +1141,37 @@ static hwaddr fo_falcon(FlipperOneState *s)
     return entry;
 }
 
+/* ... the installer's file (falcon=FILE), read once */
+static hwaddr fo_falcon(FlipperOneState *s)
+{
+    g_autoptr(GError) err = NULL;
+
+    if (!s->falcon_fit &&
+        !g_file_get_contents(s->falcon, (char **)&s->falcon_fit,
+                             &s->falcon_len, &err)) {
+        return fo_spl_fail(err->message);
+    }
+    return fo_falcon_boot(s);
+}
+
+/* the first FIT (a tree with images and configurations) in @data, with
+ * what follows it (its images' data, if they are outside it) */
+static const uint8_t *fo_find_fit(const uint8_t *data, size_t len,
+                                  size_t *fit_len)
+{
+    for (size_t at = 0; at + sizeof(struct fdt_header) <= len; at += 4) {
+        const void *t = data + at;
+
+        if (fdt_magic(t) == FDT_MAGIC && fdt_totalsize(t) <= len - at &&
+            !fdt_check_header(t) && fdt_path_offset(t, "/images") >= 0 &&
+            fdt_path_offset(t, "/configurations") >= 0) {
+            *fit_len = len - at;
+            return t;
+        }
+    }
+    return NULL;
+}
+
 static void fo_rk_cpu_off(ARMCPU *cpu)
 {
     arm_set_cpu_power_state(cpu, PSCI_OFF);
@@ -1140,6 +1179,89 @@ static void fo_rk_cpu_off(ARMCPU *cpu)
 }
 
 /* in the main loop, the cores stopped: off, on, or started again */
+/* the RK3576's CPUs as TF-A leaves them: CPU 0 at @entry (x0: entry_x0),
+ * the others off, for PSCI's CPU_ON; all of them off with no @entry. The
+ * vCPUs paused. */
+static void fo_rk_start(FlipperOneState *s, hwaddr entry)
+{
+    if (entry) {
+        rk_scmi_reset(&s->rk3576.scmi);         /* (TF-A's start) */
+    }
+    for (int i = 0; i < RK3576_NCPUS; i++) {
+        ARMCPU *cpu = &s->rk3576.cpu[i];
+        CPUState *cs = CPU(cpu);
+
+        cpu_reset(cs);
+        if (entry && i == 0) {
+            arm_emulate_firmware_reset(cs, 2);  /* as QEMU's own direct boot,
+                                                   or TF-A to BL33 */
+            cpu_set_pc(cs, entry);
+            cpu->env.xregs[0] = s->entry_x0;
+            arm_rebuild_hflags(&cpu->env);
+        } else {
+            fo_rk_cpu_off(cpu);
+        }
+    }
+    s->rk_on = entry != 0;
+}
+
+/*
+ * What the boot ROM's USB download runs (rk3576_maskrom.c). 0x471 code, for
+ * SRAM, is the DDR blob (or its like): the machine does its work
+ * (rk3576_ddr_blob()), and the boot ROM waits for the next. 0x472 code, for
+ * DRAM, is SPL: the machine plays U-Boot's SPL in its Falcon mode on the
+ * FIT that the payload has after SPL's code, as rockusb's download-boot of
+ * the Flipper OS installer's loader has it (fo_falcon_boot()). The boot ROM
+ * is left then, whatever comes of it.
+ */
+static void fo_maskrom_run(void *opaque, uint16_t code, const uint8_t *data,
+                           size_t len)
+{
+    FlipperOneState *s = opaque;
+    bool running = runstate_is_running();
+    const uint8_t *fit;
+    size_t fit_len;
+    hwaddr entry = 0;
+
+    if (code == 0x471) {
+        rk3576_ddr_blob(&s->rk3576, MACHINE(s)->ram_size);
+        s->dram_up = true;
+        qemu_log("flipper-one: %" PRId64 " ms: the boot ROM's 0x471 code "
+                 "ran: the DRAM is up (the machine's DDR blob)\n",
+                 qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL));
+        return;
+    }
+    s->in_maskrom = false;                      /* SPL's from here */
+    rk_maskrom_set(&s->rk3576.maskrom, false);
+    flipper_one_usb_data(s);
+    s->entry_x0 = 0;
+    if (!s->dram_up) {
+        fo_spl_fail("0x472 code with the DRAM not up (no 0x471 code before "
+                    "it): it cannot run");
+    } else if (!(fit = fo_find_fit(data, len, &fit_len))) {
+        fo_spl_fail("no FIT in the 0x472 code: the machine plays SPL in its "
+                    "Falcon mode only (the Flipper OS installer's loader)");
+    } else {
+        g_free(s->falcon_fit);
+        s->falcon_fit = g_memdup2(fit, fit_len);
+        s->falcon_len = fit_len;
+        s->falcon_done = true;
+        entry = fo_falcon_boot(s);
+    }
+    if (running) {
+        pause_all_vcpus();
+    }
+    fo_rk_start(s, entry);
+    if (running) {
+        resume_all_vcpus();
+    }
+    qemu_log("flipper-one: %" PRId64 " ms: the RK3576 %s\n",
+             qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL),
+             entry ? "starts what the boot ROM's USB download gave it"
+                   : "has nothing to start");
+    fo_panel_rk3576(s->panel, s->rk_on);
+}
+
 static void fo_rk_power_bh(void *opaque)
 {
     FlipperOneState *s = opaque;
@@ -1165,18 +1287,22 @@ static void fo_rk_power_bh(void *opaque)
         g_byte_array_set_size(s->last_frame, 0);
     }
     s->in_maskrom = want != RK_OFF && s->maskrom_strap;
+    s->dram_up = false;
     if (want == RK_OFF) {
         rk3576_power_lost(&s->rk3576);
     } else if (s->in_maskrom) {
         /* its boot ROM in its USB download mode, the strap read at the
-         * reset: what it does there is not modelled, so nothing starts */
+         * reset: nothing starts until a computer sends something */
     } else if (s->falcon && !s->falcon_done) {  /* ... SPL in Falcon mode */
         s->falcon_done = true;                  /* (the download's: once) */
         rk3576_ddr_blob(&s->rk3576, MACHINE(s)->ram_size);
         entry = fo_falcon(s);
     } else if (s->uboot || s->falcon) {         /* the DDR blob, then SPL */
-        rk3576_ddr_blob(&s->rk3576, MACHINE(s)->ram_size);
-        entry = fo_spl(s);
+        s->in_maskrom = !fo_boot_rom(s);
+        if (!s->in_maskrom) {
+            rk3576_ddr_blob(&s->rk3576, MACHINE(s)->ram_size);
+            entry = fo_spl(s);
+        }
     } else {
         if (!s->rk_nimages) {
             fo_rk_save_images(s);               /* the first start: as loaded */
@@ -1185,34 +1311,17 @@ static void fo_rk_power_bh(void *opaque)
         }
         entry = s->binfo.loader_start;
     }
-    if (entry) {
-        rk_scmi_reset(&s->rk3576.scmi);         /* (TF-A's start) */
-    }
-    for (int i = 0; i < RK3576_NCPUS; i++) {
-        ARMCPU *cpu = &s->rk3576.cpu[i];
-        CPUState *cs = CPU(cpu);
-
-        cpu_reset(cs);                          /* (the others: off, for
-                                                   PSCI's CPU_ON) */
-        if (entry && i == 0) {
-            arm_emulate_firmware_reset(cs, 2);  /* as QEMU's own direct boot,
-                                                   or TF-A to BL33 */
-            cpu_set_pc(cs, entry);
-            cpu->env.xregs[0] = s->entry_x0;
-            arm_rebuild_hflags(&cpu->env);
-        } else {
-            fo_rk_cpu_off(cpu);
-        }
-    }
-    s->rk_on = entry != 0;
+    fo_rk_start(s, entry);
     if (running) {
         resume_all_vcpus();
     }
+    rk_maskrom_set(&s->rk3576.maskrom, s->in_maskrom);
+    flipper_one_usb_data(s);
     qemu_log("flipper-one: %" PRId64 " ms: the RK3576 %s\n",
              qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL),
              want == RK_OFF ? "is off" :
-             s->in_maskrom ? "waits in its MaskROM (its boot ROM's USB "
-                             "download mode, not modelled)" :
+             s->in_maskrom ? "waits in its MaskROM: its USB download, USB0 "
+                             "a device for the computer on the cable" :
              !entry ? "has nothing to start" :
              want == RK_ON ? "starts" : "starts again");
     fo_panel_rk3576(s->panel, s->rk_on);
@@ -1352,6 +1461,10 @@ static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
     /* its USB0's gadget pulls D+ up for the computer plugged in */
     s->rk3576.usb[0].pullup_fn = fo_usb_host_pullup;
     s->rk3576.usb[0].pullup_opaque = s->usb_host;
+    s->rk3576.maskrom.pullup_fn = fo_usb_host_pullup;
+    s->rk3576.maskrom.pullup_opaque = s->usb_host;
+    s->rk3576.maskrom.run = fo_maskrom_run;
+    s->rk3576.maskrom.run_opaque = s;
     /* the MCU on I2C0, its PMIC on I2C1, its real-time clock on I2C8 */
     s->link = (RkI2cTarget){
         .start = flipper_one_link_start, .write = flipper_one_link_write,

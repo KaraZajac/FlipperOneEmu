@@ -122,9 +122,9 @@ screen and its CLI.
       target (2026-11-26, log 87); the UFS provisioned as its scheme has it (patch
       0017: boot LUs A and B, bBootLunEn kept), an install, and Flipper OS booted
       from the UFS, the machine as the boot ROM (UFS, then the card) (2026-11-26,
-      log 88); the MCU's update within the installer's 180 s (the I2C link's
-      speed); a UFS reprovisioned (LUs carved by a written Configuration
-      Descriptor)
+      log 88); the MCU's update within the installer's 180 s: 55 s, the I2C
+      link at about its real speed (2026-11-26, log 89); a UFS reprovisioned (LUs
+      carved by a written Configuration Descriptor)
 - ◐ The MCU powers it: `VCC5V0_SYS_S5_EN` (the main expander's pin 12) switches it on
       and off, and Linux's PSCI SYSTEM_OFF and SYSTEM_RESET are its own (QEMU patch
       0005) (2026-11-24); `MASKROM_EN` (BOOT0): the RK3576 waits in its MaskROM when
@@ -132,7 +132,10 @@ screen and its CLI.
       enables pulled down, the machine started as a device in use (2026-11-26, log
       85); the SARADC: the boot strap (BOOT0 grounds it), BOOT1 (the MCU's PWM) and
       the board's revision, which U-Boot reads (2026-11-26, log 86); the boot ROM's
-      USB download
+      USB download: 2207:350e, the maskrom protocol, rockusb's download-boot of the
+      Flipper OS installer's loader (the machine as SPL in Falcon mode), over
+      USB/IP (scripts/fo_rockusb.py) (2026-11-26, log 90); a usbplug's Loader mode
+      (rkdeveloptool's `db`, then `wl`), U-Boot over USB (SPL with u-boot.itb)
 
 ## M4: the link ◐
 - ◐ A program in the RK3576's place on the link: the host link (docs/HOST_LINK.md,

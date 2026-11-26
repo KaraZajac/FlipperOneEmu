@@ -1077,6 +1077,7 @@ static void rk3576_realize(DeviceState *dev, Error **errp)
     otp_init(s);
     rk_tsadc_init(s, &s->tsadc, TSADC_BASE, rk3576_spi(s, TSADC_SPI));
     rk_saradc_init(s, &s->saradc, SARADC_BASE, rk3576_spi(s, SARADC_SPI));
+    rk_maskrom_init(&s->maskrom);
 
     s->timer0.soc = s;
     s->timer0.irq = rk3576_spi(s, TIMER0_SPI);

@@ -58,7 +58,7 @@
 #define SET_ADDRESS_NS  2000000         /* the device's recovery */
 #define PATIENCE_NS     10000000        /* the most it waits for the CPU */
 #define ADDRESS         1
-#define CTL_MAX         1024
+#define CTL_MAX         4096            /* (the maskrom protocol's) */
 #define TO_DEV_MAX      4096
 
 enum { H_OFF, H_ATTACHING, H_RESETTING, H_ENUM, H_RUN, H_FAILED };

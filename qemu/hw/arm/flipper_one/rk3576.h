@@ -214,6 +214,38 @@ struct RkDwc3State {
 struct FoUsbDevOps;
 extern const struct FoUsbDevOps rk_dwc3_usb_ops;
 
+/* rk3576_maskrom.c: the boot ROM's USB download mode (MaskROM), USB0 a
+ * device that the computer at the cable's end drives through
+ * rk_maskrom_usb_ops (its opaque: the RkMaskrom). The board says what a
+ * payload the computer sent does when it runs (run), and is told through
+ * pullup_fn when the device comes and goes */
+typedef struct RkMaskrom {
+    bool on;                            /* the boot ROM waits on its USB */
+    uint8_t addr, new_addr, config;
+    bool ctl, ctl_in;                   /* a control transfer under way */
+    int after;                          /* ... what its status stage does */
+    uint32_t out_len, out_got;          /* ... its OUT data */
+    uint8_t reply[64];                  /* ... its IN data */
+    int reply_len, reply_pos;
+    uint16_t code;                      /* the payload coming: 0x471, 0x472 */
+    GByteArray *payload;
+    bool too_big;
+    uint16_t run_code;                  /* the payload to run */
+    bool run_unchecked;                 /* ... it came with no CRC */
+    GByteArray *run_payload;
+    QEMUBH *bh;                         /* ... after its status stage */
+    void (*run)(void *opaque, uint16_t code, const uint8_t *data,
+                size_t len);
+    void *run_opaque;
+    void (*pullup_fn)(void *opaque, bool on);
+    void *pullup_opaque;
+} RkMaskrom;
+
+extern const struct FoUsbDevOps rk_maskrom_usb_ops;
+void rk_maskrom_init(RkMaskrom *m);
+/* the boot ROM goes into its USB download mode, or leaves it */
+void rk_maskrom_set(RkMaskrom *m, bool on);
+
 /* rk_sai.c: a SAI (serial audio interface): FIFOs between its DMAC and an
  * I2S link. As the link's master its frame clock is its own; as a slave
  * (SAI2, the codec's) the codec gives it (rk_sai_lrck). The frames it sends
@@ -458,6 +490,7 @@ struct RK3576State {
     RkDwc3State usb[2];                 /* USB0 (the USB-C port's, OTG),
                                            USB1 (host: the hub's) */
     RkBlock usbdp;                      /* USB0's USB3/DP combo PHY */
+    RkMaskrom maskrom;                  /* the boot ROM's USB download */
     RkScmi scmi;                        /* TF-A's SCMI server */
     RkBlock otp;                        /* the OTP's controller */
     uint8_t otp_ns[0x100];              /* ... the part it reads */

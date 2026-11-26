@@ -4,6 +4,7 @@
 """Headless check of the whole device: does Flipper OS run beside the MCU?
 
     scripts/linux_check.py [--keep] [--fresh] [--uboot | --mcu-update] [--out DIR]
+    scripts/linux_check.py --maskrom [--loader LOADER.bin] [--keep] [--out DIR]
 
 Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
 (removed at the end unless --keep), and checks it through its sockets:
@@ -77,6 +78,17 @@ firmware class, which sends it to the MCU over I2C to be staged in slot B; at
 a reboot the MCU boots it (the boot ROM's flash-update boot), buys it (its
 try-before-you-buy), and powers Flipper OS again, which reads slot B and a
 flash-update boot.
+
+With --maskrom it checks the RK3576's boot ROM in its USB download instead,
+on a blank device (`run --uboot`, `--usbip`): the boot ROM finds nothing to
+boot on the UFS's boot LU or the card, and waits in its MaskROM; a computer
+plugged in enumerates it (2207:350e) and fo_rockusb.py lists it, a Rockusb
+device; over USB/IP, 0x471 code with a wrong CRC is dropped, and with its CRC
+runs (the machine's DDR blob); with --loader, the loader's download-boot (the
+Flipper OS installer's installer-falcon-loader.bin: SPL in Falcon mode, the
+machine's, starts the installer's kernel, and its interface comes to the
+Flipper's screen), else 0x472 code with no FIT in it is refused; then Stop,
+and the MCU's Maskrom (MASKROM_EN) puts it in its USB download again.
 
 A first boot takes several minutes (Flipper OS sets itself up); the first
 run keeps its card as build/linux-check/sd.img, as it is after the checked
@@ -804,6 +816,85 @@ def mcu_update_checks(check, d, out, port, fw):
     return con
 
 
+def maskrom_checks(check, d, out, port, loader):
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import fo_rockusb
+    qlog, qout = d / "qemu.log", d / "qemu.out"
+    rock = [sys.executable, str(ROOT / "scripts" / "fo_rockusb.py"),
+            "--port", str(port)]
+
+    def enumerated():
+        return text_of(qout).count("flipper-one: USB: 2207:350e")
+
+    panel = st.Panel(d / "panel.sock")
+    check("a blank device: its boot ROM finds nothing to boot on the UFS's "
+          "boot LU or the card, and waits in its MaskROM",
+          wait_text(qlog, r"finds nothing to boot", 60) and
+          wait_text(qlog, r"waits in its MaskROM", 10))
+    panel.send("usb 2")
+    check("a computer enumerates its USB download (2207:350e)",
+          st.until(lambda: enumerated() > 0, 15))
+    listed = subprocess.run(rock + ["list"], capture_output=True, text=True,
+                            timeout=30).stdout
+    check("fo_rockusb.py list: a Rockusb device",
+          "2207:350e" in listed and "(Rockusb)" in listed, listed.strip())
+    c, mark = None, len(text_of(qlog))
+    try:
+        c = fo_rockusb.connect(port=port)
+        c.control(0x40, 0x0C, 0, 0x471, data=bytes(100) + b"\x12\x34")
+        check("0x471 code with a wrong CRC: dropped",
+              wait_text(qlog, r"failed its CRC", 5, mark))
+        fo_rockusb.write_area(c, 0x471, bytes(range(256)) * 20)
+        check("0x471 code with its CRC, in two requests: it runs (the "
+              "machine's DDR blob)", wait_text(qlog, r"0x471 code ran", 5,
+                                               mark))
+        if not loader:
+            fo_rockusb.write_area(c, 0x472, bytes(1000))
+            check("0x472 code with no FIT in it: refused (the machine plays "
+                  "SPL in its Falcon mode), the boot ROM left",
+                  wait_text(qlog, r"no FIT in the 0x472 code", 5, mark))
+    except (OSError, ValueError) as e:
+        check("the maskrom protocol over USB/IP", False, str(e))
+    finally:
+        if c:
+            c.close()
+    if loader:
+        before = panel.screen()
+        t = time.time()
+        r = subprocess.run(rock + ["download-boot", str(loader)],
+                           capture_output=True, text=True, timeout=600)
+        check(f"download-boot {loader.name} ({time.time() - t:.0f} s): SPL in "
+              "Falcon mode starts its kernel",
+              r.returncode == 0 and
+              wait_text(qlog, r"SPL \(Falcon\): the kernel at", 30, mark) and
+              wait_text(qlog, r"starts what the boot ROM's USB download", 10,
+                        mark), (r.stdout + r.stderr).strip()[-300:])
+        check("... and the installer's interface comes up (its console's "
+              "Selections), on the Flipper's screen too",
+              wait_text(d / "linux.log", r"Selections", 180) and
+              st.until(lambda: panel.screen() != before, 30))
+        time.sleep(5)
+        panel.save(out / "installer.png")
+    # the MCU's Maskrom: MASKROM_EN when it switches the rail on (its CPU
+    # app's Power menu, for Stop, takes keys once the app has settled)
+    st.wait_log(d, r"CPU app started", 30)
+    time.sleep(5)
+    mark, seen = len(text_of(qlog)), enumerated()
+    apps = st.log_text(d).count("Application stopped")
+    panel.tap("power")
+    time.sleep(1.5)
+    panel.tap("ok")
+    check("Stop: the RK3576 off, the MCU's desktop",
+          wait_text(qlog, r"the RK3576 is off", 30, mark) and
+          st.until(lambda: st.log_text(d).count("Application stopped") >
+                   apps, 15))
+    st.cli(d, "desktop start_app cpu_app_maskrom", None, 1)
+    check("the MCU's Maskrom (MASKROM_EN): the RK3576 in its USB download "
+          "again", wait_text(qlog, r"waits in its MaskROM", 15, mark))
+    check("... which the computer enumerates again",
+          st.until(lambda: enumerated() > seen, 15))
+
+
 def log_checks(check, d):
     k = text_of(d / "linux.log")
     bad = re.findall(r"Oops|Kernel panic|BUG: |Unable to handle kernel|"
@@ -828,11 +919,19 @@ def main():
     ap.add_argument("--mcu-update", action="store_true",
                     help="the MCU's firmware updated from Flipper OS instead, "
                     "from the kept card (needs passt)")
+    ap.add_argument("--maskrom", action="store_true",
+                    help="a blank device's boot ROM in its USB download "
+                    "instead (run --uboot, the maskrom protocol over USB/IP)")
+    ap.add_argument("--loader", type=pathlib.Path,
+                    help="with --maskrom: a Rockchip loader to download-boot "
+                    "(the Flipper OS installer's installer-falcon-loader.bin)")
     ap.add_argument("--out", help="where the screenshots go "
                     "(default: a new folder in the system's temp)")
     args = ap.parse_args()
 
-    if os_build() is None:
+    if args.loader and not (args.maskrom and args.loader.is_file()):
+        sys.exit("--loader: a file, with --maskrom")
+    if os_build() is None and not args.maskrom:
         sys.exit("no Flipper OS build: run scripts/fetch_os.py")
     name = f"linux-{os.getpid()}"
     d = ROOT / "devices" / name
@@ -846,10 +945,11 @@ def main():
                  "without them first)")
     kept = TEMPLATE / "sd.img.new"
     d.mkdir(parents=True)
-    if not first_boot:
+    if not first_boot and not args.maskrom:
         copy_card(TEMPLATE / "sd.img", d / "sd.img")
     net = shutil.which("passt") is not None     # (QEMU's network backend)
-    print(f"{'a first boot' if first_boot else 'from the kept card'}, "
+    print("a blank device, its boot ROM's USB download" if args.maskrom else
+          f"{'a first boot' if first_boot else 'from the kept card'}, "
           f"Flipper OS build {os_build()}, "
           f"{'a network on Ethernet port 1' if net else 'no passt: no network'}",
           flush=True)
@@ -870,6 +970,10 @@ def main():
                          mask + ["--net"] if args.mcu_update else mask + [
            "--audio", str(d / "audio.wav"), "--mic", str(d / "mic.wav"),
            "--nvme", "--hdmi", "--lan"] + (["--net"] if net else []))
+    if args.maskrom:                    # (no card: the launcher's blank one)
+        port = st.free_port()
+        run = [sys.executable, str(st.LAUNCHER), "run", "-n", name,
+               "--detach", "--uboot", "--usbip", str(port)]
     if subprocess.run(run).returncode:
         sys.exit("the device did not start")
     lan_host = web = None
@@ -881,7 +985,7 @@ def main():
             [sys.executable, "-m", "http.server", "--bind", "127.0.0.1",
              str(port), "--directory", str(fw.parent)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    elif not args.uboot:                # (port 2's other end, from the start)
+    elif not args.uboot and not args.maskrom:   # (port 2's other end)
         lan_host = subprocess.Popen(
             [sys.executable, str(ROOT / "scripts" / "lan_host.py"), "-n", name],
             stdout=open(d / "lan.log", "w"), stderr=subprocess.STDOUT)
@@ -892,7 +996,9 @@ def main():
             copy_card(d / "sd.img", kept)
 
     try:
-        if args.uboot:
+        if args.maskrom:
+            maskrom_checks(check, d, out, port, args.loader)
+        elif args.uboot:
             uboot_checks(check, d, out)
         elif args.mcu_update:
             mcu_update_checks(check, d, out, port, fw)
