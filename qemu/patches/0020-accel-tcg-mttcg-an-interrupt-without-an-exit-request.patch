@@ -1,0 +1,69 @@
+From: FlipperOneEmu
+Subject: [PATCH] accel/tcg/mttcg: an interrupt without an exit request
+
+An interrupt that another thread raises for an MTTCG vCPU (a timer's,
+a device's, another CPU's SGI) kicked it as a pause does: an exit
+request, after which cpu_exec returns, and the vCPU's thread takes the
+BQL to look at its events before it enters cpu_exec again. An interrupt
+needs less: a halted vCPU woken, a running one out of its chain of TBs
+to cpu_exec's interrupt check. (The kick's own comment says as much:
+"this is not always needed".) Counted with Flipper OS booting on the
+RK3576's eight cores: cpu_exec returned for an exit request 11,000 to
+35,000 times a second, half of them with no work queued for the vCPU.
+
+Now, under MTTCG, an interrupt wakes the vCPU's halt condition and sets
+icount_decr's high half, as an interrupt the vCPU raises for itself
+already did, and no more. A pause, queued work and exclusive sections
+still kick with an exit request. Round-robin TCG and icount are as
+before.
+
+---
+--- a/accel/tcg/tcg-accel-ops-mttcg.h	2026-11-26 09:34:17.409695595 -0500
++++ b/accel/tcg/tcg-accel-ops-mttcg.h	2026-11-26 09:34:17.464520217 -0500
+@@ -13,4 +13,7 @@
+ /* start an mttcg vCPU thread */
+ void mttcg_start_vcpu_thread(CPUState *cpu);
+ 
++/* an interrupt for a vCPU: to its interrupt check, without an exit request */
++void mttcg_handle_interrupt(CPUState *cpu, int mask);
++
+ #endif /* TCG_ACCEL_OPS_MTTCG_H */
+--- a/accel/tcg/tcg-accel-ops-mttcg.c	2026-11-26 09:34:17.417177879 -0500
++++ b/accel/tcg/tcg-accel-ops-mttcg.c	2026-11-26 09:34:17.464734374 -0500
+@@ -122,6 +122,25 @@
+     return NULL;
+ }
+ 
++/*
++ * An interrupt for a vCPU. Halted, it is woken; running, it leaves its
++ * chain of TBs at the next one, for cpu_exec's interrupt check, which is
++ * all that an interrupt needs. Not the kick's exit request
++ * (tcg_kick_vcpu_thread()): that makes cpu_exec return, and the vCPU's
++ * thread take the BQL to look at its events before it goes on, for each
++ * interrupt that another thread raises (the timers', the devices', the
++ * other CPUs' SGIs).
++ */
++void mttcg_handle_interrupt(CPUState *cpu, int mask)
++{
++    cpu_set_interrupt(cpu, mask);
++    if (!qemu_cpu_is_self(cpu)) {
++        qemu_cond_broadcast(cpu->halt_cond);
++    }
++    /* (after the request: cpu_exec sees it, or this, and looks again) */
++    qatomic_store_release(&cpu->neg.icount_decr.u16.high, -1);
++}
++
+ void mttcg_start_vcpu_thread(CPUState *cpu)
+ {
+     char thread_name[VCPU_THREAD_NAME_SIZE];
+--- a/accel/tcg/tcg-accel-ops.c	2026-11-26 09:34:17.426413923 -0500
++++ b/accel/tcg/tcg-accel-ops.c	2026-11-26 09:34:17.464939616 -0500
+@@ -203,7 +203,7 @@
+     if (qemu_tcg_mttcg_enabled()) {
+         ops->create_vcpu_thread = mttcg_start_vcpu_thread;
+         ops->kick_vcpu_thread = tcg_kick_vcpu_thread;
+-        ops->handle_interrupt = tcg_handle_interrupt;
++        ops->handle_interrupt = mttcg_handle_interrupt;
+     } else {
+         ops->create_vcpu_thread = rr_start_vcpu_thread;
+         ops->kick_vcpu_thread = rr_kick_vcpu_thread;

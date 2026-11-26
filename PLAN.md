@@ -181,8 +181,10 @@ screen and its CLI.
       vCPUs, the MCU alone 15 %), the GIC's distributor writes one update each
       (patch 0018: 151 %) (2026-11-26, log 91); no BQL for an interrupt the CPU
       cannot take (patch 0019: idle 122 %, linux_check 494 s from 553)
-      (2026-11-26, log 92); the vCPU loop's own BQL (halts, kicks, the other
-      CPUs' TLB flushes), MMIO's
+      (2026-11-26, log 92); interrupts without an exit request, the TLB's dirty
+      reset in the mmu_idx in use, the GIC's update in one pass (patches
+      0020-0022: idle 67-82 %, linux_check 421 s) (2026-11-26, log 93); the
+      other CPUs' TLB flushes under the BQL, MMIO's
 - ☐ Wi-Fi (the MT7921 on USB)
 
 ## Not planned

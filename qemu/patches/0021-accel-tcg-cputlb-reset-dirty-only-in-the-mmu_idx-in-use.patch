@@ -1,0 +1,38 @@
+From: FlipperOneEmu
+Subject: [PATCH] accel/tcg/cputlb: reset dirty only in the mmu_idx in use
+
+tlb_reset_dirty() runs for every vCPU each time a page of RAM gets its
+first TB (tlb_protect_code(), through
+physical_memory_test_and_clear_dirty()), and it looked at every entry
+of every mmu_idx of the vCPU's TLB: on Arm, sixteen of them, where a
+guest uses two or three. With Flipper OS booting on ten vCPUs (the
+RK3576's eight, the MCU's two), a vCPU was in it in one stack sample
+round of ten.
+
+tlb_c.dirty already says, under the same lock, which mmu_idx may have
+entries: one flushed and not filled since has none. Now only those are
+looked at.
+
+---
+--- a/accel/tcg/cputlb.c	2026-11-26 09:44:47.873303887 -0500
++++ b/accel/tcg/cputlb.c	2026-11-26 09:44:47.907938084 -0500
+@@ -918,10 +918,17 @@
+  */
+ void tlb_reset_dirty(CPUState *cpu, uintptr_t start, uintptr_t length)
+ {
+-    int mmu_idx;
++    MMUIdxMap work;
+ 
+     qemu_spin_lock(&cpu->neg.tlb.c.lock);
+-    for (mmu_idx = 0; mmu_idx < NB_MMU_MODES; mmu_idx++) {
++    /*
++     * Only the mmu_idx that may have entries: one flushed and not filled
++     * since (its bit clear in tlb_c.dirty) has none to reset. (This runs
++     * for every vCPU each time a page of RAM gets its first TB, and a
++     * guest uses a few of the target's mmu_idx.)
++     */
++    for (work = cpu->neg.tlb.c.dirty; work != 0; work &= work - 1) {
++        int mmu_idx = ctz32(work);
+         CPUTLBDesc *desc = &cpu->neg.tlb.d[mmu_idx];
+         CPUTLBDescFast *fast = cpu_tlb_fast(cpu, mmu_idx);
+         unsigned int n = tlb_n_entries(fast);

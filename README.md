@@ -72,7 +72,7 @@ scripts/fetch_firmware.py    # the MCU firmware's newest build, and the RP2350 b
 ./flipperoneemu gui          # the window: it starts a device, devices/one
 scripts/fetch_os.py          # a Flipper OS build (2 GB), for ...
 ./flipperoneemu gui --linux  # ... the whole device: Flipper OS on its RK3576 too
-./flipperoneemu gui --linux --cpus 4  # ... on four of its eight cores: quicker here
+./flipperoneemu gui --linux --cpus 4  # ... on four of its eight cores
 ./flipperoneemu gui --uboot  # ... through U-Boot, as the device boots: its boot menu on
                              # the screen, the pad to pick a profile
 ```
@@ -136,9 +136,9 @@ scripts/fetch_os.py                  # a Flipper OS build: its kernel, initrd an
                                      # image on the device's microSD (devices/NAME/sd.img);
                                      # its UFS (devices/NAME/ufs*.img: LU 0, the boot LUs,
                                      # recovery) blank until the installer fills it
-./flipperoneemu run --linux --cpus 4 ...  # ... on four of its eight cores: under emulation
-                                     # it boots a quarter quicker (about 100 s to its login
-                                     # here) and idles lighter; the device has eight
+./flipperoneemu run --linux --cpus 4 ...  # ... on four of its eight cores (the device has
+                                     # eight; here both boot to the login in some 70-110 s,
+                                     # since QEMU patches 0019-0022)
 ./flipperoneemu run --linux --uboot ...  # ... through U-Boot from that card, as on the
                                      # device: its boot menu on the Flipper's screen (the
                                      # pad's up, down and OK pick a profile and kernel; hold
@@ -228,6 +228,9 @@ yet.
 | 0017 | hw/ufs: a device provisioned: boot LUs, a writable bBootLunEn kept in the device's own state, enhanced1, the configuration descriptor (the Flipper OS installer's scheme) |
 | 0018 | hw/intc/arm_gic: one update for a distributor write (a 32-bit write, as Linux masks an interrupt with, looked at every interrupt for every CPU four times) |
 | 0019 | accel/tcg, target/arm: no BQL for an interrupt the CPU cannot take (a masked one took and let go of the BQL at each pass of the vCPU's loop) |
+| 0020 | accel/tcg/mttcg: an interrupt without an exit request (each one another thread raised made cpu_exec return, and the vCPU take the BQL) |
+| 0021 | accel/tcg/cputlb: reset dirty only in the mmu_idx in use (every vCPU's sixteen, each time a page of RAM got its first TB) |
+| 0022 | hw/intc/arm_gic: one pass over the interrupts for every CPU (a GIC update looked at every interrupt once per CPU) |
 
 ## Layout
 

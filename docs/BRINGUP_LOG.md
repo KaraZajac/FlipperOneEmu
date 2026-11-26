@@ -2172,3 +2172,39 @@ register headers.
       patch and some 650 before it), its U-Boot mode (319 s), its MCU-update
       mode (the update over I2C in 63 s, from 94: the link waits less on the
       BQL too) and its MaskROM mode pass.
+
+93. **The vCPUs' other trips: interrupts without an exit request, the TLB's
+    dirty reset, the GIC in one pass (QEMU patches 0020-0022).**
+    - **Interrupts without an exit request (0020).** A count of why cpu_exec
+      returned, with Flipper OS booting: for an exit request 11,000 to 35,000
+      times a second, all CPUs, half of them with no work queued for the
+      vCPU. An interrupt that another thread raised (a timer's, a device's,
+      another CPU's SGI) kicked the vCPU as a pause does, and each return
+      meant the vCPU's thread took the BQL to look at its events. Under
+      MTTCG an interrupt now wakes a halted vCPU and sends a running one to
+      its interrupt check, as one it raises for itself did; a pause, queued
+      work and exclusive sections still exit. Alone it moved the BQL's waits
+      rather than shrank them (the BQL is busy: a waiter at one place waits at
+      the next).
+    - **The TLB's dirty reset (0021).** Each time a page of RAM gets its first
+      TB, every vCPU's TLB is searched for entries to mark not dirty, and the
+      search went through every mmu_idx (sixteen on Arm). A vCPU was in it in
+      one stack sample round of ten while Flipper OS booted. Now only the
+      mmu_idx that tlb_c.dirty says may have entries (a guest uses two or
+      three): one round of 27.
+    - **The GIC in one pass (0022).** With 0018's single update for a
+      distributor write, the update itself was still the GIC's most frequent
+      place in the samples: for each CPU, a pass over every interrupt (8 of
+      480). An interrupt's state is kept per CPU as bit masks, so one pass
+      gives each interrupt's candidate CPUs at once; the lowest numbered of a
+      CPU's best priority still wins.
+    - **Result.** Idle with eight cores: 67 and 82 % of a host core in two
+      measurements (one more, 144 %, caught the guest at work), from 122 with
+      0019 and 158 at log 91's start; boot to login 73-107 s, from some 129.
+      linux_check 421 s (from 494 with 0019, some 650 before log 91), its
+      U-Boot mode 261 s (from 319), its MCU-update mode 343 s with the update
+      over I2C in 52 s (from 435 and 63), its MaskROM mode 53 s. With
+      `--cpus 4`, one boot: login in 70 s, idle 112 %; four cores no longer
+      clearly gain on eight.
+    - **Checked.** The smoke test, linux_check, its U-Boot, MCU-update and
+      MaskROM modes pass.
