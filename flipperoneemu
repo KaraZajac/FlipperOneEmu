@@ -13,6 +13,8 @@
     ./flipperoneemu log [-n NAME]        the firmware's log, from its RTT buffer
     ./flipperoneemu shot FILE.png [-n NAME] [--zoom N]
     ./flipperoneemu where [-n NAME]      each core's PC, and the function there
+    ./flipperoneemu gdb [-n NAME] [--linux] [-- GDB ARGS]   gdb on it (run
+                                         --gdb PORT): the MCU, with symbols
     ./flipperoneemu cli [-n NAME] [COMMAND...]   the MCU firmware's CLI (UART1)
     ./flipperoneemu console [-n NAME] [--uart4|--usb]  Linux's console (the
                                          RK3576's UART0: the debug port; UART4:
@@ -143,8 +145,10 @@ def cmd_run(args):
     if args.linux is not None:
         cmd += linux_args(d, args.linux, args.kernel_args,
                           getattr(args, "uboot", False))
+    (d / "gdb.port").unlink(missing_ok=True)
     if args.gdb:
-        cmd += ["-gdb", f"tcp::{args.gdb}"]
+        cmd += ["-gdb", f"tcp:127.0.0.1:{args.gdb}"]
+        (d / "gdb.port").write_text(f"{args.gdb}\n")     # (for `gdb`)
     if args.net or args.ssh:
         # the RK3576's first Ethernet port on this PC's network, through
         # passt (QEMU starts it): NAT, DHCP and DNS, no root needed; and
@@ -313,6 +317,37 @@ def elf_functions(path):
                 name = data[strtab[4] + st_name:end].decode()
                 funcs.append((value & ~1, (value & ~1) + size, name))
     return sorted(funcs)
+
+
+def cmd_gdb(args):
+    """gdb on the device's gdb stub (run --gdb PORT): the MCU's two cores (the
+    stub's first process, attached at once), with its firmware's symbols and
+    the boot ROM's; with --linux, the RK3576's two clusters too, as inferiors 2
+    and 3, A53s and A72s (the stub has a process a cluster). The VM stands
+    still while gdb holds it: continue, or quit to let it run on."""
+    d = device_dir(args.name)
+    port = d / "gdb.port"
+    if not pid_of(d) or not port.exists():
+        die(f"{args.name}: not running with a gdb stub (run --gdb PORT)")
+    cmd = ["gdb", "-q", "-ex", "set pagination off", "-ex", "set confirm off"]
+    try:
+        elf = json.loads((d / "firmware.json").read_text()).get("elf")
+    except (OSError, ValueError):
+        elf = None
+    if elf and os.path.exists(elf):
+        cmd += ["-ex", f"file {elf}"]
+    rom = ROOT / "firmware" / "bootrom" / "A4" / "arm-bootrom.elf"
+    if rom.exists():
+        cmd += ["-ex", f"add-symbol-file {rom}"]
+    cmd += ["-ex", f"target extended-remote 127.0.0.1:{port.read_text().strip()}"]
+    if args.linux:
+        for n in (2, 3):
+            cmd += ["-ex", "add-inferior", "-ex", f"inferior {n}",
+                    "-ex", f"attach {n}"]
+        cmd += ["-ex", "inferior 1"]
+    cmd += ["-ex", "set confirm on"]
+    extra = [a for a in args.gdb_args if a != "--"]
+    os.execvp("gdb", cmd + extra)
 
 
 def cmd_where(args):
@@ -561,8 +596,8 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter,
                                  epilog=__doc__.split("\n\n", 1)[1])
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("run", "gui", "stop", "status", "log", "shot", "where", "cli",
-                 "console"):
+    for name in ("run", "gui", "stop", "status", "log", "shot", "where", "gdb",
+                 "cli", "console"):
         p = sub.add_parser(name)
         p.add_argument("-n", "--name", default="one", help="the device (devices/NAME)")
         if name == "run":
@@ -633,6 +668,11 @@ def main():
             p.add_argument("--cpus", type=int, metavar="N",
                            help="... Linux on N of its eight cores (4 boots "
                                 "quicker here)")
+        if name == "gdb":
+            p.add_argument("--linux", action="store_true",
+                           help="the RK3576's two clusters too (inferiors 2, 3)")
+            p.add_argument("gdb_args", nargs=argparse.REMAINDER,
+                           help="more for gdb, after -- (e.g. -- -batch -ex bt)")
         if name == "shot":
             p.add_argument("file")
             p.add_argument("--hdmi", action="store_true",

@@ -160,6 +160,10 @@ scripts/fo_rpc.py [-n NAME] [--frames N] [--press KEY ...]  # the firmware's RPC
 ./flipperoneemu cli [-n NAME] [CMD]  # the firmware's CLI (UART1); Ctrl-] leaves
 ./flipperoneemu cli --usb ...         # ... on its USB serial port (a computer plugged in)
 ./flipperoneemu where [-n NAME]      # where each core is: its PC and function
+./flipperoneemu gdb [-n NAME]        # gdb on a device run with --gdb PORT: the MCU's
+                                     # two cores, its firmware's symbols and the boot
+                                     # ROM's; --linux adds the RK3576's clusters as
+                                     # inferiors 2 and 3; -- passes gdb more
 ./flipperoneemu shot FILE.png        # the screen as a picture
 ./flipperoneemu shot --hdmi FILE.png # ... or what the HDMI port shows (run --hdmi)
 ./flipperoneemu status | stop [-n NAME]

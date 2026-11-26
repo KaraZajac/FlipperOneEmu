@@ -1770,3 +1770,28 @@ register headers.
     - **Left open.** Which of the two it is, the board's schematic would say. The
       strap is left unmodelled meanwhile: the RK3576 boots on. This is a question
       for the hardware, not a bug recorded.
+
+83. **gdb: the MCU first again, and `./flipperoneemu gdb`.**
+    - **The stub's processes.** QEMU's gdb stub has a process for each CPU
+      cluster (pid: the cluster's id plus one) and a default one for cores in
+      none, and attaches the first by pid when gdb comes.
+    - **What went wrong.** Since the RK3576 came, its two clusters (ids 1 and 2)
+      were pids 2 and 3. The MCU's Cortex-M33s were in no cluster, so they were
+      the default process, pid 4. `run --gdb` and a plain `target remote`
+      therefore got the A53s, and with the MCU's ELF loaded gdb gave up with
+      "Remote 'g' packet reply is too long".
+    - **The fix.** The RP2350's cores are cluster 0 now, which rk3576.c's
+      comment had taken for granted, so the MCU is pid 1 and is attached at once.
+      The cluster is realized after the cores, as hw/arm/armsse.c does it,
+      because an ARMv7M makes its CPU as it is realized. TCG took the cores'
+      index then, so their translated code keeps its tag, and only the stub sees
+      the change.
+    - **The command.** `./flipperoneemu gdb` connects with the firmware's ELF and
+      the boot ROM's symbols. `--linux` attaches the RK3576's clusters as
+      inferiors 2 and 3, and `--` passes gdb more (`-- -batch -ex bt`). The stub
+      now listens on 127.0.0.1 alone; before, it listened on every interface.
+    - **Checked.**
+      - A plain `target remote` has the two M33s, core 0 in
+        vPortSuppressTicksAndSleep (furi_hal_os.c:70).
+      - `gdb --linux` has three inferiors, the A53s and A72s with their threads.
+      - After gdb detaches, the MCU answers its CLI.

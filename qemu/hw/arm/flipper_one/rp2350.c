@@ -239,8 +239,12 @@ static void rp2350_init(Object *obj)
 {
     RP2350State *s = RP2350(obj);
 
-    object_initialize_child(obj, "cpu0", &s->cpu[0], TYPE_ARMV7M);
-    object_initialize_child(obj, "cpu1", &s->cpu[1], TYPE_ARMV7M);
+    object_initialize_child(obj, "cluster", &s->cluster, TYPE_CPU_CLUSTER);
+    qdev_prop_set_uint32(DEVICE(&s->cluster), "cluster-id", 0);
+    object_initialize_child(OBJECT(&s->cluster), "cpu0", &s->cpu[0],
+                            TYPE_ARMV7M);
+    object_initialize_child(OBJECT(&s->cluster), "cpu1", &s->cpu[1],
+                            TYPE_ARMV7M);
     s->sysclk = qdev_init_clock_in(DEVICE(obj), "sysclk", NULL, NULL, 0);
 }
 
@@ -403,6 +407,12 @@ static void rp2350_realize(DeviceState *dev, Error **errp)
         s->cpu[c].cpu->mp_affinity = 0xff00 | c;
         rp2350_coproc_init(s, c);
         rp2350_ppb_realize(s, c);
+    }
+    /* the cluster after its cores: an ARMv7M makes its CPU as it is realized,
+     * and the cluster numbers the CPUs it has then (as hw/arm/armsse.c);
+     * TCG has taken their index already, so only the gdb stub sees this */
+    if (!qdev_realize(DEVICE(&s->cluster), NULL, errp)) {
+        return;
     }
     qemu_register_reset(rp2350_cores_reset, s);
     /* each core's NVIC inputs, looked up once: a PIO block sets its lines

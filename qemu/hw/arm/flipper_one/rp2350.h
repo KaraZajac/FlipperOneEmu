@@ -9,6 +9,7 @@
 
 #include "hw/core/sysbus.h"
 #include "hw/arm/armv7m.h"
+#include "hw/cpu/cluster.h"
 #include "chardev/char-fe.h"
 #include "hw/core/clock.h"
 #include "hw/core/irq.h"
@@ -312,7 +313,10 @@ typedef struct RP2350Core {
 struct RP2350State {
     SysBusDevice parent_obj;
 
-    ARMv7MState cpu[2];         /* the two Cortex-M33s */
+    CPUClusterState cluster;    /* ... cluster 0: QEMU's gdb stub has a
+                                   process a cluster, and this is its
+                                   first (pid 1), attached as gdb comes */
+    ARMv7MState cpu[2];         /* the two Cortex-M33s, in it */
     RP2350Core core[2];
     qemu_irq *irqs;             /* a peripheral's interrupt: to both NVICs */
     qemu_irq cpu_irq[2][RP2350_NUM_IRQ];    /* ... their inputs */

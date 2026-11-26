@@ -42,9 +42,10 @@ screen and its CLI.
       backlight are live (2026-11-23); drawn again part by part from measurements of the
       device's renders (scripts/fo_body.py, 2026-11-24); its buttons and touchpad work
       (2026-11-24); its LEDs light as the firmware drives them (2026-11-24)
-- ◐ A launcher: run, the window, stop, status, the firmware's log (RTT), its CLI, a
-      picture of the screen, where the cores are; a folder per emulated Flipper One.
-      gdb's symbols to come
+- ☑ A launcher: run, the window, stop, status, the firmware's log (RTT), its CLI, a
+      picture of the screen, where the cores are; a folder per emulated Flipper One;
+      gdb on it with the firmware's symbols, the MCU first and the RK3576's clusters
+      as more inferiors (2026-11-25, log 83)
 
 ## M2: the MCU's board ☐
 - ☑ The control bus (2026-11-24): PCAL6416 (the buttons), IQS7211E (the touchpad),
