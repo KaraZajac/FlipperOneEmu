@@ -1969,3 +1969,56 @@ register headers.
       `bMemoryType`), enhanced1 in the Geometry Descriptor, a writable
       `bBootLunEn`, and the boot W-LUN reading the enabled boot LU. Then a boot
       from the UFS: SPL from the boot LU.
+
+88. **Flipper OS installed on the UFS by its installer, and booted from it.**
+    - **The UFS provisioned (QEMU patch 0017).**
+      - An LU takes how it was provisioned as properties (`boot-lun-id`,
+        `memory-type`, `data-reliability`, `provisioning-type`), into its unit
+        descriptor.
+      - The device takes `boot-enable`, and a drive of its own (`nvram`) for
+        `bBootLunEn`, which is now writable and kept across power cycles, as
+        the device keeps it.
+      - The geometry offers enhanced1, at no capacity cost.
+      - The configuration descriptor is unlocked and answers what the LUs are
+        (UFS 3.1's layout, four indexes). A write that asks for them as they are
+        is taken; any other is refused.
+    - **The installer's scheme.** The machine provisions the UFS as the
+      installer would on its first install (a factory-fresh one, it does):
+      - LU 0, the system's: what the 64 GB leave, in whole 4 MiB allocation
+        units (15218);
+      - LU 1 and 2: boot LUs A and B, 16 MiB, enhanced1;
+      - LU 3: recovery, 128 MiB;
+      - each LU its own image; `bBootEnable` on, A first.
+
+      The installer: "ufs provisioning: ok … matches the Flipper scheme".
+    - **The install** (with `--net`):
+      1. the artifacts verified (sha256), then `blkdiscard` of the system LU and
+         a GPT (loader, metadata, root);
+      2. U-Boot to the inactive boot LU, B (32 KiB in), then `bBootLunEn`
+         switched to B;
+      3. the boot menu and recovery images;
+      4. `mkfs.btrfs` and a `btrfs receive` of the Minimal profile (924 MiB, at
+         about 0.6 MiB/s), and its kernels;
+      5. the MCU's firmware (894.5 KiB) over I2C. It was staged, but after the
+         installer's 180 s: "the update is still transferring after 180 s … the
+         MCU keeps running 0.1.0". The emulated link's 4 KB/s is too slow for
+         it, and that is the next thing to make faster.
+    - **Booting it.** The machine plays the boot ROM now, in its order
+      (SARADC_VIN0_BOOT: UFS, the microSD card, USB): a medium with Rockchip's
+      RKNS image 32 KiB in, the UFS read through its enabled boot LU
+      (`bBootLunEn`, from the device's own state), then SPL's FIT 8 MiB in.
+      - An installer run (`--installer`) starts the installer once, as a
+        download into the MaskROM is; a reset boots as the boot ROM does.
+      - `run --uboot` without `--linux` boots the device's own storage.
+      - The installed device: the boot ROM boots the UFS's boot LU B, and its
+        U-Boot (the installed one, of Nov 25) finds the four LUs and LU 0's two
+        boot entries, with its menu on the Flipper's screen. Flipper OS
+        7.4.0-rc4 comes up to its login with its root on the UFS (`/dev/sda3`,
+        btrfs, subvolume @Minimal), and `bBootLunEn` reads 2.
+    - **On the way.** The installer's `blkdiscard` left the system LU's image
+      fully allocated: QEMU zeroed it, in allocated-but-unwritten extents that
+      `fallocate --dig-holes` passes over. The UFS's drives take `discard=unmap`
+      and `detect-zeroes=unmap` now.
+    - **Checked.** linux_check's UFS check is now the scheme's LUs, by LUN: their
+      sectors, their boot LU ids, and `bBootLunEn`. Its U-Boot mode boots the
+      microSD card past a blank boot LU. The smoke test passes.

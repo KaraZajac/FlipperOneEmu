@@ -37,7 +37,8 @@ firmware, which shows them) and answers its keys (which the MCU firmware passes 
 their I2C link). Its CPU clusters' clocks come from TF-A's SCMI (cpufreq), its
 temperature sensors, calibrated from its OTP, read the chip warming as its cores run,
 its SARADC reads the boot-order strap, the MCU's BOOT1 and the board's revision (which
-U-Boot tells the board by), and its 64 GB UFS (blank, as one that nothing was installed on) is a disk to Linux.
+U-Boot tells the board by), and its 64 GB UFS, provisioned as the Flipper OS installer has it
+(a system LU, boot LUs A and B, recovery), is blank until something is installed on it.
 Its two Ethernet ports have their PHYs, and with `--net` the first is on this PC's
 network: DHCP, DNS, and the internet through NAT. Its USB controllers come up (USB
 devices can be plugged into the second from QEMU's monitor), and with them its Type-C
@@ -133,7 +134,8 @@ scripts/fetch_os.py                  # a Flipper OS build: its kernel, initrd an
                                      # passwd on its console first, which logs in itself)
 ./flipperoneemu run --linux ...      # ... Flipper OS on the RK3576, from the build's
                                      # image on the device's microSD (devices/NAME/sd.img);
-                                     # its UFS, devices/NAME/ufs.img, is blank
+                                     # its UFS (devices/NAME/ufs*.img: LU 0, the boot LUs,
+                                     # recovery) blank until the installer fills it
 ./flipperoneemu run --linux --cpus 4 ...  # ... on four of its eight cores: under emulation
                                      # it boots a quarter quicker (about 100 s to its login
                                      # here) and idles lighter; the device has eight
@@ -147,9 +149,12 @@ scripts/fetch_os.py                  # a Flipper OS build: its kernel, initrd an
                                      # download-boot starts it from the MaskROM: its
                                      # installer-falcon.itb (dl-linux-images.flipp.dev/
                                      # falcon-installer/, BUILD/flipper-one/), the machine
-                                     # as SPL in Falcon mode. Its interface on the screen,
-                                     # the server's builds; installing to the UFS waits on
-                                     # the UFS being provisioned (PLAN)
+                                     # as SPL in Falcon mode. Its interface on the screen
+                                     # (the pad, OK, Back): it installs Flipper OS on the
+                                     # UFS. Its MCU update outlasts its 180 s here (PLAN)
+./flipperoneemu run --uboot          # ... a device's own storage, as its boot ROM boots
+                                     # it: the UFS's boot LU (once installed), or else the
+                                     # microSD card
 ./flipperoneemu console [-n NAME] [CMD]  # Linux's console (the RK3576's UART0); Ctrl-] leaves
 ./flipperoneemu console --usb ...    # ... Flipper OS's serial port on its USB gadget
                                      # (a computer plugged in: Ctrl+Shift+U)
@@ -210,6 +215,7 @@ yet.
 | 0014 | hw/sd/sd: a multi-block transfer's bytes a block at a time |
 | 0015 | hw/ufs: answer a LUN with no logical unit, and the configuration descriptor (U-Boot's scan) |
 | 0016 | hw/char/pl011: a transmit that does not wait for the chardev (a program that stops reading cli.sock stopped the machine) |
+| 0017 | hw/ufs: a device provisioned: boot LUs, a writable bBootLunEn kept in the device's own state, enhanced1, the configuration descriptor (the Flipper OS installer's scheme) |
 
 ## Layout
 

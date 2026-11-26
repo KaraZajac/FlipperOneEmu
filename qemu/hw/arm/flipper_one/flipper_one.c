@@ -61,9 +61,13 @@ struct FlipperOneState {
     char *falcon;               /* ... or a FIT for SPL's Falcon mode, as
                                    the Flipper OS installer is (property) */
     uint8_t *falcon_fit;        /* ... its bytes, read once */
+    bool falcon_done;           /* ... started once: as rockusb's download
+                                   into the MaskROM, which a reset ends */
     gsize falcon_len;
     hwaddr entry_x0;            /* x0 for what the RK3576 starts at */
     BlockBackend *sd_blk;       /* the microSD card's image */
+    BlockBackend *boot_blk;     /* ... or the UFS's boot LU: what the boot
+                                   ROM boots this time (fo_spl) */
     bool rk_rail;               /* VCC5V0_SYS_S5: its supply, the MCU's */
     bool rk_on;                 /* ... it runs */
     int rk_want;                /* RK_...: to do, in rk_power_bh */
@@ -804,7 +808,7 @@ static uint32_t fo_spl_image(FlipperOneState *s, const void *fit, int node,
         }
         len = size;
         buf = g_malloc(len);
-        if (blk_pread(s->sd_blk, pos, len, buf, 0) < 0) {
+        if (blk_pread(s->boot_blk, pos, len, buf, 0) < 0) {
             return 0;
         }
         data = buf;
@@ -820,6 +824,40 @@ static hwaddr fo_spl_fail(const char *why)
     return 0;
 }
 
+/*
+ * What the boot ROM boots, in the order SARADC_VIN0_BOOT gives it (the
+ * board's config 8: UFS, then the microSD card, then USB): a medium with
+ * Rockchip's RKNS image (DDR init and SPL) 32 KiB in, the UFS read through
+ * its enabled boot LU. Its u-boot-rockchip.bin there has the FIT for SPL at
+ * 8 MiB on both.
+ */
+#define FO_RKNS_AT      0x8000
+
+static bool fo_bootable(BlockBackend *blk)
+{
+    uint8_t magic[4];
+
+    return blk && blk_is_inserted(blk) &&
+           blk_pread(blk, FO_RKNS_AT, sizeof(magic), magic, 0) >= 0 &&
+           !memcmp(magic, "RKNS", 4);
+}
+
+/* the UFS's enabled boot LU: bBootLunEn, as the device's own state keeps
+ * it (patch 0017's nvram: A until something switches it) */
+static BlockBackend *fo_ufs_boot_lu(void)
+{
+    BlockBackend *nv = blk_by_name("ufsnv");
+    uint8_t buf[16];
+    int lun = 1;
+
+    if (nv && blk_pread(nv, 0, sizeof(buf), buf, 0) >= 0 &&
+        !memcmp(buf, "QUFSNV01", 8)) {
+        lun = buf[8];
+    }
+    return lun == 1 ? blk_by_name("ufs1") : lun == 2 ? blk_by_name("ufs2")
+                                                     : NULL;
+}
+
 static hwaddr fo_spl(FlipperOneState *s)
 {
     g_autofree char *compat = g_strdup_printf("flipper,one-rev-%s",
@@ -831,17 +869,28 @@ static hwaddr fo_spl(FlipperOneState *s)
     hwaddr addr = 0, entry, fdt_at;
     uint32_t len, size;
 
-    if (!s->sd_blk || !blk_is_inserted(s->sd_blk) ||
-        blk_pread(s->sd_blk, FO_SPL_FIT, sizeof(head), head, 0) < 0 ||
+    s->boot_blk = fo_ufs_boot_lu();
+    if (!fo_bootable(s->boot_blk)) {
+        s->boot_blk = s->sd_blk;
+    }
+    if (!fo_bootable(s->boot_blk)) {
+        return fo_spl_fail("nothing to boot on the UFS's boot LU or the "
+                           "microSD card (the boot ROM would wait in its "
+                           "MaskROM)");
+    }
+    qemu_log("flipper-one: the boot ROM boots %s\n",
+             s->boot_blk == s->sd_blk ? "the microSD card"
+                                      : "the UFS's boot LU");
+    if (blk_pread(s->boot_blk, FO_SPL_FIT, sizeof(head), head, 0) < 0 ||
         fdt_magic(head) != FDT_MAGIC) {
-        return fo_spl_fail("no u-boot.itb on the microSD card (sector 16384)");
+        return fo_spl_fail("no u-boot.itb 8 MiB in");
     }
     size = fdt_totalsize(head);
     if (size < sizeof(head) || size > FO_SPL_FIT_MAX) {
         return fo_spl_fail("u-boot.itb's tree is not one SPL takes");
     }
     fit = g_malloc(size);
-    if (blk_pread(s->sd_blk, FO_SPL_FIT, size, fit, 0) < 0 ||
+    if (blk_pread(s->boot_blk, FO_SPL_FIT, size, fit, 0) < 0 ||
         fdt_check_header(fit)) {
         return fo_spl_fail("u-boot.itb's tree is not one SPL takes");
     }
@@ -1114,12 +1163,13 @@ static void fo_rk_power_bh(void *opaque)
     } else if (s->in_maskrom) {
         /* its boot ROM in its USB download mode, the strap read at the
          * reset: what it does there is not modelled, so nothing starts */
-    } else if (s->uboot) {                      /* the DDR blob, then SPL */
-        rk3576_ddr_blob(&s->rk3576, MACHINE(s)->ram_size);
-        entry = fo_spl(s);
-    } else if (s->falcon) {                     /* ... SPL in Falcon mode */
+    } else if (s->falcon && !s->falcon_done) {  /* ... SPL in Falcon mode */
+        s->falcon_done = true;                  /* (the download's: once) */
         rk3576_ddr_blob(&s->rk3576, MACHINE(s)->ram_size);
         entry = fo_falcon(s);
+    } else if (s->uboot || s->falcon) {         /* the DDR blob, then SPL */
+        rk3576_ddr_blob(&s->rk3576, MACHINE(s)->ram_size);
+        entry = fo_spl(s);
     } else {
         if (!s->rk_nimages) {
             fo_rk_save_images(s);               /* the first start: as loaded */
@@ -1276,6 +1326,9 @@ static void flipper_one_rk3576_reset(void *opaque)
 static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
 {
     object_initialize_child(OBJECT(ms), "rk3576", &s->rk3576, TYPE_RK3576);
+    /* its UFS's own state (patch 0017): -drive if=none,id=ufsnv */
+    s->rk3576.ufs_nvram = blk_by_name("ufsnv");
+    s->rk3576.ufs_boot_enable = true;
     s->rk3576.saradc_in = flipper_one_saradc;
     s->rk3576.saradc_in_opaque = s;
     qdev_prop_set_bit(DEVICE(&s->rk3576), "start-on",
@@ -1316,15 +1369,36 @@ static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
             s->sd_blk = blk_by_legacy_dinfo(di);
         }
     }
-    /* the UFS's user area, its LU 0 (-drive if=none,id=ufs: the device's
-     * 64 GB, as the launcher makes it) */
+    /*
+     * The UFS, provisioned as the Flipper OS installer's scheme has it (as if
+     * it had done it once: a factory-fresh one it would provision first),
+     * each LU its own drive (-drive if=none,id=ufsN, the launcher's):
+     * LU 0, the system's, what the others leave; LU 1 and 2, boot LUs A and
+     * B (enhanced1, 16 MiB), which the boot ROM loads from, bBootLunEn
+     * picking one; LU 3, recovery (enhanced1, 128 MiB). Each with its data
+     * protected against a power failure and thin provisioning, as the
+     * scheme asks
+     */
     {
-        BlockBackend *blk = blk_by_name("ufs");
+        static const struct { const char *id; uint8_t boot, mem; } lus[] = {
+            { "ufs", 0, 0 }, { "ufs1", 1, 3 }, { "ufs2", 2, 3 },
+            { "ufs3", 0, 3 },
+        };
 
-        if (blk) {
-            DeviceState *lu = qdev_new("ufs-lu");
+        for (int i = 0; i < ARRAY_SIZE(lus); i++) {
+            BlockBackend *blk = blk_by_name(lus[i].id);
+            DeviceState *lu;
 
+            if (!blk) {
+                continue;
+            }
+            lu = qdev_new("ufs-lu");
             qdev_prop_set_drive_err(lu, "drive", blk, &error_fatal);
+            qdev_prop_set_uint8(lu, "lun", i);
+            qdev_prop_set_uint8(lu, "boot-lun-id", lus[i].boot);
+            qdev_prop_set_uint8(lu, "memory-type", lus[i].mem);
+            qdev_prop_set_uint8(lu, "data-reliability", 1);
+            qdev_prop_set_uint8(lu, "provisioning-type", 2);    /* thin */
             qdev_realize_and_unref(lu, rk3576_ufs_bus(&s->rk3576),
                                    &error_fatal);
         }

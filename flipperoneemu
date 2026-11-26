@@ -137,8 +137,6 @@ def cmd_run(args):
         # 8; idle, 0.9 of this PC's cores against 1.2)
         args.kernel_args = f"maxcpus={args.cpus} {args.kernel_args}".strip()
     if getattr(args, "uboot", False):
-        if args.linux is None:
-            die("--uboot: with --linux")
         if args.kernel_args:
             die("--uboot: the boot entry's options are U-Boot's to give; "
                 "no --kernel-args")
@@ -154,6 +152,11 @@ def cmd_run(args):
     if args.linux is not None:
         cmd += linux_args(d, args.linux, args.kernel_args,
                           getattr(args, "uboot", False))
+    elif getattr(args, "uboot", False):
+        # the device's own storage, as its boot ROM boots it: the UFS's boot
+        # LU (Flipper OS installed there), or else the microSD card
+        cmd += ["-machine", f"uboot=on,rev={board_rev(d)}"] + \
+            device_disks(d, None)
     (d / "gdb.port").unlink(missing_ok=True)
     if args.gdb:
         cmd += ["-gdb", f"tcp:127.0.0.1:{args.gdb}"]
@@ -484,13 +487,30 @@ def device_disks(d, info):
             with open(card, "wb"):
                 pass
         os.truncate(card, 8 << 30)
-    ufs = d / "ufs.img"
-    if not ufs.exists():
-        with open(ufs, "wb"):
-            pass
-        os.truncate(ufs, 64 * 10**9)
-    return ["-drive", f"if=sd,format=raw,file={card}",
-            "-drive", f"if=none,id=ufs,format=raw,file={ufs}"]
+    # the UFS, provisioned as the Flipper OS installer's scheme has it (the
+    # machine's LUs): LU 0, the system's, what the 64 GB leave in whole 4 MiB
+    # allocation units (its image the device's 64 GB, sparse); boot LUs A and
+    # B (16 MiB) and recovery (128 MiB), each an image of its own; and the
+    # device's own state (bBootLunEn)
+    disks = ["-drive", f"if=sd,format=raw,file={card}"]
+    au = 4 << 20
+    luns = [("ufs", "ufs.img", 64 * 10**9), ("ufs1", "ufs-boot-a.img", 16 << 20),
+            ("ufs2", "ufs-boot-b.img", 16 << 20),
+            ("ufs3", "ufs-recovery.img", 128 << 20),
+            ("ufsnv", "ufs-nv.img", 4096)]
+    for i, (name, f, size) in enumerate(luns):
+        path = d / f
+        if not path.exists():
+            with open(path, "wb"):
+                pass
+            os.truncate(path, size)
+        view = (size - 160 * (1 << 20)) // au * au if i == 0 else size
+        # (what is discarded or written as zeros leaves a hole: the
+        # installer clears the whole system LU, which would otherwise take
+        # the image's 64 GB of this PC's disk)
+        disks += ["-drive", f"if=none,id={name},format=raw,file={path},"
+                            f"size={view},discard=unmap,detect-zeroes=unmap"]
+    return disks
 
 
 def linux_args(d, build, more="", uboot=False):
@@ -641,8 +661,10 @@ def main():
                                 "(maxcpus=N): 4 boots a quarter quicker and "
                                 "idles lighter here; the device has eight")
             p.add_argument("--uboot", action="store_true",
-                           help="... through U-Boot, from the microSD card, as "
-                                "on the device: its boot menu on the Flipper's "
+                           help="... through U-Boot, as on the device: the boot "
+                                "ROM boots the UFS's boot LU, or else the "
+                                "microSD card (--linux BUILD: its image the "
+                                "first time); its boot menu on the Flipper's "
                                 "screen (up, down, OK), the boot entry's own "
                                 "options (the machine plays SPL and TF-A)")
             p.add_argument("--installer", metavar="FIT",

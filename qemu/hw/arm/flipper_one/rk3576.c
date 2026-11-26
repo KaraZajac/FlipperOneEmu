@@ -113,6 +113,7 @@
 #include "qemu/units.h"
 #include "qapi/error.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
 #include "hw/core/irq.h"
 #include "qemu/timer.h"
 #include "qemu/guest-random.h"
@@ -1173,6 +1174,14 @@ static void rk3576_realize(DeviceState *dev, Error **errp)
     s->ufs = pci_new(PCI_DEVFN(1, 0), "ufs");
     qdev_prop_set_string(DEVICE(s->ufs), "serial", "FlipperOneEmu");
     qdev_prop_set_uint8(DEVICE(s->ufs), "lanes", 2);    /* (patch 0009) */
+    /* (patch 0017) provisioned with its boot feature on, boot LU A first */
+    qdev_prop_set_bit(DEVICE(s->ufs), "boot-enable", s->ufs_boot_enable);
+    qdev_prop_set_uint8(DEVICE(s->ufs), "boot-lun-en",
+                        s->ufs_boot_enable ? 1 : 0);
+    if (s->ufs_nvram) {
+        qdev_prop_set_drive_err(DEVICE(s->ufs), "nvram", s->ufs_nvram,
+                                &error_fatal);
+    }
     pci_realize_and_unref(s->ufs, PCI_HOST_BRIDGE(s->ufs_pcie)->bus,
                           &error_fatal);
     memory_region_init_alias(&s->ufs_hci, OBJECT(s), "rk3576.ufs",

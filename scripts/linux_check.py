@@ -16,7 +16,8 @@ Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
   a key pressed on the panel reaches it, through the MCU and the I2C link;
 - Linux reads the main board's chips over the bus it shares with the MCU:
   the INA219 on VSYS, the five INA4230s; its root is the microSD card, and
-  its UFS is a 64 GB disk; an NVMe in the M.2 slot (PCIe0, `run --nvme`)
+  its UFS is provisioned as the Flipper OS installer's scheme has it (its
+  LUs, boot LUs A and B, bBootLunEn); an NVMe in the M.2 slot (PCIe0, `run --nvme`)
   is a 256 GB one, and 4 MiB written to it read back the same; a monitor
   in the HDMI port (`run --hdmi`) lights at 1280x720 with the console on
   it, the Flipper's screen still fb0, its picture not black, a 10-bit
@@ -393,11 +394,19 @@ def checks(check, d, out, first_boot, off, net):
     root = con.run("findmnt -no SOURCE /")
     check("its root is the microSD card",
           bool(root) and "mmcblk0" in root[-1], str(root))
-    ufs = con.run("lsblk -bdno SIZE /dev/sda; "
-                  "cat /sys/class/scsi_host/host*/proc_name")
-    check("its UFS: a 64 GB disk (sda) on the UFS host",
-          bool(ufs) and ufs[0].strip() == "64000000000" and
-          any(u.strip() == "ufshcd" for u in ufs[1:]), str(ufs))
+    # its UFS, provisioned as the Flipper OS installer's scheme has it: by
+    # LUN (the disks' names follow the SCSI scan), its 512-byte sectors and
+    # its unit descriptor's boot LU; and the device's bBootLunEn (A)
+    ufs = con.run("for d in /sys/block/sd*; do echo $(basename "
+                  "$(readlink -f $d/device) | cut -d: -f4) $(cat $d/size) "
+                  "$(cat $d/device/unit_descriptor/boot_lun_id); done | sort; "
+                  "cat /sys/bus/platform/devices/2a2d0000.ufshc/attributes/"
+                  "boot_lun_enabled")
+    want = ["0 124665856 0x00", "1 32768 0x01", "2 32768 0x02",
+            "3 262144 0x00", "0x00000001"]
+    check("its UFS provisioned as the installer's scheme: LU 0 (63.8 GB), "
+          "boot LUs A and B (16 MiB), recovery (128 MiB); boot LU A enabled",
+          [u.strip() for u in ufs or []] == want, str(ufs))
     # PCIe0: the NVMe in the M.2 slot (`run --nvme`), behind the root port,
     # a 256 GB disk; 4 MiB through it and back (its DMA, its MSI-X)
     dev = "/sys/bus/pci/devices/0000:01:00.0"

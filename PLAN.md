@@ -117,9 +117,12 @@ screen and its CLI.
       a BLS entry booted (patch 0015 for its UFS scan) (2026-11-25); the Flipper OS
       installer (`run --installer`: its Falcon FIT, the machine as SPL), to its
       interface on the screen, the update server's builds and the UFS as its
-      target (2026-11-26, log 87); then the UFS provisioned as the installer's
-      scheme has it (LUs from the Configuration Descriptor, boot LUs A and B), an
-      install, and Flipper OS booted from the UFS
+      target (2026-11-26, log 87); the UFS provisioned as its scheme has it (patch
+      0017: boot LUs A and B, bBootLunEn kept), an install, and Flipper OS booted
+      from the UFS, the machine as the boot ROM (UFS, then the card) (2026-11-26,
+      log 88); the MCU's update within the installer's 180 s (the I2C link's
+      speed); a UFS reprovisioned (LUs carved by a written Configuration
+      Descriptor)
 - ◐ The MCU powers it: `VCC5V0_SYS_S5_EN` (the main expander's pin 12) switches it on
       and off, and Linux's PSCI SYSTEM_OFF and SYSTEM_RESET are its own (QEMU patch
       0005) (2026-11-24); `MASKROM_EN` (BOOT0): the RK3576 waits in its MaskROM when

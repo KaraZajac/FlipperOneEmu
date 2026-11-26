@@ -1,0 +1,319 @@
+From: FlipperOneEmu
+Subject: [PATCH] hw/ufs: a device provisioned: boot LUs and its configuration descriptor
+
+A UFS device is provisioned before an OS is installed on it: its
+configuration descriptor divides it into logical units, with boot LUs
+for a boot ROM to load from, and bBootLunEn picks one. The model had
+one kind of LU, no boot LU, a read-only bBootLunEn, a configuration
+descriptor it would not have read (bConfigDescrLock) nor written, and
+normal memory only. An installer that reads the configuration and
+switches boot LUs could not work with it.
+
+An LU now takes how it was provisioned as properties (boot-lun-id,
+memory-type, data-reliability, provisioning-type), into its unit
+descriptor. The device takes boot-enable (bBootEnable) and boot-lun-en
+(bBootLunEn's first value), and a drive, nvram, for its own state:
+bBootLunEn, which outlives a power cycle as the device's does, and is
+now writable. The geometry offers enhanced1 (at no capacity cost, 1024
+allocation units at most). The configuration descriptor (UFS 3.1's
+layout: a header and eight units' parameters an index, four indexes)
+is unlocked and answers what the LUs are; written, it is taken when it
+asks for the LUs as they are (each its own drive here: a device's
+provisioning done) and refused otherwise, with a log line.
+
+---
+--- a/hw/ufs/ufs.h	2026-11-26 02:49:48.504383458 -0500
++++ b/hw/ufs/ufs.h	2026-11-26 02:51:12.725756227 -0500
+@@ -77,6 +77,11 @@
+ typedef struct UfsLu {
+     DeviceState qdev;
+     uint8_t lun;
++    /* how the device was provisioned for it: its unit descriptor's */
++    uint8_t boot_lun_id;        /* 1: boot LU A, 2: B */
++    uint8_t memory_type;        /* 3: enhanced1 */
++    uint8_t data_reliability;
++    uint8_t provisioning_type;  /* 2: thin */
+     UnitDescriptor unit_desc;
+     SCSIBus bus;
+     SCSIDevice *scsi_dev;
+@@ -94,6 +99,9 @@
+     uint32_t wb_max_size; /* WB Maximum allocation units */
+     uint32_t wb_min_size; /* WB Minimum allocation units */
+     uint8_t lanes; /* The link's data lanes, in each direction */
++    bool boot_enable; /* bBootEnable, as the device was provisioned */
++    uint8_t boot_lun_en; /* bBootLunEn when nvram has none yet */
++    BlockBackend *nvram; /* the device's own state: bBootLunEn */
+ } UfsParams;
+ 
+ /*
+--- a/hw/ufs/lu.c	2026-11-26 02:49:48.508338759 -0500
++++ b/hw/ufs/lu.c	2026-11-26 02:51:12.726079646 -0500
+@@ -443,6 +443,10 @@
+ static const Property ufs_lu_props[] = {
+     DEFINE_PROP_DRIVE("drive", UfsLu, conf.blk),
+     DEFINE_PROP_UINT8("lun", UfsLu, lun, 0),
++    DEFINE_PROP_UINT8("boot-lun-id", UfsLu, boot_lun_id, 0),
++    DEFINE_PROP_UINT8("memory-type", UfsLu, memory_type, 0),
++    DEFINE_PROP_UINT8("data-reliability", UfsLu, data_reliability, 0),
++    DEFINE_PROP_UINT8("provisioning-type", UfsLu, provisioning_type, 0),
+ };
+ 
+ static bool ufs_add_lu(UfsHc *u, UfsLu *lu, Error **errp)
+@@ -484,6 +488,10 @@
+     lu->unit_desc.length = sizeof(UnitDescriptor);
+     lu->unit_desc.descriptor_idn = UFS_QUERY_DESC_IDN_UNIT;
+     lu->unit_desc.lu_enable = 0x01;
++    lu->unit_desc.boot_lun_id = lu->boot_lun_id;
++    lu->unit_desc.memory_type = lu->memory_type;
++    lu->unit_desc.data_reliability = lu->data_reliability;
++    lu->unit_desc.provisioning_type = lu->provisioning_type;
+     lu->unit_desc.logical_block_size = UFS_BLOCK_SIZE_SHIFT;
+     lu->unit_desc.unit_index = lu->lun;
+     lu->unit_desc.logical_block_count =
+--- a/hw/ufs/ufs.c	2026-11-26 02:49:48.500592974 -0500
++++ b/hw/ufs/ufs.c	2026-11-26 02:57:01.506592994 -0500
+@@ -23,6 +23,8 @@
+ 
+ #include "qemu/osdep.h"
+ #include "qapi/error.h"
++#include "qemu/log.h"
++#include "system/block-backend.h"
+ #include "migration/vmstate.h"
+ #include "scsi/constants.h"
+ #include "hw/core/irq.h"
+@@ -1313,7 +1315,7 @@
+ 
+ static const int attr_permission[UFS_QUERY_ATTR_IDN_COUNT] = {
+     /* booting is not supported */
+-    [UFS_QUERY_ATTR_IDN_BOOT_LU_EN] = UFS_QUERY_ATTR_READ,
++    [UFS_QUERY_ATTR_IDN_BOOT_LU_EN] = UFS_QUERY_ATTR_READ | UFS_QUERY_ATTR_WRITE,
+     [UFS_QUERY_ATTR_IDN_POWER_MODE] = UFS_QUERY_ATTR_READ,
+     [UFS_QUERY_ATTR_IDN_ACTIVE_ICC_LVL] =
+         UFS_QUERY_ATTR_READ | UFS_QUERY_ATTR_WRITE,
+@@ -1721,9 +1723,45 @@
+     return UFS_QUERY_RESULT_SUCCESS;
+ }
+ 
++/*
++ * The device's own state that outlives a power cycle (the nvram drive):
++ * bBootLunEn, after a magic, in its first sector
++ */
++#define UFS_NVRAM_MAGIC "QUFSNV01"
++
++static void ufs_nvram_load(UfsHc *u)
++{
++    uint8_t buf[512];
++
++    u->attributes.boot_lun_en = u->params.boot_lun_en;
++    if (u->params.nvram &&
++        blk_pread(u->params.nvram, 0, sizeof(buf), buf, 0) >= 0 &&
++        !memcmp(buf, UFS_NVRAM_MAGIC, 8) && buf[8] <= 2) {
++        u->attributes.boot_lun_en = buf[8];
++    }
++}
++
++static void ufs_nvram_save(UfsHc *u)
++{
++    uint8_t buf[512] = { 0 };
++
++    if (u->params.nvram) {
++        memcpy(buf, UFS_NVRAM_MAGIC, 8);
++        buf[8] = u->attributes.boot_lun_en;
++        blk_pwrite(u->params.nvram, 0, sizeof(buf), buf, 0);
++    }
++}
++
+ static QueryRespCode ufs_write_attr_value(UfsHc *u, uint8_t idn, uint32_t value)
+ {
+     switch (idn) {
++    case UFS_QUERY_ATTR_IDN_BOOT_LU_EN:
++        if (value > 2) {                /* none, boot LU A, boot LU B */
++            return UFS_QUERY_RESULT_INVALID_VALUE;
++        }
++        u->attributes.boot_lun_en = value;
++        ufs_nvram_save(u);
++        break;
+     case UFS_QUERY_ATTR_IDN_ACTIVE_ICC_LVL:
+         if (value > UFS_QUERY_ATTR_ACTIVE_ICC_MAXVALUE) {
+             return UFS_QUERY_RESULT_INVALID_VALUE;
+@@ -1936,6 +1974,94 @@
+ }
+ 
+ #define UFS_CONFIG_DESC_LEN (0x16 + 8 * 0x1a)
++#define UFS_CONFIG_HDR_LEN  0x16
++#define UFS_CONFIG_UNIT_LEN 0x1a
++
++/* an LU's size in allocation units, as its configuration gives it */
++static uint32_t ufs_lu_alloc_units(UfsHc *u, UfsLu *lu)
++{
++    uint64_t au = (uint64_t)u->geometry_desc.allocation_unit_size *
++                  be32_to_cpu(u->geometry_desc.segment_size) * 512;
++    uint64_t bytes = be64_to_cpu(lu->unit_desc.logical_block_count) <<
++                     lu->unit_desc.logical_block_size;
++    uint16_t adj = lu->unit_desc.memory_type == 3 ?
++                   be16_to_cpu(u->geometry_desc.enhanced_1_cap_adj_fac) : 256;
++
++    return au ? DIV_ROUND_UP(bytes * adj / 256, au) : 0;
++}
++
++/*
++ * The configuration descriptor (@index: LUs 8 * @index on), as the device's
++ * provisioning left it: its header from the device descriptor, each LU's
++ * parameters from its unit descriptor, LUs that are not there disabled
++ */
++static void ufs_config_desc(UfsHc *u, uint8_t index, uint8_t *d)
++{
++    DeviceDescriptor *dd = &u->device_desc;
++
++    memset(d, 0, UFS_CONFIG_DESC_LEN);
++    d[0] = UFS_CONFIG_DESC_LEN;
++    d[1] = UFS_QUERY_DESC_IDN_CONFIGURATION;
++    d[3] = dd->boot_enable;
++    d[4] = dd->descr_access_en;
++    d[5] = dd->init_power_mode;
++    d[6] = dd->high_priority_lun;
++    d[7] = dd->secure_removal_type;
++    d[8] = dd->init_active_icc_level;
++    memcpy(&d[9], &dd->periodic_rtc_update, 2);
++    d[0x10] = dd->write_booster_buffer_preserve_user_space_en;
++    d[0x11] = dd->write_booster_buffer_type;
++    memcpy(&d[0x12], &dd->num_shared_write_booster_buffer_alloc_units, 4);
++    for (int i = 0; i < 8; i++) {
++        int lun = index * 8 + i;
++        UfsLu *lu = lun < UFS_MAX_LUS ? u->lus[lun] : NULL;
++        uint8_t *p = d + UFS_CONFIG_HDR_LEN + i * UFS_CONFIG_UNIT_LEN;
++
++        if (!lu) {
++            continue;
++        }
++        p[0] = lu->unit_desc.lu_enable;
++        p[1] = lu->unit_desc.boot_lun_id;
++        p[2] = lu->unit_desc.lu_write_protect;
++        p[3] = lu->unit_desc.memory_type;
++        stl_be_p(&p[4], ufs_lu_alloc_units(u, lu));
++        p[8] = lu->unit_desc.data_reliability;
++        p[9] = lu->unit_desc.logical_block_size;
++        p[0xa] = lu->unit_desc.provisioning_type;
++        memcpy(&p[0xb], &lu->unit_desc.context_capabilities, 2);
++        memcpy(&p[0x16], &lu->unit_desc.lu_num_write_booster_buffer_alloc_units,
++               4);
++    }
++}
++
++/*
++ * A configuration descriptor written: the device's LUs are fixed here (each
++ * its own drive), so one that asks for them as they are is taken (its
++ * provisioning done), and any other answered as a device that cannot
++ */
++static QueryRespCode ufs_write_config_desc(UfsRequest *req)
++{
++    UfsHc *u = req->hc;
++    uint8_t index = req->req_upiu.qr.index;
++    uint16_t length = be16_to_cpu(req->req_upiu.qr.length);
++    const uint8_t *w = req->req_upiu.qr.data;
++    uint8_t now[UFS_CONFIG_DESC_LEN];
++
++    if (u->attributes.config_descr_lock) {
++        return UFS_QUERY_RESULT_NOT_WRITEABLE;
++    }
++    if (index > 3 || length != UFS_CONFIG_DESC_LEN) {
++        return UFS_QUERY_RESULT_INVALID_LENGTH;
++    }
++    ufs_config_desc(u, index, now);
++    if (memcmp(w + 3, now + 3, UFS_CONFIG_DESC_LEN - 3)) {
++        qemu_log_mask(LOG_UNIMP, "ufs: a configuration descriptor (index %u) "
++                      "that changes the logical units: this device's are "
++                      "fixed, each its own drive\n", index);
++        return UFS_QUERY_RESULT_GENERAL_FAILURE;
++    }
++    return UFS_QUERY_RESULT_SUCCESS;
++}
+ 
+ static QueryRespCode ufs_read_desc(UfsRequest *req)
+ {
+@@ -1978,13 +2104,12 @@
+         status = UFS_QUERY_RESULT_SUCCESS;
+         break;
+     case UFS_QUERY_DESC_IDN_CONFIGURATION:
+-        /*
+-         * mocking of configuration descriptor is not supported: its header,
+-         * at the length of a UFS 3.1 one (with eight units' parameters)
+-         */
+-        memset(&req->rsp_upiu.qr.data, 0, UFS_CONFIG_DESC_LEN);
+-        req->rsp_upiu.qr.data[0] = UFS_CONFIG_DESC_LEN;
+-        req->rsp_upiu.qr.data[1] = UFS_QUERY_DESC_IDN_CONFIGURATION;
++        /* as UFS 3.1 lays it out, eight units' parameters an index */
++        if (req->req_upiu.qr.index > 3) {
++            status = UFS_QUERY_RESULT_INVALID_INDEX;
++            break;
++        }
++        ufs_config_desc(u, req->req_upiu.qr.index, req->rsp_upiu.qr.data);
+         status = UFS_QUERY_RESULT_SUCCESS;
+         break;
+     case UFS_QUERY_DESC_IDN_HEALTH:
+@@ -2041,8 +2166,9 @@
+         status = UFS_QUERY_RESULT_SUCCESS;
+         break;
+     case UFS_UPIU_QUERY_OPCODE_WRITE_DESC:
+-        /* write descriptor is not supported */
+-        status = UFS_QUERY_RESULT_NOT_WRITEABLE;
++        /* of the descriptors, only the configuration's can be written */
++        status = req->req_upiu.qr.idn == UFS_QUERY_DESC_IDN_CONFIGURATION ?
++                 ufs_write_config_desc(req) : UFS_QUERY_RESULT_NOT_WRITEABLE;
+         break;
+     case UFS_UPIU_QUERY_OPCODE_WRITE_ATTR:
+         status = ufs_exec_query_attr(req, UFS_QUERY_ATTR_WRITE);
+@@ -2652,6 +2778,7 @@
+     u->device_desc.device_sub_class = 0x01;
+     u->device_desc.number_lu = 0x00;
+     u->device_desc.number_wlu = 0x04;
++    u->device_desc.boot_enable = u->params.boot_enable;
+     /* TODO: Revisit it when Power Management is implemented */
+     u->device_desc.init_power_mode = 0x01; /* Active Mode */
+     u->device_desc.high_priority_lun = 0x7F; /* Same Priority */
+@@ -2688,7 +2815,10 @@
+     u->geometry_desc.data_ordering =
+         0x0; /* out-of-order data transfer is not supported */
+     u->geometry_desc.max_context_id_number = 0x5;
+-    u->geometry_desc.supported_memory_types = cpu_to_be16(0x8001);
++    /* normal, enhanced1 (at no capacity cost), RPMB */
++    u->geometry_desc.supported_memory_types = cpu_to_be16(0x8009);
++    u->geometry_desc.enhanced_1_max_n_alloc_u = cpu_to_be32(1024);
++    u->geometry_desc.enhanced_1_cap_adj_fac = cpu_to_be16(0x0100);
+     u->geometry_desc.write_booster_buffer_max_n_alloc_units =
+         cpu_to_be32(u->params.wb_max_size);
+     u->geometry_desc.device_max_write_booster_l_us = 0x1;
+@@ -2702,8 +2832,8 @@
+     u->attributes.max_data_in_size = 0x08;
+     u->attributes.max_data_out_size = 0x08;
+     u->attributes.ref_clk_freq = 0x01; /* 26 MHz */
+-    /* configure descriptor is not supported */
+-    u->attributes.config_descr_lock = 0x01;
++    /* the configuration descriptor answers (ufs_write_config_desc) */
++    u->attributes.config_descr_lock = 0x00;
+     u->attributes.max_num_of_rtt = 0x02;
+     u->attributes.device_too_high_temp_boundary = UFS_TOO_HIGH_TEMP_BOUNDARY;
+     u->attributes.device_too_low_temp_boundary = UFS_TOO_LOW_TEMP_BOUNDARY;
+@@ -2739,6 +2869,12 @@
+     ufs_init_state(u);
+     ufs_init_hc(u);
+     ufs_init_pci(u, pci_dev);
++    if (u->params.nvram &&
++        blk_set_perm(u->params.nvram, BLK_PERM_CONSISTENT_READ |
++                     BLK_PERM_WRITE, BLK_PERM_ALL, errp) < 0) {
++        return;
++    }
++    ufs_nvram_load(u);
+ 
+     ufs_init_wlu(&u->report_wlu, UFS_UPIU_REPORT_LUNS_WLUN);
+     ufs_init_wlu(&u->dev_wlu, UFS_UPIU_UFS_DEVICE_WLUN);
+@@ -2785,6 +2921,9 @@
+     DEFINE_PROP_UINT32("wb-max-size", UfsHc, params.wb_max_size, 0x400),
+     DEFINE_PROP_UINT32("wb-min-size", UfsHc, params.wb_min_size, 0x100),
+     DEFINE_PROP_UINT8("lanes", UfsHc, params.lanes, 1),
++    DEFINE_PROP_BOOL("boot-enable", UfsHc, params.boot_enable, false),
++    DEFINE_PROP_UINT8("boot-lun-en", UfsHc, params.boot_lun_en, 0),
++    DEFINE_PROP_DRIVE("nvram", UfsHc, params.nvram),
+ };
+ 
+ static const VMStateDescription ufs_vmstate = {
