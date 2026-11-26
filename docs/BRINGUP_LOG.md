@@ -2142,3 +2142,33 @@ register headers.
       reads the listing.
     - **Checked.** The smoke test, linux_check, its U-Boot and MaskROM modes
       pass.
+
+92. **No BQL for an interrupt the CPU cannot take (QEMU patch 0019).**
+    - **Counted.** A temporary count in cpu_exec's interrupt check, with
+      Flipper OS booting and then idle. All CPUs together, the check took the
+      BQL 14,000 to 64,000 times a second, and delivered 1,200 to 3,000
+      interrupts. 12,000 to 43,000 times a second it found only an interrupt
+      the CPU could not take as it was. A level interrupt stays requested
+      while the guest masks it, and until the guest unmasked it, the check
+      took the BQL and let it go at each pass of the vCPU's loop.
+    - **The patch.** A target may say, from the CPU's own state alone and
+      without the BQL, that none of the requested interrupts can be taken;
+      then the check takes no BQL. An interrupt that comes meanwhile kicks the
+      CPU, so the check is made again. Arm's A profile answers as
+      arm_cpu_exec_interrupt() decides (the target EL from SCR and HCR, the
+      masks in PSTATE), and leaves it to the BQL's path for anything it does
+      not know or for FEAT_NMI's superpriority. The M profile's NVIC is the
+      BQL's, so the MCU's cores are as before. EXITTB, HALT, RESET and DEBUG,
+      and record and replay, still take the BQL's path.
+    - **Result.** Idle: 122 % of a host core, from 151 (158 before log 91):
+      the main loop 12 % (from 18-22), the MCU's core 0 7.5 % (from 11). Boot
+      to login, one boot: 118 s (129 before). While Flipper OS boots, waiting
+      for the BQL stays a quarter of a busy vCPU's time. By where, a third is
+      in the vCPU thread's own loop (cpu_exec's returns: halts, kicks, queued
+      work, the other CPUs' TLB flushes among it, which run under the BQL).
+      About a fifth each is at the interrupt check (interrupts taken), at
+      MMIO, and at the generic timer's registers.
+    - **Checked.** The smoke test, linux_check (494 s, from 553 with log 91's
+      patch and some 650 before it), its U-Boot mode (319 s), its MCU-update
+      mode (the update over I2C in 63 s, from 94: the link waits less on the
+      BQL too) and its MaskROM mode pass.

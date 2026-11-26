@@ -179,7 +179,10 @@ screen and its CLI.
       at speed; an exception return takes the BQL only while the PMU counts
       (patch 0013) (2026-11-25); idle measured (158 % of a host core with eight
       vCPUs, the MCU alone 15 %), the GIC's distributor writes one update each
-      (patch 0018: 151 %) (2026-11-26, log 91)
+      (patch 0018: 151 %) (2026-11-26, log 91); no BQL for an interrupt the CPU
+      cannot take (patch 0019: idle 122 %, linux_check 494 s from 553)
+      (2026-11-26, log 92); the vCPU loop's own BQL (halts, kicks, the other
+      CPUs' TLB flushes), MMIO's
 - ☐ Wi-Fi (the MT7921 on USB)
 
 ## Not planned
