@@ -1733,3 +1733,21 @@ register headers.
     - **The Linux check** now shows AR30 bands this way, after the console's
       picture (scripts/drm_bands.py, sent in over the console), and reads the
       four colours back with the filters undone. It passes (42 checks).
+
+81. **Fewer cores, quicker.**
+    - **What idling costs.** Idle, an MCU-only device costs this PC 0.15 of a core.
+      Flipper OS, a minute and a half after its login, costs about 1.2. That was
+      measured from QEMU's threads' CPU time over 30 s. Its eight cores each take
+      about 100 timer interrupts a second, and IPIs for the scheduler's idle
+      balancing and its wakeups on other cores (the IPI tracepoints' stacks:
+      `sched_balance_trigger`, `ttwu_queue_wakelist`). That is ordinary SMP Linux,
+      but under TCG each interrupt is dear: the guest spends 5 % of its time in hard
+      interrupts. FlipCTL redraws about every 1.5 s, each frame new (its power and
+      temperatures change).
+    - **Linux on four cores** (`maxcpus=4`) reaches its login in 98-104 s, against
+      133-170 s with eight, and idles at 0.9 of a core against 1.2-1.3. On two cores
+      it is 106 s and 0.8. The eight cost each other more under TCG (the BQL, the
+      IPIs) than their parallel work gains them.
+    - **`run --linux --cpus N`** gives it, as `maxcpus=N`, for the direct boot only:
+      through U-Boot the kernel's options are the boot entry's. The default stays the
+      device's eight, and the checks run with eight.

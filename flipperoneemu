@@ -124,6 +124,16 @@ def cmd_run(args):
            "-global", "flipper-one-host.link=host",
            "-name", f"flipperone-{args.name}",
            "-d", "guest_errors", "-D", str(d / "qemu.log")]
+    if getattr(args, "cpus", None) is not None:
+        if args.linux is None or getattr(args, "uboot", False):
+            die("--cpus: with --linux, booted directly (through U-Boot the "
+                "kernel's options are the boot entry's)")
+        if not 1 <= args.cpus <= 8:
+            die("--cpus: 1 to 8")
+        # Linux on fewer of the eight cores: under TCG they cost each other
+        # more than they share (boot to login 98-106 s with 4, 133-170 with
+        # 8; idle, 0.9 of this PC's cores against 1.2)
+        args.kernel_args = f"maxcpus={args.cpus} {args.kernel_args}".strip()
     if getattr(args, "uboot", False):
         if args.linux is None:
             die("--uboot: with --linux")
@@ -568,6 +578,10 @@ def main():
                            help="start Flipper OS's kernel on the RK3576 (a "
                                 "build fetched by scripts/fetch_os.py; the "
                                 "newest unless told)")
+            p.add_argument("--cpus", type=int, metavar="N",
+                           help="... Linux on N of the RK3576's eight cores "
+                                "(maxcpus=N): 4 boots a quarter quicker and "
+                                "idles lighter here; the device has eight")
             p.add_argument("--uboot", action="store_true",
                            help="... through U-Boot, from the microSD card, as "
                                 "on the device: its boot menu on the Flipper's "

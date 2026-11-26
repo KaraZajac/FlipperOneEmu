@@ -130,6 +130,9 @@ scripts/fetch_os.py                  # a Flipper OS build: its kernel, initrd an
 ./flipperoneemu run --linux ...      # ... Flipper OS on the RK3576, from the build's
                                      # image on the device's microSD (devices/NAME/sd.img);
                                      # its UFS, devices/NAME/ufs.img, is blank
+./flipperoneemu run --linux --cpus 4 ...  # ... on four of its eight cores: under emulation
+                                     # it boots a quarter quicker (about 100 s to its login
+                                     # here) and idles lighter; the device has eight
 ./flipperoneemu run --linux --uboot ...  # ... through U-Boot from that card, as on the
                                      # device: its boot menu on the Flipper's screen (the
                                      # pad's up, down and OK pick a profile and kernel; hold
