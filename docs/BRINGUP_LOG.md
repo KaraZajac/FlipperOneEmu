@@ -2022,3 +2022,31 @@ register headers.
     - **Checked.** linux_check's UFS check is now the scheme's LUs, by LUN: their
       sectors, their boot LU ids, and `bBootLunEn`. Its U-Boot mode boots the
       microSD card past a blank boot LU. The smoke test passes.
+
+89. **The MCU's I2C link at about its real speed.**
+    - **Where the time went.** The installer's MCU update (log 88) needed some
+      220 s for its 894.5 KiB, and linux_check's took 252 s. Counters in the
+      rk3x model over linux_check's update, per 500 transfers (about 17 s): the
+      MCU held SCL for 10 s of them, in some 750,000 tries of a held step, one
+      every 2 µs. That polling kept QEMU's main loop waking 44,000 times a
+      second, taking the global lock each time. The CPUs the transfer waits on
+      (the MCU draining its 16-byte RX FIFO, Linux starting the next count)
+      need the same lock for each register they touch. One FIFO took some 4 ms
+      to drain.
+    - **The slave says when it lets go.** On the bus, a master that a slave
+      holds SCL on goes on the moment SCL is let go. Now the MCU's I2C slave
+      says so (`rp2350_i2c_target_on_release()`): when a byte is read from its
+      RX FIFO, one is written for a read, or its FIFOs are flushed or reset.
+      The rk3x model then goes on with the held step at once
+      (`rk_i2c_release()`, from the main loop). The 2 µs retry is now a
+      fallback, after 100 µs.
+    - **Result.** Some 9,000 holds per 500 transfers (one in a FIFO's worth),
+      held about 1 s in all. linux_check's MCU update: 93 s, from 252 s. The
+      MCU's log puts the transfer itself (erase done to image staged) at 39 s,
+      some 11 ms per 256-byte block. On the device, a block takes some 6 ms on
+      the bus at 400 kHz, and the driver then polls for RUNNING every 1 ms
+      (the updater reports it only once the block is written): some 29 s in
+      all. The rest of linux_check's 93 s is its own: sudo, and its look at
+      the upload's status every 10 s. Most of the link's time now goes on
+      Linux's side, between one count and the next.
+    - **Checked.** The smoke test, linux_check and its MCU-update mode (94 s) pass.

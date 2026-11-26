@@ -18,7 +18,8 @@
  * A count is a few steps (a START with its address byte, bytes written,
  * bytes read), each done as soon as the target takes or gives it: QEMU's
  * I2C devices at once; a target that holds SCL (the MCU, whose firmware
- * answers in its interrupt handler) has its step tried again 2 µs later.
+ * answers in its interrupt handler) has its step tried again when it says
+ * it has let go (rk_i2c_release()), from the main loop, or 100 µs later.
  * The bus's own timing is not modelled.
  *
  * ST (0x220) says SDA and SCL are high: an idle bus (the driver looks
@@ -69,7 +70,7 @@
 #define INT_NAKRCV      0x40
 #define INT_ALL         0x7f
 
-#define HELD_NS         2000            /* SCL held: try again then */
+#define HELD_NS         100000          /* SCL held: try again then */
 #define BUSY_NS         20000           /* the other master's transfer */
 
 static void rki2c_irq(RkI2cState *s)
@@ -195,6 +196,13 @@ static void rki2c_run(RkI2cState *s)
 static void rki2c_held(void *opaque)
 {
     rki2c_run(opaque);
+}
+
+void rk_i2c_release(RkI2cState *s)
+{
+    if (s->step < s->nsteps) {
+        timer_mod(s->timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+    }
 }
 
 static void rki2c_begin(RkI2cState *s, bool reading)

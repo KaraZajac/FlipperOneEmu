@@ -22,10 +22,14 @@
  * (DATA_CMD's FIRST_DATA_BYTE, bit 11, which the firmware frames its
  * transfers by), SCL held while the FIFO is full; a read takes bytes the CPU
  * wrote to DATA_CMD, and with none there raises RD_REQ (once a byte) and
- * holds SCL until it writes one; the master's NACK of its last byte is RX_DONE; its STOP is
- * STOP_DET. Bytes left over from a read are flushed when the next read
- * starts, with TX_ABRT (ABRT_SLVFLUSH_TXFIFO). In master receive too the
- * first byte after the address is flagged.
+ * holds SCL until it writes one; the master's NACK of its last byte is
+ * RX_DONE; its STOP is STOP_DET. Bytes left over from a read are flushed
+ * when the next read starts, with TX_ABRT (ABRT_SLVFLUSH_TXFIFO). In master
+ * receive too the first byte after the address is flagged.
+ *
+ * A master that SCL was held on is told when it is let go (a byte read from
+ * the RX FIFO, one written for it, the FIFOs flushed): the bus goes on then,
+ * without the master having to look again and again.
  *
  * Copyright (c) 2026, Kara Zajac
  * SPDX-License-Identifier: BSD-3-Clause
@@ -198,6 +202,24 @@ static void i2c_command(RP2I2c *c, uint32_t v)
 
 /* -------------------------------------------------------- as a slave */
 
+/* SCL let go: the master held on it goes on */
+static void i2c_release(RP2I2c *c)
+{
+    if (c->master_held) {
+        c->master_held = false;
+        if (c->release) {
+            c->release(c->release_opaque);
+        }
+    }
+}
+
+void rp2350_i2c_target_on_release(RP2350State *s, int n,
+                                  void (*release)(void *opaque), void *opaque)
+{
+    s->i2c[n].release = release;
+    s->i2c[n].release_opaque = opaque;
+}
+
 bool rp2350_i2c_target_start(RP2350State *s, int n, uint8_t addr, bool read)
 {
     RP2I2c *c = &s->i2c[n];
@@ -230,7 +252,8 @@ int rp2350_i2c_target_write(RP2350State *s, int n, uint8_t byte)
         return 1;                       /* not ours to take: let it go */
     }
     if (!rx_push(c, byte | (c->first ? FIRST_DATA_BYTE : 0))) {
-        return 0;                       /* full: SCL held */
+        c->master_held = true;          /* full: SCL held */
+        return 0;
     }
     c->first = false;
     i2c_irq(c);
@@ -251,6 +274,7 @@ int rp2350_i2c_target_read(RP2350State *s, int n, uint8_t *byte)
             c->rd_requested = true;
             i2c_irq(c);
         }
+        c->master_held = true;
         return 0;
     }
     c->rd_requested = false;
@@ -296,6 +320,7 @@ static uint32_t i2c_read(RP2Block *b, hwaddr offset)
             v = c->rx[c->rx_head];
             c->rx_head = (c->rx_head + 1) % FIFO_DEPTH;
             c->rx_n--;
+            i2c_release(c);
         } else {
             c->raw |= RX_UNDER;
         }
@@ -394,6 +419,7 @@ static void i2c_write(RP2Block *b, hwaddr offset, uint32_t value)
         if (slave_mode(c)) {
             if (!(value & CMD_READ) && c->tx_n < FIFO_DEPTH) {
                 c->tx[(c->tx_head + c->tx_n++) % FIFO_DEPTH] = value;
+                i2c_release(c);
             }
         } else {
             i2c_command(c, value);
@@ -407,6 +433,7 @@ static void i2c_write(RP2Block *b, hwaddr offset, uint32_t value)
         if (!(value & 1)) {
             c->rx_n = 0;                        /* the FIFOs flushed */
             c->tx_n = 0;
+            i2c_release(c);
         }
         break;
     case R_INTR_STAT: case R_RAW_INTR_STAT: case R_STATUS: case R_TXFLR:
@@ -467,5 +494,6 @@ void rp2350_i2c_reset(RP2350State *s)
         c->raw = 0;
         c->abrt = 0;
         i2c_irq(c);
+        i2c_release(c);
     }
 }

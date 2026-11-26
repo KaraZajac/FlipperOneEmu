@@ -95,6 +95,8 @@ struct RkI2cState {
 
 /* @t is what I2C@n's bus reaches */
 void rk3576_i2c_target(RK3576State *s, int n, const RkI2cTarget *t);
+/* ... and it has let go of the SCL it held: the count goes on */
+void rk_i2c_release(RkI2cState *s);
 /* I2C@n's bus has another master: @claim takes the bus before a START
  * (false: the other has a transfer under way) and lets it go after the
  * STOP */

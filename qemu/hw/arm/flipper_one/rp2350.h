@@ -275,6 +275,9 @@ typedef struct RP2I2c {
     bool first;                         /* the next byte in comes first */
     bool addressed;                     /* slave mode: a master's at SAR */
     bool rd_requested;                  /* ... RD_REQ raised for this byte */
+    bool master_held;                   /* ... its SCL held: the master waits */
+    void (*release)(void *opaque);      /* ... and is told when it's let go */
+    void *release_opaque;
     uint32_t raw;                       /* RAW_INTR_STAT's latched bits */
     uint32_t abrt;                      /* TX_ABRT_SOURCE */
 } RP2I2c;
@@ -489,6 +492,10 @@ int rp2350_i2c_target_write(RP2350State *s, int n, uint8_t byte);
 int rp2350_i2c_target_read(RP2350State *s, int n, uint8_t *byte);
 void rp2350_i2c_target_nack(RP2350State *s, int n);
 void rp2350_i2c_target_stop(RP2350State *s, int n);
+/* @release is called when I2C@n lets go of the SCL it held on its master
+ * (a write or a read returned 0): the master goes on then */
+void rp2350_i2c_target_on_release(RP2350State *s, int n,
+                                  void (*release)(void *opaque), void *opaque);
 
 /*
  * rp2350_usb.c: the USB controller as a device; and for a host on the

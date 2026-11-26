@@ -624,6 +624,13 @@ static void flipper_one_link_stop(void *opaque)
     rp2350_i2c_target_stop(&s->mcu, 1);
 }
 
+static void flipper_one_link_release(void *opaque)
+{
+    FlipperOneState *s = opaque;
+
+    rk_i2c_release(&s->rk3576.i2c[0]);
+}
+
 /*
  * The display link: Flipper OS sends a frame over SPI0 (CS0) between
  * "active" going low and back high, the RK3576's GPIO0_D1 (pin 25); the
@@ -1352,6 +1359,7 @@ static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
         .stop = flipper_one_link_stop, .opaque = s,
     };
     rk3576_i2c_target(&s->rk3576, 0, &s->link);
+    rp2350_i2c_target_on_release(&s->mcu, 1, flipper_one_link_release, s);
     rk3576_i2c_arbiter(&s->rk3576, 2, flipper_one_main_bus_claim, s);
     /* a microSD card (-drive if=sd): its detect switch, GPIO0_A7, low */
     {

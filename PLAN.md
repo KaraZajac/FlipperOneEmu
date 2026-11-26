@@ -100,7 +100,9 @@ screen and its CLI.
       regulators most of the SoC waits for), the main board's chips (i2c2, the MCU's
       main bus: HD3SS3220, INA219, INA4230 ×5, the expander, the charger and gauge),
       the HYM8563 RTC (i2c8); the GPIO banks (v2, interrupts); the main bus's
-      two masters take turns, as on a busy bus (2026-11-24)
+      two masters take turns, as on a busy bus (2026-11-24); the MCU's link at about
+      its real speed: a step the MCU held SCL on goes on when its slave lets go, not
+      polled (2026-11-26, log 89)
 - ☑ SCMI (TF-A's clocks): the kernel's memory after TF-A's 2 MiB, SMCCC 1.1, the base and
       clock protocols: cpufreq on both clusters (2026-11-24)
 - ☑ Temperatures: the TSADC's six channels, warmed by the cores that run, its alarm and
