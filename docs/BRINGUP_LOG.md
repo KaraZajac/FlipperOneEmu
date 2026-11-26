@@ -2402,3 +2402,70 @@ register headers.
         words, and the mode now ends with the reboot into the MaskROM,
         which the computer enumerates. PASS in 535 s.
       - The smoke test (52 s) and linux_check (424 s) pass.
+
+99. **The MT7921's Bluetooth: hci0 for Flipper OS, from its real firmware.**
+    - **What.** The Flipper One's Wi-Fi and Bluetooth is a MediaTek MT7921
+      (MT7961) on USB1, behind the board's hub (the tree: 0e8d:7961 on
+      hub@2, its Bluetooth interface 0, its Wi-Fi interface 3). Flipper OS
+      has the drivers (btusb with btmtk, mt7921u), the firmware
+      (firmware-mediatek's BT_RAM_CODE_MT7961_1_2_hdr.bin) and BlueZ 5.82,
+      whose service waited for an adapter that never came. Without one,
+      BlueZ's mpris-proxy also held up some power-offs for 90 s.
+    - **Its power.** Its PMU_EN is GPIO1_D5, which the tree's rfkill-gpio
+      "Onboard WiFi+BT" drives (default-blocked; Flipper OS unblocks it at
+      boot). The board pulls it down and puts the chip on USB while it is
+      high: each power-up is a cold chip, its patch firmware gone. USB1's
+      xHCI gains a second USB 2 port for it (QEMU's hub is full speed
+      only): the first stays free for devices from the monitor.
+    - **The chip** (mt7921.c), as MediaTek's USB Bluetooth is driven:
+      - Descriptors: an interface association of three Bluetooth
+        interfaces (e0/01/01): 0, HCI (interrupt 0x81 for events, bulk
+        0x82 and 0x02 for ACL); 1, SCO (isochronous, the usual seven
+        alternate settings); 2, ISO over interrupt (0x8a and 0x0a in its
+        alternate setting 1), which btusb claims for MediaTek's chips.
+      - Registers through vendor request 0x63: the chip's ID (0x7961 at
+        0x70010200), its firmware's version and flavour (which name the
+        file: _1_2); the "uhw" ones through requests 1 and 2.
+      - WMT, MediaTek's commands to its firmware: HCI command 0xfc6f,
+        answered by no Command Complete but an 0xe4 event that the host
+        polls for with vendor request 1. The patch download (a query per
+        section, which "not there yet" answers, then its data 250 bytes at a
+        time), then "function on". The patch stays until power goes:
+        each open's queries find it there, as HCI_QUIRK_NON_PERSISTENT_SETUP
+        makes setup run at every open.
+      - A Bluetooth 5.2 controller (HCI and LMP 0x0b, company 70, BR/EDR and
+        LE) answering what its features and supported commands claim. That
+        covers the HCI core's initialisation, BlueZ's settings, inquiry
+        (complete after its length), LE scanning and advertising, and pages
+        (Create Connection, a name request: their timeout), with MediaTek's
+        BD_ADDR and ISO-setting vendor commands. No radio: nothing is
+        found, nothing connects. A command it does not know is answered
+        "unknown", and logged.
+    - **What Linux says of it, its own.** btusb probes interface 2 too and
+      finds no bulk endpoints ("failed to enumerate endpoints"). Then
+      MediaTek's setup claims it for ISO. And the kernel lists its MediaTek
+      quirks ("Enhanced Setup Synchronous Connection ... advertised, but
+      not supported"). Some MT7921s' Bluetooth has no interface 2 at all
+      (kernel bug 219333); this one's Wi-Fi is interface 3, so it has one.
+    - **Checked.** In Flipper OS the chip is on USB from boot (it unblocks
+      the rfkill):
+      - btusb loads the firmware ("BT HW ver: 0x7961, SW ver: 0x008a"),
+        hci0 comes up, and BlueZ's service starts with its controller
+        (00:0C:E7:46:4F:01, manufacturer 70, version 0x0b) powered.
+      - It goes discoverable and pairable; a scan starts and finds nothing.
+      - Power off and on: setup runs again in 0.3 s, the patch still there.
+      - rfkill blocked: the chip leaves USB. Unblocked: back, a cold chip,
+        the whole download again (4.5 s), powered.
+      - QEMU's log has nothing from the chip: no command, WMT op or register
+        it did not know.
+      - linux_check checks the chip, BlueZ's controller, a scan, and
+        rfkill's block and unblock (466 s). Its U-Boot mode (528 s) and
+        MaskROM mode, and the smoke test, pass.
+    - **And a flaw of linux_check's.** Its U-Boot mode failed once, at the
+      second boot's menu. U-Boot's query of the terminal's size (ESC 7, ESC
+      [r, ESC [999;999H, ESC [6n ... ESC 8) wraps its "cyclic function
+      video_idle took too long" warning. The warning was taken out of the
+      listing, but the bare ESC 7 and ESC 8 stayed. When the warning landed
+      inside the wanted entry's line, they stayed inside its file name too.
+      Its log reader now strips those, and the rest of the terminal's
+      escapes (CSI with intermediates, as agetty's ESC [!p; OSC).

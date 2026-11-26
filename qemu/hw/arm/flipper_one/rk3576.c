@@ -1176,10 +1176,13 @@ static void rk3576_realize(DeviceState *dev, Error **errp)
                                     SYS_BUS_DEVICE(&s->sdmmc), 0));
     sysbus_connect_irq(SYS_BUS_DEVICE(&s->sdmmc), 0, rk3576_spi(s, 251));
 
-    /* the USB controllers, and USB0's combo PHY */
+    /* the USB controllers, and USB0's combo PHY. USB1's xHCI has a second
+     * USB 2 port, for the MT7921 (the board's: behind its hub on the
+     * device), the first one free */
     for (int n = 0; n < 2; n++) {
         SysBusDevice *usb = SYS_BUS_DEVICE(&s->usb[n]);
 
+        qdev_prop_set_uint32(DEVICE(usb), "usb2-ports", n ? 2 : 1);
         if (!sysbus_realize(usb, errp)) {
             return;
         }

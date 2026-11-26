@@ -851,7 +851,7 @@ static void dwc3_realize(DeviceState *dev, Error **errp)
 
     /* (sysbus-xhci's defaults for intrs and slots do not survive its
      * core's initialisation, which zeroes them: both are set here) */
-    qdev_prop_set_uint32(DEVICE(xhci), "p2", 1);
+    qdev_prop_set_uint32(DEVICE(xhci), "p2", s->usb2_ports);
     qdev_prop_set_uint32(DEVICE(xhci), "p3", 1);
     qdev_prop_set_uint32(DEVICE(xhci), "intrs", 1);
     qdev_prop_set_uint32(DEVICE(xhci), "slots", 64);
@@ -873,12 +873,17 @@ static void dwc3_realize(DeviceState *dev, Error **errp)
     sysbus_connect_irq(xhci, 0, qdev_get_gpio_in_named(dev, "xhci-irq", 0));
 }
 
+static const Property dwc3_props[] = {
+    DEFINE_PROP_UINT32("usb2-ports", RkDwc3State, usb2_ports, 1),
+};
+
 static void dwc3_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 
     dc->realize = dwc3_realize;
     device_class_set_legacy_reset(dc, dwc3_reset);
+    device_class_set_props(dc, dwc3_props);
 }
 
 static const TypeInfo dwc3_types[] = {

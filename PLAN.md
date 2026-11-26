@@ -171,7 +171,9 @@ screen and its CLI.
       its serial port on usb.sock, all of it over USB/IP (2026-11-25); U-Boot's
       gadget (its rockusb) too, through its own DWC3 driver: XferNotReady on a bulk
       endpoint that asks for it, a transfer ended at its last TRB (2026-11-26, log
-      95); the board's hubs and the MT7921
+      95); the MT7921's Bluetooth (mt7921.c): on USB1 while its rfkill's GPIO
+      powers it, its real firmware through MediaTek's WMT, BlueZ's controller
+      (2026-11-26, log 99); its Wi-Fi; the board's hubs
 - ◐ Audio: the SAIs (0, 2, 6) and the NAU8822: Flipper OS's sound card plays, out of
       QEMU's audio (`run --audio`) (2026-11-25); the internal and the headset's
       microphones, from a WAV file (`run --mic`) (2026-11-25); this PC's own
@@ -196,7 +198,8 @@ screen and its CLI.
       other CPUs' TLB flushes under the BQL, MMIO's; KPTI (KASLR forces it under
       U-Boot, as on the device): QEMU flushes its whole TLB at every switch of
       ASID, a boot half again as long (log 96): an ASID-aware TLB
-- ☐ Wi-Fi (the MT7921 on USB)
+- ☐ Wi-Fi (the MT7921 on USB: its Bluetooth is there, log 99; its interface 3 and
+      mt7921u's MCU protocol to come)
 
 ## Not planned
 - The RK3576's mask ROM and DDR training blob (closed), SPL and TF-A's BL31: the machine

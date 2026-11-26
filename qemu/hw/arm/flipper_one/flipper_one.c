@@ -43,6 +43,7 @@
 #include "target/arm/multiprocessing.h"
 #include <libfdt.h>
 #include "qemu/guest-random.h"
+#include "hw/usb/usb.h"
 #include <zstd.h>
 
 #define TYPE_FLIPPER_ONE MACHINE_TYPE_NAME("flipper-one")
@@ -113,6 +114,7 @@ struct FlipperOneState {
     bool dram_up;               /* ... which has run the DDR blob */
     int headset;                /* in the jack: FO_HEADSET_... */
     DeviceState *codec;         /* ... its mic on the NAU8822's RMICP */
+    struct USBDevice *mt7921;   /* Wi-Fi and Bluetooth, on USB1 */
     bool hdmi;                  /* a monitor in the HDMI port */
     bool hdmi_at_start;         /* ... from the start (property) */
     int ambient_dc;             /* around the device: 0.1 °C */
@@ -669,6 +671,13 @@ static void flipper_one_rk_gpio(void *opaque, int bank, int pin, bool level)
 {
     FlipperOneState *s = opaque;
 
+    if (bank == 1 && pin == 29) {               /* GPIO1_D5: the MT7921's
+                                                   PMU_EN (rfkill's) */
+        if (s->mt7921) {
+            mt7921_power(s->mt7921, level);
+        }
+        return;
+    }
     if (bank != 0 || pin != 25) {
         return;
     }
@@ -1589,6 +1598,21 @@ static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
     rk_spi_set_out(&s->rk3576.spi0, flipper_one_spi0_out, s);
     s->rk3576.gpio_out = flipper_one_rk_gpio;
     s->rk3576.gpio_out_opaque = s;
+    /*
+     * The MT7921 (its Bluetooth), on USB1's second USB 2 port (on the
+     * device behind the board's hub). Its PMU_EN is GPIO1_D5, which the
+     * device tree's rfkill-gpio "Onboard WiFi+BT" drives (blocked by
+     * default): pulled down, the chip off until Linux unblocks it
+     */
+    {
+        DeviceState *bt = qdev_new(TYPE_MT7921);
+
+        qdev_prop_set_string(bt, "port", "2");
+        qdev_realize_and_unref(bt, BUS(&s->rk3576.usb[1].xhci.xhci.bus),
+                               &error_fatal);
+        s->mt7921 = USB_DEVICE(bt);
+        rk3576_gpio_in(&s->rk3576, 1, 29, false);
+    }
     s->rk3576.cru_reset = flipper_one_rk_cru_reset;
     s->rk3576.cru_reset_opaque = s;
     for (int i = 0; i < 2; i++) {

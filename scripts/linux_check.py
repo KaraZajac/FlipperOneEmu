@@ -25,7 +25,10 @@ Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
   framebuffer (AR30, as a compositor's) shown as drawn, and Linux sees it
   pulled out and plugged in again; USB0 is in
   its device role with its Type-C port, USB1's root hubs are there, and the
-  battery reads (its chain waits on USB0's role switch); each Ethernet port
+  battery reads (its chain waits on USB0's role switch); the MT7921's
+  Bluetooth is on USB1 with its firmware loaded, hci0, BlueZ's controller
+  powered, a scan starts and finds nothing, and with its rfkill blocked the
+  chip leaves USB, unblocked it comes back cold; each Ethernet port
   has its RTL8211F, and with passt installed port 1 is on this PC's network
   (`run --net`): a link, an address by DHCP, a gateway that answers; port 2
   has a cable to a LAN of its own (`run --lan`), where scripts/lan_host.py
@@ -140,13 +143,19 @@ ROOT = st.ROOT
 TEMPLATE = ROOT / "build" / "linux-check"
 MIC_HZ, MIC_PEAK = 440, 1638            # the microphone's file: -26 dBFS
 KMSG = re.compile(r"^\[\s*\d+\.\d+\]")
-ESC = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+# terminal escapes: CSI (with intermediates: agetty's \e[!p), OSC (\e]104\a),
+# and the cursor's save and restore (\e7, \e8: U-Boot's query of the
+# terminal's size wraps its other output, in the middle of a line now and
+# then)
+ESC = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]"            # CSI
+                 r"|\][^\x07\x1b]*(?:\x07|\x1b\\)"        # OSC
+                 r"|[78])")                                # \e7, \e8
 
 
 def text_of(path):
+    """the file's text, without terminal escapes (ESC)"""
     raw = path.read_bytes() if path.exists() else b""
-    return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "",
-                  raw.decode("utf-8", "replace"))
+    return ESC.sub("", raw.decode("utf-8", "replace"))
 
 
 def wait_text(path, pattern, timeout, after=0):
@@ -507,6 +516,39 @@ def checks(check, d, out, first_boot, off, net):
     check("... so the charger and battery come up: Linux reads the gauge",
           bool(bat) and len(bat) == 2 and bat[0].strip().isdigit() and
           70 <= int(bat[0]) <= 90, str(bat))
+
+    # the MT7921's Bluetooth: on USB1 while its rfkill is unblocked (Flipper
+    # OS unblocks it at boot), its patch loaded through MediaTek's WMT
+    bt = con.run("lsusb -d 0e8d:7961 | wc -l; ls /sys/class/bluetooth; "
+                 "sudo dmesg -t | grep -c 'Loading BT firmware: "
+                 "mediatek/BT_RAM_CODE_MT7961_1_2_hdr.bin'", 60)
+    loads = int(bt[2]) if bt and len(bt) == 3 and bt[2].isdigit() else 0
+    check("Bluetooth: the MT7921 on USB1 (0e8d:7961), its firmware loaded "
+          "(BT_RAM_CODE_MT7961_1_2), hci0",
+          bt is not None and bt[:2] == ["1", "hci0"] and loads >= 1, str(bt))
+    show = con.run("timeout 20 bluetoothctl show", 60) or []
+    check("... BlueZ's controller, powered (MediaTek's, Bluetooth 5.2)",
+          any("Controller 00:0C:E7:46:4F:01" in x for x in show) and
+          any("Powered: yes" in x for x in show) and
+          any("Manufacturer: 0x0046" in x for x in show),
+          " / ".join(show[:4]))
+    scan = con.run("timeout 30 bluetoothctl --timeout 10 scan on", 60) or []
+    check("... a scan (inquiry and LE) starts, and finds nothing",
+          any("Discovery started" in x for x in scan) and
+          not any("[NEW] Device" in x for x in scan), " / ".join(scan[-3:]))
+    cycle = con.run("sudo rfkill block wlan; sleep 3; "
+                    "lsusb -d 0e8d:7961 | wc -l; ls /sys/class/bluetooth | "
+                    "wc -l; sudo rfkill unblock wlan; "
+                    "for i in $(seq 40); do timeout 10 bluetoothctl show "
+                    "2>/dev/null | grep -q 'Powered: yes' && break; sleep 1; "
+                    "done; timeout 20 bluetoothctl show | grep -c "
+                    "'Powered: yes'; sudo dmesg -t | grep -c "
+                    "'Loading BT firmware'", 120)
+    check("... rfkill blocked: the chip leaves USB; unblocked: back, its "
+          "firmware loaded again, powered",
+          cycle is not None and cycle[:3] == ["0", "0", "1"] and
+          len(cycle) == 4 and cycle[3].isdigit() and int(cycle[3]) > loads,
+          str(cycle))
     eth = con.run("for p in end0 end1; do echo $p "
                   "$(cat /sys/class/net/$p/phydev/phy_id) "
                   "$(cat /sys/class/net/$p/carrier 2>/dev/null || echo -); "

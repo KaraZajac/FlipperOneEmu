@@ -247,6 +247,12 @@ void nau8822_headset_mic(DeviceState *dev, bool present);
  * its pressure (0 ... 255), or none */
 void iqs7211e_touch(struct I2CSlave *dev, bool touching, int x, int y, int p);
 
+/* mt7921.c: the MT7921's Bluetooth, a USB device on its bus while @on (its
+ * PMU_EN): each power-up a cold chip */
+#define TYPE_MT7921 "mt7921"
+struct USBDevice;
+void mt7921_power(struct USBDevice *dev, bool on);
+
 /* ------------------------------------------- the battery, as it is */
 
 /*
