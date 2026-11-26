@@ -1,0 +1,93 @@
+From: FlipperOneEmu
+Subject: [PATCH] hw/intc/arm_gic: one update for a distributor write
+
+A write to the distributor is done a byte at a time, and each byte
+ended with gic_update(), which looks at every interrupt for every CPU
+(on the RK3576's GIC-400, 480 interrupts for 8 CPUs) with the BQL
+held. A 32-bit write, as Linux's GICv2 driver masks and unmasks an
+interrupt with (GICD_ICENABLER, GICD_ISENABLER), made four of them.
+With Flipper OS idle, a CPU was in such an update in one sample of
+eight, and the other CPUs waited for the BQL meanwhile.
+
+Now the bytes are written, then one update made for the access (none
+if every byte's offset was bad, as before). The interrupt lines come
+out as they did; only the passes between the bytes, and the CPUs they
+kicked, are gone.
+
+---
+--- a/hw/intc/arm_gic.c	2026-11-26 07:45:03.312330774 -0500
++++ b/hw/intc/arm_gic.c	2026-11-26 07:45:18.470915269 -0500
+@@ -1188,10 +1188,13 @@
+     return MEMTX_OK;
+ }
+ 
+-static void gic_dist_writeb(void *opaque, hwaddr offset,
+-                            uint32_t value, MemTxAttrs attrs)
++/*
++ * A byte of a distributor write: what it changes, the update left to the
++ * caller, which makes one for the whole access. False for a bad offset.
++ */
++static bool gic_dist_write_byte(GICState *s, hwaddr offset,
++                                uint32_t value, MemTxAttrs attrs)
+ {
+-    GICState *s = (GICState *)opaque;
+     int irq;
+     int i;
+     int cpu;
+@@ -1481,18 +1484,42 @@
+     } else {
+         goto bad_reg;
+     }
+-    gic_update(s);
+-    return;
++    return true;
+ bad_reg:
+     qemu_log_mask(LOG_GUEST_ERROR,
+                   "gic_dist_writeb: Bad offset %x\n", (int)offset);
++    return false;
++}
++
++/*
++ * A write of @n bytes, a byte at a time, then one update for them all. (An
++ * update looks at every interrupt for every CPU: made once a byte, a 32-bit
++ * write to GICD_ISENABLER, as Linux unmasks an interrupt with, made four.)
++ */
++static void gic_dist_write_bytes(GICState *s, hwaddr offset, uint32_t value,
++                                 int n, MemTxAttrs attrs)
++{
++    bool changed = false;
++
++    for (int i = 0; i < n; i++) {
++        changed |= gic_dist_write_byte(s, offset + i, value >> (8 * i) & 0xff,
++                                       attrs);
++    }
++    if (changed) {
++        gic_update(s);
++    }
++}
++
++static void gic_dist_writeb(void *opaque, hwaddr offset,
++                            uint32_t value, MemTxAttrs attrs)
++{
++    gic_dist_write_bytes(opaque, offset, value, 1, attrs);
+ }
+ 
+ static void gic_dist_writew(void *opaque, hwaddr offset,
+                             uint32_t value, MemTxAttrs attrs)
+ {
+-    gic_dist_writeb(opaque, offset, value & 0xff, attrs);
+-    gic_dist_writeb(opaque, offset + 1, value >> 8, attrs);
++    gic_dist_write_bytes(opaque, offset, value, 2, attrs);
+ }
+ 
+ static void gic_dist_writel(void *opaque, hwaddr offset,
+@@ -1532,8 +1559,7 @@
+         gic_update(s);
+         return;
+     }
+-    gic_dist_writew(opaque, offset, value & 0xffff, attrs);
+-    gic_dist_writew(opaque, offset + 2, value >> 16, attrs);
++    gic_dist_write_bytes(s, offset, value, 4, attrs);
+ }
+ 
+ static MemTxResult gic_dist_write(void *opaque, hwaddr offset, uint64_t data,

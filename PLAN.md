@@ -177,7 +177,9 @@ screen and its CLI.
       wave, paced so that the CPUs get the BQL between them, and Linux's SPI DMA
       no longer runs whole inside its register write (QEMU patch 0012): the sound
       at speed; an exception return takes the BQL only while the PMU counts
-      (patch 0013) (2026-11-25)
+      (patch 0013) (2026-11-25); idle measured (158 % of a host core with eight
+      vCPUs, the MCU alone 15 %), the GIC's distributor writes one update each
+      (patch 0018: 151 %) (2026-11-26, log 91)
 - ☐ Wi-Fi (the MT7921 on USB)
 
 ## Not planned

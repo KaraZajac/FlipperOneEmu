@@ -677,8 +677,12 @@ def uboot_pick(panel, linux, want, mark, shot=None):
     @shot), or None"""
     if not wait_text(linux, r"bootflows, \d+ valid", 600, mark):
         return None
+    # (U-Boot's word that its screen's redraw ran past its 50 ms can come in
+    # the middle of a line, an entry's among them: out of the way first)
+    text = re.sub(r"cyclic function \S+ took too long: \d+us vs \d+us max\n",
+                  "", text_of(linux)[mark:].replace("\r", ""))
     listed = re.findall(r"^\s*(\d+)\s+bls\s+ready\s.*/loader/entries/(\S+)$",
-                        text_of(linux)[mark:].replace("\r", ""), re.M)
+                        text, re.M)
     seq = next((int(n) for n, f in listed if want in f), None)
     if seq is None:
         return None

@@ -226,6 +226,7 @@ yet.
 | 0015 | hw/ufs: answer a LUN with no logical unit, and the configuration descriptor (U-Boot's scan) |
 | 0016 | hw/char/pl011: a transmit that does not wait for the chardev (a program that stops reading cli.sock stopped the machine) |
 | 0017 | hw/ufs: a device provisioned: boot LUs, a writable bBootLunEn kept in the device's own state, enhanced1, the configuration descriptor (the Flipper OS installer's scheme) |
+| 0018 | hw/intc/arm_gic: one update for a distributor write (a 32-bit write, as Linux masks an interrupt with, looked at every interrupt for every CPU four times) |
 
 ## Layout
 

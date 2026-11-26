@@ -2105,3 +2105,40 @@ register headers.
       the installer's loader, 11 s without. The smoke test, linux_check, its
       U-Boot mode (the boot ROM's choice of medium, split from SPL's part) and
       its MCU-update mode pass.
+
+91. **Where an idle Flipper OS's time goes; the GIC's distributor writes.**
+    - **Measured.** With Flipper OS at its login and nothing to do, QEMU used
+      158 % of a host core: the eight RK3576 vCPUs 9-21 % each, the main loop
+      22 %, the MCU's core 0 11 %. The MCU alone (plain `run`) idles at 15 %.
+      Inside the guest, over 30 s: FlipCTL takes 12 % of a CPU and nothing else
+      much. Per second: 381 arch-timer ticks (25 on each A53, 65-74 on each
+      A72), 216 IPIs (169 of them function calls), 84 interrupts of the
+      RK3576's timer (the broadcast, for the idle states that stop the local
+      timer), 36 of the main bus's I2C, 13 of the SD card.
+    - **The vCPUs' time**, from stack samples of QEMU's threads (eu-stack, 200
+      rounds): an RK3576 vCPU was busy in 14 % of them. Of that busy time, 27 %
+      was waiting for the BQL, 23 % TLB fills (page walks), 12 % MMIO, 11 %
+      translation and TB lookups, 8 % helpers, and 8 % running translated
+      code. `info jit` shows no TLB flushes in an idle 20 s, and gdb shows the
+      kernel's TLBs small (128 or 256 entries) and little used. The misses are
+      the guest's own work.
+    - **The GIC (QEMU patch 0018).** A vCPU was in the GIC's update in one
+      sample round of eight. A distributor write is done a byte at a time, and
+      each byte ended with an update that looks at every interrupt (480) for
+      every CPU (8), with the BQL held. A 32-bit write, as Linux masks and
+      unmasks an interrupt with, made four. Now the bytes are written, then one
+      update is made for the access; the interrupt lines come out the same. In
+      the update: 13 sample rounds of 200, from 25. Idle: 151 % of a core, from
+      158.
+    - **What is left** is TCG's price for the guest's own housekeeping, spread
+      over the BQL, the TLB, MMIO and translation; no one part of it is large.
+      `--cpus 4` idles lighter, as before.
+    - **And a check's flake.** linux_check's U-Boot mode once missed the boot
+      entry after its reboot. U-Boot warns when its screen's redraw runs past
+      its 50 ms budget ("cyclic function video_idle took too long: 56485us vs
+      50000us max": here each frame goes through SPI0's FIFO a word at a time),
+      and the warning can come in the middle of a line of its bootflow
+      listing, an entry's among them. The check now takes it out before it
+      reads the listing.
+    - **Checked.** The smoke test, linux_check, its U-Boot and MaskROM modes
+      pass.
