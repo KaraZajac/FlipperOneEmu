@@ -101,7 +101,8 @@ machine plays: the device comes back in Rockusb's Loader mode (bcdUSB 2.01);
 its chip-info, flash-info, capability and storage (the UFS's LU 0); 64 KiB
 written far out on the UFS read back the same and are in its image, then
 erased; the same on the card, after a switch of storage; a read past the
-end fails. With a kept card (build/linux-check/sd.img), its first 12 MiB
+end fails; fo_rockusb.py's write-bmap writes an image's mapped ranges onto
+the card, and leaves its other blocks. With a kept card (build/linux-check/sd.img), its first 12 MiB
 (Flipper OS's U-Boot) written to the blank card through it: a reset into
 the MaskROM (rkdeveloptool's rd 3) stays there, the card notwithstanding;
 the usbplug again, and its reset boots U-Boot from the card. (Without one,
@@ -120,6 +121,7 @@ to --out.
 """
 import argparse
 import base64
+import hashlib
 import json
 import math
 import os
@@ -1119,6 +1121,47 @@ def loader_checks(check, d, port, rock, enumerated):
           "switch of storage; the UFS; SATA (a SCSI disk to the usbplug)",
           "switch storage" in out and "12 (ufs)" in out and "'SATA '" in out,
           out)
+
+    # write-bmap: an image's mapped ranges alone (a 4 MiB one with two),
+    # onto the card filled with a marker first: the rest keeps the marker
+    block, ranges = 4096, ((0, 1), (512, 519))
+    img = bytearray(4 << 20)
+    for first, last in ranges:
+        img[first * block:(last + 1) * block] = os.urandom(
+            (last - first + 1) * block)
+    (d / "bmap.img").write_bytes(img)
+    sums = [hashlib.sha256(img[f * block:(l + 1) * block]).hexdigest()
+            for f, l in ranges]
+    (d / "bmap.img.bmap").write_text(
+        "<?xml version=\"1.0\" ?>\n<bmap version=\"2.0\">\n"
+        f"<ImageSize> {len(img)} </ImageSize>\n"
+        f"<BlockSize> {block} </BlockSize>\n"
+        f"<BlocksCount> {len(img) // block} </BlocksCount>\n"
+        "<ChecksumType> sha256 </ChecksumType>\n<BlockMap>\n" +
+        "".join(f'<Range chksum="{s}"> {f}-{l} </Range>\n'
+                for (f, l), s in zip(ranges, sums)) +
+        "</BlockMap>\n</bmap>\n")
+    c = None
+    try:
+        c = fo_rockusb.connect(port=port)
+        ld = fo_rockusb.Loader(c)
+        ld.command(0x2A, 0, False, opcode=2)
+        ld.write_lba(0, b"\xa5" * len(img))
+    except (OSError, ValueError) as e:
+        check("the card filled with a marker", False, str(e))
+    finally:
+        if c:
+            c.close()
+    out = run("write-bmap", str(d / "bmap.img"))
+    on_card = image_at("sd.img", 0, len(img))
+    mapped = {b for f, l in ranges for b in range(f, l + 1)}
+    check("fo_rockusb.py write-bmap: the image's two mapped ranges onto the "
+          "card (their SHA-256 checked), its other blocks left as they were",
+          "in 2 ranges" in out and all(
+              on_card[b * block:(b + 1) * block] ==
+              (img[b * block:(b + 1) * block] if b in mapped
+               else b"\xa5" * block) for b in range(len(img) // block)),
+          out[-120:])
 
     def maskrom_again(what, seen):
         c = None

@@ -2469,3 +2469,25 @@ register headers.
       inside the wanted entry's line, they stayed inside its file name too.
       Its log reader now strips those, and the rest of the terminal's
       escapes (CSI with intermediates, as agetty's ESC [!p; OSC).
+
+100. **Flipper OS flashed through Rockusb: fo_rockusb.py's write-bmap.**
+     - **What.** rockusb's write-bmap (bmaptool's way) writes only an image's
+       mapped blocks, as its .bmap lists them, each range's SHA-256 checked.
+       Flipper OS's builds come as an .img.zst with a .bmap. fo_rockusb.py's
+       write read its whole file into memory, which a 6.4 GB image does not
+       fit.
+     - **Now** write takes its file 8 MiB at a time, a .zst one decompressed
+       as it goes (Python's compression.zstd, standard since 3.14).
+       write-bmap writes the mapped ranges, seeking forward through the image
+       and decompressing on the way, and compares each range's SHA-256 with
+       the bmap's.
+     - **The whole flow, as a developer flashes a board:**
+       - A blank device; in its MaskROM, the usbplug; switch-storage sd.
+       - write-bmap of build 2501's debian-512-flipper-one-2501.img.zst: 4011
+         of 6442 MB, in its 51 ranges, in 378 s (10.6 MB/s, mostly USB/IP's
+         round trips).
+       - reset: the boot ROM boots the card, then U-Boot's menu, the kernel,
+         and Flipper OS's login, 3.5 minutes later.
+     - **Checked.** linux_check's MaskROM mode fills the card with a marker,
+       then write-bmaps a 4 MiB image with two mapped ranges onto it: the
+       ranges are the image's, and the rest keeps the marker (16 s).

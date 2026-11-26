@@ -184,7 +184,10 @@ scripts/fo_rockusb.py --port 3240 download-boot rk3576_loader.bin  # ... or Rock
                                      # usbplug, Rockusb's Loader mode on USB0, the UFS's
                                      # LU 0 behind it (`switch-storage sd`: the card);
                                      # then read, write, flash-info, reset [maskrom]
-                                     # (rkdeveloptool's rl, wl, rfi, rd [3])
+                                     # (rkdeveloptool's rl, wl, rfi, rd [3]), and
+                                     # write-bmap: Flipper OS's image (.img.zst) as its
+                                     # bmap maps it, onto the card (switch-storage sd),
+                                     # which then boots
 ./flipperoneemu console [-n NAME] [CMD]  # Linux's console (the RK3576's UART0); Ctrl-] leaves
 ./flipperoneemu console --usb ...    # ... Flipper OS's serial port on its USB gadget
                                      # (a computer plugged in: Ctrl+Shift+U)

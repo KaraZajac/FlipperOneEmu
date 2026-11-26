@@ -17,6 +17,7 @@ its Loader mode, from here.
     scripts/fo_rockusb.py [--port 3240] reset [maskrom | power-off ...]
     scripts/fo_rockusb.py [--port 3240] switch-storage ufs | sd | emmc ...
     scripts/fo_rockusb.py [--port 3240] read START COUNT FILE | write START FILE
+    scripts/fo_rockusb.py [--port 3240] write-bmap IMAGE[.zst] [--bmap BMAP]
 
 The boot ROM takes code in vendor requests on the control endpoint (0x40,
 0x0c, index 0x471 or 0x472, up to 4096 bytes each). A shorter request ends
@@ -37,12 +38,16 @@ endpoint, the data, a 13-byte status (USBS) in. chip-info, flash-id,
 flash-info, capability, storage, switch-storage, read and write (512-byte
 sectors of the storage) and reset are rockusb's commands of the same names.
 (U-Boot's rockusb takes no flash-info or storage, and its chip-info is zeros
-unless the SoC's code gives one.)
+unless the SoC's code gives one.) write takes its file a piece at a time, a
+.zst one decompressed; write-bmap writes an image's mapped ranges alone, as
+its bmap (bmaptool's) lists them, their SHA-256 checked on the way: Flipper
+OS's image, say, onto the card (switch-storage sd first).
 
 Standard library only.
 """
 import argparse
 import binascii
+import hashlib
 import pathlib
 import struct
 import sys
@@ -111,6 +116,46 @@ def write_area(c, code, data, crc=True):
         c.control(0x40, 0x0C, 0, code, data=body[at:at + CHUNK])
     if len(body) % CHUNK == 0:
         c.control(0x40, 0x0C, 0, code, data=b"\0")
+
+
+def open_image(path):
+    """an image to read, a .zst one decompressed as it goes"""
+    if path.suffix == ".zst":
+        from compression import zstd
+        return zstd.ZstdFile(path)
+    return open(path, "rb")
+
+
+def bmap_ranges(path):
+    """a bmap's block size, its image's size, and its mapped ranges: (first
+    block, last block, SHA-256 or None)"""
+    import xml.etree.ElementTree as ET
+    root = ET.parse(path).getroot()
+    size = int(root.findtext("BlockSize"))
+    image = int(root.findtext("ImageSize"))
+    sha = (root.findtext("ChecksumType") or "").strip() == "sha256"
+    ranges = []
+    for r in root.find("BlockMap").findall("Range"):
+        first, _, last = r.text.strip().partition("-")
+        ranges.append((int(first), int(last or first),
+                       r.get("chksum") if sha else None))
+    return size, image, sorted(ranges)
+
+
+class Progress:
+    """what has gone, said every few seconds"""
+
+    def __init__(self, total):
+        self.total, self.done = total, 0
+        self.t0 = self.said = time.monotonic()
+
+    def add(self, n):
+        self.done += n
+        now = time.monotonic()
+        if now - self.said > 5:
+            self.said = now
+            print(f"  {self.done / 1e6:.0f} of {self.total / 1e6:.0f} MB "
+                  f"({self.done / 1e6 / (now - self.t0):.1f} MB/s)", flush=True)
 
 
 class Loader:
@@ -205,6 +250,21 @@ class Loader:
             self.command(0x15, len(chunk), False, start + i // SECTOR,
                          len(chunk) // SECTOR, cdb=0x0A, data=chunk)
 
+    def write_stream(self, start, f, length, progress, sha=None):
+        """@length bytes of the open file @f, to sectors from @start (a
+        SHA-256 object @sha takes them too); the bytes written"""
+        done = 0
+        while done < length:
+            chunk = f.read(min(8 << 20, length - done))
+            if not chunk:
+                break
+            if sha:
+                sha.update(chunk)
+            self.write_lba(start + done // SECTOR, chunk)
+            done += len(chunk)
+            progress.add(len(chunk))
+        return done
+
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
@@ -233,9 +293,15 @@ def main():
     rd.add_argument("start", type=int)
     rd.add_argument("count", type=int)
     rd.add_argument("file", type=pathlib.Path)
-    wr = sub.add_parser("write", help="(Loader mode) a file into sectors")
+    wr = sub.add_parser("write", help="(Loader mode) a file into sectors "
+                        "(a .zst one decompressed)")
     wr.add_argument("start", type=int)
     wr.add_argument("file", type=pathlib.Path)
+    wb = sub.add_parser("write-bmap", help="(Loader mode) an image's mapped "
+                        "ranges, as its bmap lists them (from sector 0)")
+    wb.add_argument("image", type=pathlib.Path)
+    wb.add_argument("--bmap", type=pathlib.Path,
+                    help="its bmap (default: IMAGE.bmap, .zst left out)")
     rs = sub.add_parser("reset", help="(Loader mode) the device restarts "
                         "(maskrom: into its MaskROM; power-off: off)")
     rs.add_argument("subcode", nargs="?", default="reset", choices=RESETS)
@@ -300,10 +366,34 @@ def main():
                       f"{time.monotonic() - t0:.1f} s")
             elif a.cmd == "write":
                 t0 = time.monotonic()
-                data = a.file.read_bytes()
-                ld.write_lba(a.start, data)
-                print(f"{-(-len(data) // SECTOR)} sectors at {a.start} in "
+                with open_image(a.file) as f:
+                    size = (a.file.stat().st_size if a.file.suffix != ".zst"
+                            else 0)
+                    n = ld.write_stream(a.start, f, size or 1 << 62,
+                                        Progress(size))
+                print(f"{-(-n // SECTOR)} sectors at {a.start} in "
                       f"{time.monotonic() - t0:.1f} s")
+            elif a.cmd == "write-bmap":
+                bmap = a.bmap or a.image.with_suffix(
+                    "" if a.image.suffix == ".zst" else a.image.suffix)
+                if not a.bmap:
+                    bmap = bmap.with_name(bmap.name + ".bmap")
+                block, image, ranges = bmap_ranges(bmap)
+                total = sum((l - f + 1) * block for f, l, _ in ranges)
+                progress, t0 = Progress(total), time.monotonic()
+                with open_image(a.image) as f:
+                    for first, last, chk in ranges:
+                        f.seek(first * block)       # (forward: decompressed)
+                        sha = hashlib.sha256() if chk else None
+                        want = (last - first + 1) * block
+                        got = ld.write_stream(first * block // SECTOR, f, want,
+                                              progress, sha)
+                        if got != want or (sha and sha.hexdigest() != chk):
+                            raise IOError(f"blocks {first}-{last}: the "
+                                          "image is short or not the bmap's")
+                print(f"{total / 1e6:.0f} MB of {image / 1e6:.0f} MB in "
+                      f"{len(ranges)} ranges, in "
+                      f"{time.monotonic() - t0:.0f} s")
             else:
                 ld.command(0xFF, 0, False, opcode=RESETS[a.subcode])
                 print("reset" + (f" ({a.subcode})" if a.subcode != "reset"
