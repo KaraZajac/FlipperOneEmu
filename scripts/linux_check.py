@@ -59,8 +59,13 @@ no computer on the gadget it can keep the console's getty from starting
 (and the check uses that serial port itself).
 
 With --uboot it checks the boot through U-Boot instead, as on the device
-(`run --uboot`), from the kept card: the machine loads U-Boot from the
-card's u-boot.itb as SPL would, and U-Boot sees the board's revision and
+(`run --uboot`), from the kept card. First U-Boot stops at its shell (`s`
+at power-on), and its rockusb makes USB0 a Rockusb device, which the
+computer enumerates; in Rockusb's Loader mode over USB/IP (fo_rockusb.py)
+sectors read are the card's, and 64 KiB written read back the same and are
+in the card's image (then put back); `boot` goes on. Then: the machine
+loads U-Boot from the card's u-boot.itb as SPL would, and U-Boot sees the
+board's revision and
 the 4 GiB of DRAM the DDR blob left word of; it finds the card's boot
 entries and shows its boot menu on the Flipper's screen; the Flipper's
 keys pick the Minimal profile of the build's kernel, and U-Boot boots it
@@ -714,13 +719,71 @@ def uboot_pick(panel, linux, want, mark, shot=None):
     return seq, screen
 
 
-def uboot_checks(check, d, out):
+def uboot_rockusb_checks(check, d, port):
+    """U-Boot stopped at its shell (`s` at power-on): its rockusb on USB0, in
+    Rockusb's Loader mode over USB/IP; then `boot`, on to its menu"""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import fo_rockusb
+    qout = d / "qemu.out"
+    con = Console(d / "linux.sock")
+    end, seen = time.time() + 120, ""
+    while time.time() < end:
+        with con.lock:
+            seen = ESC.sub("", con.buf)
+        if "=>" in seen:
+            break
+        con.s.sendall(b"s")
+        time.sleep(0.3)
+    if not check("U-Boot stops at its shell (`s` at power-on)", "=>" in seen):
+        con.s.close()
+        return
+    con.s.sendall(b"\x03")              # (the line: clear)
+    time.sleep(1)
+    before = text_of(qout).count("flipper-one: USB:")
+    con.send("rockusb 0 mmc 0")
+    check("its rockusb on USB0: the computer enumerates a Rockusb device "
+          "(2207:350e, through U-Boot's own DWC3 driver)",
+          st.until(lambda: text_of(qout).count("flipper-one: USB:") > before,
+                   60))
+    card = d / "sd.img"
+    far = card.stat().st_size // 512 - 256      # (clear of the backup GPT)
+    try:
+        c = fo_rockusb.connect(port=port)
+        try:
+            ld = fo_rockusb.Loader(c)
+            with open(card, "rb") as f:
+                first = f.read(8 * 512)
+            check("... Rockusb's Loader mode over USB/IP (fo_rockusb.py): "
+                  "sectors read are the card's", ld.read_lba(0, 8) == first)
+            was = ld.read_lba(far, 128)
+            pattern = bytes((i * 7 + 3) & 0xFF for i in range(4096)) * 16
+            ld.write_lba(far, pattern)
+            back = ld.read_lba(far, 128)
+            with open(card, "rb") as f:
+                f.seek(far * 512)
+                there = f.read(len(pattern))
+            check("... and 64 KiB written read back the same, and are in "
+                  "the card's image", back == pattern and there == pattern)
+            ld.write_lba(far, was)              # (as they were)
+        finally:
+            c.close()
+    except (OSError, ValueError) as e:
+        check("Rockusb's Loader mode over USB/IP", False, str(e))
+    con.s.sendall(b"\x03")              # (out of rockusb)
+    time.sleep(1)
+    con.send("boot")
+    time.sleep(1)
+    con.s.close()                       # (the console takes one at a time)
+
+
+def uboot_checks(check, d, out, port):
     linux, qlog = d / "linux.log", d / "qemu.log"
     info = json.loads((ROOT / "firmware" / "os" / str(os_build()) /
                        "os.json").read_text())
     want = f"flipperos-{info['profile']}-{info['version']}+"
     panel = st.Panel(d / "panel.sock")
     panel.send("usb 2")                 # (a computer: OS-02)
+    uboot_rockusb_checks(check, d, port)
     check("SPL's part: U-Boot and its device tree from the card's u-boot.itb",
           wait_text(qlog, r"SPL: U-Boot at 0x40800000", 20) and
           wait_text(qlog, r"the RK3576 starts", 20), text_of(qlog)[-300:])
@@ -969,8 +1032,9 @@ def main():
     if args.mcu_update and not net:
         sys.exit("--mcu-update: Flipper OS fetches the image over the "
                  "network: passt is needed")
+    port = st.free_port()
     run = [sys.executable, str(st.LAUNCHER), "run", "-n", name, "--detach",
-           "--linux"] + (["--uboot"] if args.uboot else
+           "--linux"] + (["--uboot", "--usbip", str(port)] if args.uboot else
                          mask + ["--net"] if args.mcu_update else mask + [
            "--audio", str(d / "audio.wav"), "--mic", str(d / "mic.wav"),
            "--nvme", "--hdmi", "--lan"] + (["--net"] if net else []))
@@ -1003,7 +1067,7 @@ def main():
         if args.maskrom:
             maskrom_checks(check, d, out, port, args.loader)
         elif args.uboot:
-            uboot_checks(check, d, out)
+            uboot_checks(check, d, out, port)
         elif args.mcu_update:
             mcu_update_checks(check, d, out, port, fw)
         else:

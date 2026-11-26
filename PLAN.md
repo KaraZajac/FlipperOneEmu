@@ -134,8 +134,10 @@ screen and its CLI.
       the board's revision, which U-Boot reads (2026-11-26, log 86); the boot ROM's
       USB download: 2207:350e, the maskrom protocol, rockusb's download-boot of the
       Flipper OS installer's loader (the machine as SPL in Falcon mode), over
-      USB/IP (scripts/fo_rockusb.py) (2026-11-26, log 90); a usbplug's Loader mode
-      (rkdeveloptool's `db`, then `wl`), U-Boot over USB (SPL with u-boot.itb)
+      USB/IP (scripts/fo_rockusb.py) (2026-11-26, log 90); U-Boot's rockusb: Rockusb's
+      Loader mode on USB0, the card read and written over USB/IP (2026-11-26, log
+      95); a usbplug's Loader mode (rkdeveloptool's `db`, then `wl`), U-Boot over USB
+      (SPL with u-boot.itb)
 
 ## M4: the link ◐
 - ◐ A program in the RK3576's place on the link: the host link (docs/HOST_LINK.md,
@@ -161,8 +163,10 @@ screen and its CLI.
       USBDP PHY, the Type-C port, the charger and battery in Linux; devices plugged in
       from the monitor (2026-11-25); USB0's device role, high speed: a computer on the
       USB-C port (the virtual PC, through USB20_SEL) enumerates Flipper OS's gadget,
-      its serial port on usb.sock, all of it over USB/IP (2026-11-25); the board's
-      hubs and the MT7921
+      its serial port on usb.sock, all of it over USB/IP (2026-11-25); U-Boot's
+      gadget (its rockusb) too, through its own DWC3 driver: XferNotReady on a bulk
+      endpoint that asks for it, a transfer ended at its last TRB (2026-11-26, log
+      95); the board's hubs and the MT7921
 - ◐ Audio: the SAIs (0, 2, 6) and the NAU8822: Flipper OS's sound card plays, out of
       QEMU's audio (`run --audio`) (2026-11-25); the internal and the headset's
       microphones, from a WAV file (`run --mic`) (2026-11-25); this PC's own

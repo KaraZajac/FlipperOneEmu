@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026, Kara Zajac
 # SPDX-License-Identifier: BSD-3-Clause
-"""Rockchip's maskrom protocol over USB/IP: what rockusb (or rkdeveloptool)
-does to an RK3576 in its MaskROM, from here.
+"""Rockchip's maskrom and Rockusb protocols over USB/IP: what rockusb (or
+rkdeveloptool) does to an RK3576 in its MaskROM, or to a Rockusb device in
+its Loader mode, from here.
 
     ./flipperoneemu run --usbip 3240 --detach   (and plug a computer in: the
     panel link's `usb 2`, the window's Ctrl+Shift+U); then the MCU's Maskrom
@@ -10,6 +11,8 @@ does to an RK3576 in its MaskROM, from here.
     the RK3576 in its MaskROM, its USB0 on the cable
     scripts/fo_rockusb.py [--port 3240] list
     scripts/fo_rockusb.py [--port 3240] download-boot LOADER.bin [--no-crc]
+    scripts/fo_rockusb.py [--port 3240] chip-info | flash-info | reset
+    scripts/fo_rockusb.py [--port 3240] read START COUNT FILE | write START FILE
 
 The boot ROM takes code in vendor requests on the control endpoint (0x40,
 0x0c, index 0x471 or 0x472, up to 4096 bytes each). A shorter request ends
@@ -20,6 +23,14 @@ blob), each followed by its delay, then its 0x472 ones (SPL), as rockusb
 does: for the Flipper OS installer, its installer-falcon-loader.bin. No root
 is needed: this speaks USB/IP from userspace (fo_usbip.py), as the PC's
 kernel would. With the real rockusb, `usbip attach` the device instead.
+
+The Loader mode is what a usbplug runs, or U-Boot's `rockusb 0 mmc 0` (its
+shell: `s` on the console at power-on): bulk-only transport, a 31-byte
+command block (USBC: Rockchip's command, a sector, a count) out on the bulk
+endpoint, the data, a 13-byte status (USBS) in. chip-info, flash-info,
+read and write (512-byte sectors of the storage U-Boot gave it) and reset
+are rockusb's commands of the same names. (U-Boot's rockusb takes no
+flash-info, and its chip-info is zeros unless the SoC's code gives one.)
 
 Standard library only.
 """
@@ -35,6 +46,7 @@ import fo_usbip  # noqa: E402
 
 ROCKCHIP = 0x2207
 CHUNK = 4096
+SECTOR = 512
 
 
 def loader_entries(blob):
@@ -84,6 +96,95 @@ def write_area(c, code, data, crc=True):
         c.control(0x40, 0x0C, 0, code, data=b"\0")
 
 
+class Loader:
+    """A device in Rockusb's Loader mode, over USB/IP"""
+
+    def __init__(self, c):
+        self.usb = c
+        cfg = c.control(0x80, 6, 0x0200, 0, 255)
+        self.ep_in = self.ep_out = None
+        cls, i = None, 0
+        while i + 2 <= len(cfg) and cfg[i] >= 2:
+            d = cfg[i:i + cfg[i]]
+            if d[1] == 4:                               # INTERFACE
+                cls = d[5]
+            elif d[1] == 5 and cls == 0xFF and d[3] & 3 == 2:
+                if d[2] & 0x80:
+                    self.ep_in = d[2] & 0x0F
+                else:
+                    self.ep_out = d[2] & 0x0F
+            i += cfg[i]
+        if self.ep_in is None or self.ep_out is None:
+            raise IOError("no Rockusb interface with bulk endpoints")
+        c.control(0x00, 9, cfg[5], 0)                   # SET_CONFIGURATION
+        self.tag = 0
+
+    def _reply(self, seq):
+        while True:
+            r = self.usb.receive()
+            if r[0] == fo_usbip.RET_SUBMIT and r[1] == seq:
+                return r
+
+    def _out(self, data):
+        status = self._reply(self.usb.submit(self.ep_out, False, data=data))[2]
+        if status:
+            raise IOError(f"Rockusb: bulk OUT failed ({status})")
+
+    def _in(self, length):
+        _, _, status, data, _ = self._reply(self.usb.submit_in(self.ep_in, length))
+        if status == -75 and length < 13:
+            # more than was asked for: a status (13 bytes) where the data
+            # should have been, a command the device does not take (U-Boot's
+            # rockusb answers flash-info so)
+            raise IOError("Rockusb: the device answered with a status at once: "
+                          "it does not take this command")
+        if status:
+            raise IOError(f"Rockusb: bulk IN failed ({status})")
+        return data
+
+    def command(self, code, length=0, read=True, address=0, count=0, cdb=6,
+                opcode=0, data=b""):
+        """a command block, its data (in, or @data out), its status"""
+        self.tag += 1
+        # (the tag, the sector and the count big-endian, the length little)
+        cbw = (b"USBC" + struct.pack(">I", self.tag) + struct.pack("<I", length) +
+               bytes((0x80 if read else 0, 0, cdb, code, opcode)) +
+               struct.pack(">IxH", address, count))
+        self._out(cbw.ljust(31, b"\0"))
+        got = b""
+        if read:
+            while len(got) < length:
+                chunk = self._in(min(length - len(got), 65536))
+                if not chunk:
+                    break
+                got += chunk
+        else:
+            for i in range(0, len(data), 65536):
+                self._out(data[i:i + 65536])
+        csw = self._in(13)
+        if len(csw) < 13 or csw[:4] != b"USBS" or \
+                struct.unpack(">I", csw[4:8])[0] != self.tag:
+            raise IOError(f"Rockusb: command {code:#04x}: no status for it")
+        if csw[12]:
+            raise IOError(f"Rockusb: command {code:#04x} failed (status {csw[12]})")
+        return got
+
+    def read_lba(self, start, count):
+        out = b""
+        while count:
+            n = min(count, 128)
+            out += self.command(0x14, n * SECTOR, True, start, n, cdb=0x0A)
+            start, count = start + n, count - n
+        return out
+
+    def write_lba(self, start, data):
+        data += bytes(-len(data) % SECTOR)
+        for i in range(0, len(data), 128 * SECTOR):
+            chunk = data[i:i + 128 * SECTOR]
+            self.command(0x15, len(chunk), False, start + i // SECTOR,
+                         len(chunk) // SECTOR, cdb=0x0A, data=chunk)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--host", default="127.0.0.1")
@@ -95,6 +196,16 @@ def main():
     db.add_argument("loader", type=pathlib.Path)
     db.add_argument("--no-crc", action="store_true",
                     help="two zero bytes where the CRC goes")
+    sub.add_parser("chip-info", help="(Loader mode) the chip's 16 bytes")
+    sub.add_parser("flash-info", help="(Loader mode) the storage's size")
+    rd = sub.add_parser("read", help="(Loader mode) sectors into a file")
+    rd.add_argument("start", type=int)
+    rd.add_argument("count", type=int)
+    rd.add_argument("file", type=pathlib.Path)
+    wr = sub.add_parser("write", help="(Loader mode) a file into sectors")
+    wr.add_argument("start", type=int)
+    wr.add_argument("file", type=pathlib.Path)
+    sub.add_parser("reset", help="(Loader mode) the device restarts")
     a = ap.parse_args()
 
     if a.cmd == "list":
@@ -107,6 +218,36 @@ def main():
             itf = " ".join("%02x/%02x/%02x" % i for i in d["interfaces"])
             print(f"{d['busid']}: ID {d['vid']:04x}:{d['pid']:04x}, interface {itf}"
                   + (" (Rockusb)" if (0xFF, 0x06, 0x05) in d["interfaces"] else ""))
+        return 0
+
+    if a.cmd != "download-boot":
+        c = connect(a.host, a.port, a.busid)
+        try:
+            ld = Loader(c)
+            if a.cmd == "chip-info":
+                info = ld.command(0x1B, 16)
+                print(info.hex(" "), repr(info[:4][::-1].decode("latin-1")))
+            elif a.cmd == "flash-info":
+                info = ld.command(0x1A, 11)
+                sectors = struct.unpack_from("<I", info)[0]
+                print(f"{sectors} sectors of {SECTOR} bytes "
+                      f"({sectors * SECTOR / 1e9:.2f} GB); {info.hex(' ')}")
+            elif a.cmd == "read":
+                t0 = time.monotonic()
+                a.file.write_bytes(ld.read_lba(a.start, a.count))
+                print(f"{a.count} sectors from {a.start} in "
+                      f"{time.monotonic() - t0:.1f} s")
+            elif a.cmd == "write":
+                t0 = time.monotonic()
+                data = a.file.read_bytes()
+                ld.write_lba(a.start, data)
+                print(f"{-(-len(data) // SECTOR)} sectors at {a.start} in "
+                      f"{time.monotonic() - t0:.1f} s")
+            else:
+                ld.command(0xFF, 0, False)
+                print("reset")
+        finally:
+            c.close()
         return 0
 
     entries = loader_entries(a.loader.read_bytes())

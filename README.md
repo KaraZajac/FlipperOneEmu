@@ -144,7 +144,10 @@ scripts/fetch_os.py                  # a Flipper OS build: its kernel, initrd an
                                      # pad's up, down and OK pick a profile and kernel; hold
                                      # a key a moment, U-Boot is slow here), the entry's own
                                      # options; `s` on the console at power-on stops it at
-                                     # U-Boot's shell
+                                     # U-Boot's shell, where `rockusb 0 mmc 0` makes USB0 a
+                                     # Rockusb device, the card behind it (with --usbip 3240:
+scripts/fo_rockusb.py --port 3240 read 0 8 FILE | write START FILE  # Rockusb's Loader
+                                     # mode, as rockusb's rl and wl, over USB/IP)
 ./flipperoneemu run --installer FIT --net  # the Flipper OS installer, as rockusb's
                                      # download-boot starts it from the MaskROM: its
                                      # installer-falcon.itb (dl-linux-images.flipp.dev/

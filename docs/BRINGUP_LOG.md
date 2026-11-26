@@ -2223,3 +2223,38 @@ register headers.
     - **Checked.** Six boots, three with `--cpus 4` (82, 89, 94 s to the
       login) and three with eight (104, 111, 91 s), reached the login with
       the RK3576 never switched off. The smoke test passes.
+
+95. **U-Boot's Rockusb on USB0: the device's storage from the PC, Rockusb's
+    Loader mode.**
+    - **What.** Flipper's U-Boot has `rockusb` (and `ums`). In its shell (`s` on
+      the console at power-on), `rockusb 0 mmc 0` makes USB0 a Rockusb device
+      in its Loader mode, through U-Boot's own DWC3 driver: what rkdeveloptool's
+      or rockusb's `rl` and `wl` (read, write) speak, the card's sectors behind
+      it. The computer on the cable enumerated it at once: 2207:350e
+      "Rockchip" "USB download gadget". But not a command went through.
+    - **Two things U-Boot's DWC3 driver wants that Linux's does not.** Both are
+      the controller's, and the model had neither:
+      - a bulk endpoint with no transfer gives XferNotReady when the host's
+        token comes, if its DEPCFG asked for that. U-Boot's driver (older)
+        starts a bulk transfer only on that event; Linux's starts one as its
+        gadget queues a request, and does not ask. The model gave it for the
+        control endpoint only.
+      - a transfer whose last TRB (LST) is done ends, with XferComplete.
+        U-Boot's driver makes a transfer for each request and waits for that
+        event (XferInProgress, which the model gave, it passes over); Linux's
+        sets LST on a stream's TRBs only, and keeps a transfer going.
+    - **The PC's side.** `scripts/fo_rockusb.py` speaks the Loader mode over
+      USB/IP: bulk-only transport, a 31-byte command block (USBC: Rockchip's
+      command, a sector, a count), the data, a 13-byte status (USBS):
+      `chip-info`, `flash-info`, `read START COUNT FILE`, `write START FILE`,
+      `reset`. U-Boot's rockusb takes no flash-info (it answers with a status
+      at once, which fo_rockusb.py says so), and its chip-info is zeros (the
+      SoC's code gives it none).
+    - **Result.** Eight sectors read in 1.2 s are the card image's; 64 KiB
+      written far out on the card read back the same, and are in its image.
+    - **Checked.** linux_check's U-Boot mode stops U-Boot at its shell first:
+      its rockusb enumerates; sectors read are the card's; 64 KiB written read
+      back the same and are in the card's image (then put back); `boot` goes
+      on to the menu and Flipper OS (286 s, all of it). The smoke test,
+      linux_check (Linux's gadget as before: NCM, MTP, its serial port) and
+      the MaskROM mode pass.

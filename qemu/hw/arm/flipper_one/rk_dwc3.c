@@ -349,6 +349,15 @@ static void ep_trb_finish(RkDwc3State *s, int n, Trb *t, uint32_t left,
                           (last & TRB_IOC ? EPST_IOC : 0) |
                           (last & TRB_LST ? EPST_LST : 0), 0);
         }
+    } else if ((shrt || !(t->ctrl & TRB_CHN)) && (last & TRB_LST)) {
+        /* the transfer's last TRB (LST): the transfer ends, as U-Boot's
+         * driver has it, a transfer for each request (Linux's sets LST on
+         * a stream's only, and keeps a transfer going) */
+        ep->started = false;
+        dwc3_ep_event(s, n, EPEVT_XFER_COMPLETE,
+                      (shrt ? EPST_SHORT : 0) |
+                      ((last | t->ctrl) & TRB_IOC ? EPST_IOC : 0) | EPST_LST,
+                      0);
     } else if (shrt) {
         if ((last | t->ctrl) & (TRB_IOC | TRB_ISP)) {
             dwc3_ep_event(s, n, EPEVT_XFER_IN_PROGRESS, EPST_SHORT |
@@ -545,6 +554,14 @@ static FoUsbResult ep_token(RkDwc3State *s, int n, const uint8_t *out,
         return FO_USB_STALL;
     }
     if (!ep->started) {
+        /* no transfer for it: the driver is told, once, if it asked for
+         * that (DEPCFG). Linux's starts a transfer as its gadget queues a
+         * request, and does not ask; U-Boot's starts one only then, and
+         * would leave the host NAKed for good */
+        if (!ep->nrdy) {
+            ep->nrdy = true;
+            dwc3_ep_event(s, n, EPEVT_XFER_NOT_READY, 0, 0);
+        }
         return FO_USB_NAK;
     }
     return n & 1 ? ep_tx(s, n, data, got) : ep_rx(s, n, out, len);
@@ -675,6 +692,7 @@ static void dwc3_depcmd(RkDwc3State *s, int n, uint32_t cmd)
         if (p0 >> 30 != 2) {            /* (not a MODIFY: from the start) */
             ep->events = p1;
             ep->stalled = false;
+            ep->nrdy = false;
         }
         break;
     case EPCMD_SET_STALL:
@@ -697,6 +715,7 @@ static void dwc3_depcmd(RkDwc3State *s, int n, uint32_t cmd)
         break;
     case EPCMD_END:
         ep->started = false;
+        ep->nrdy = false;
         break;
     }
     /* done: its resource index, the endpoint's number */
