@@ -42,6 +42,7 @@
 #include "target/arm/arm-powerctl.h"
 #include "target/arm/multiprocessing.h"
 #include <libfdt.h>
+#include <zstd.h>
 
 #define TYPE_FLIPPER_ONE MACHINE_TYPE_NAME("flipper-one")
 OBJECT_DECLARE_SIMPLE_TYPE(FlipperOneState, FLIPPER_ONE)
@@ -57,6 +58,11 @@ struct FlipperOneState {
     bool uboot;                 /* ... U-Boot proper from its microSD card,
                                    the machine as SPL and TF-A (property) */
     char *rev;                  /* the board's revision (property) */
+    char *falcon;               /* ... or a FIT for SPL's Falcon mode, as
+                                   the Flipper OS installer is (property) */
+    uint8_t *falcon_fit;        /* ... its bytes, read once */
+    gsize falcon_len;
+    hwaddr entry_x0;            /* x0 for what the RK3576 starts at */
     BlockBackend *sd_blk;       /* the microSD card's image */
     bool rk_rail;               /* VCC5V0_SYS_S5: its supply, the MCU's */
     bool rk_on;                 /* ... it runs */
@@ -903,6 +909,174 @@ static hwaddr fo_spl(FlipperOneState *s)
     return entry;
 }
 
+/*
+ * The Flipper OS installer, as rockusb's download-boot starts it on the
+ * device: a FIT for U-Boot's SPL in its Falcon mode, whose configuration for
+ * the board's revision has the kernel (zstd), its ramdisk and its device
+ * tree, besides TF-A's BL31 (falcon=FILE). The machine is SPL and TF-A here,
+ * as for U-Boot (fo_spl): the kernel decompressed to its load address, the
+ * ramdisk and the tree to theirs, the tree given the memory (after TF-A's 2
+ * MiB, as the direct boot has it: SPL adds the node; the tree's /chosen
+ * already has the ramdisk and the kernel's arguments), and the kernel
+ * started at EL2 with the tree's address in x0, PSCI and SCMI the machine's
+ * own. Its entry, 0 if it cannot be.
+ */
+#define FO_FALCON_KERNEL_MAX    (128 * MiB)
+
+static const uint8_t *fo_falcon_data(FlipperOneState *s, int node,
+                                     size_t *len)
+{
+    const void *fit = s->falcon_fit;
+    hwaddr off, size;
+    int l;
+    const void *data = fdt_getprop(fit, node, "data", &l);
+
+    if (data) {
+        *len = l;
+        return data;
+    }
+    if (!fo_fit_addr(fit, node, "data-size", &size)) {
+        return NULL;
+    }
+    if (fo_fit_addr(fit, node, "data-offset", &off)) {
+        off += ROUND_UP(fdt_totalsize(fit), 4);
+    } else if (!fo_fit_addr(fit, node, "data-position", &off)) {
+        return NULL;
+    }
+    if (off > s->falcon_len || size > s->falcon_len - off) {
+        return NULL;
+    }
+    *len = size;
+    return s->falcon_fit + off;
+}
+
+/* an image of the configuration to its load address: its end, 0 if not */
+static hwaddr fo_falcon_image(FlipperOneState *s, int node, bool tree)
+{
+    const void *fit = s->falcon_fit;
+    const char *comp = fdt_getprop(fit, node, "compression", NULL);
+    g_autofree uint8_t *buf = NULL;
+    const uint8_t *data;
+    size_t len;
+    hwaddr load;
+
+    if (!fo_fit_addr(fit, node, "load", &load) ||
+        !(data = fo_falcon_data(s, node, &len))) {
+        return 0;
+    }
+    if (comp && !strcmp(comp, "zstd")) {
+        unsigned long long n = ZSTD_getFrameContentSize(data, len);
+
+        if (n == ZSTD_CONTENTSIZE_ERROR || n == ZSTD_CONTENTSIZE_UNKNOWN ||
+            n > FO_FALCON_KERNEL_MAX) {
+            return 0;
+        }
+        buf = g_malloc(n);
+        if (ZSTD_isError(ZSTD_decompress(buf, n, data, len))) {
+            return 0;
+        }
+        data = buf;
+        len = n;
+    } else if (comp && strcmp(comp, "none")) {
+        return 0;
+    }
+    if (tree) {                         /* the memory, as SPL adds it */
+        hwaddr base = RK3576_DRAM_BASE + RK3576_TFA_SIZE;
+        uint64_t size = MACHINE(s)->ram_size - RK3576_TFA_SIZE;
+        fdt32_t reg[4] = {
+            cpu_to_fdt32(base >> 32), cpu_to_fdt32(base),
+            cpu_to_fdt32(size >> 32), cpu_to_fdt32(size),
+        };
+        uint8_t *t = g_malloc(len + 1024);
+        int m;
+
+        if (fdt_open_into(data, t, len + 1024) ||
+            (m = fdt_add_subnode(t, 0, "memory@40200000")) < 0 ||
+            fdt_setprop_string(t, m, "device_type", "memory") ||
+            fdt_setprop(t, m, "reg", reg, sizeof(reg)) || fdt_pack(t)) {
+            g_free(t);
+            return 0;
+        }
+        g_free(buf);
+        buf = t;
+        data = t;
+        len = fdt_totalsize(t);
+    }
+    address_space_write(&address_space_memory, load, MEMTXATTRS_UNSPECIFIED,
+                        data, len);
+    return load + len;
+}
+
+static hwaddr fo_falcon(FlipperOneState *s)
+{
+    g_autofree char *compat = g_strdup_printf("flipper,one-rev-%s",
+                                              s->rev ?: FO_REV_DEFAULT);
+    g_autoptr(GError) err = NULL;
+    const void *fit;
+    const char *name, *type;
+    int images, confs, conf = -1, node;
+    hwaddr entry = 0, fdt_at = 0;
+
+    if (!s->falcon_fit &&
+        !g_file_get_contents(s->falcon, (char **)&s->falcon_fit,
+                             &s->falcon_len, &err)) {
+        return fo_spl_fail(err->message);
+    }
+    fit = s->falcon_fit;
+    if (s->falcon_len < sizeof(struct fdt_header) || fdt_check_header(fit) ||
+        fdt_totalsize(fit) > s->falcon_len) {
+        return fo_spl_fail("the installer is not a FIT");
+    }
+    images = fdt_path_offset(fit, "/images");
+    confs = fdt_path_offset(fit, "/configurations");
+    if (images < 0 || confs < 0) {
+        return fo_spl_fail("the installer's FIT has no images or "
+                           "configurations");
+    }
+    fdt_for_each_subnode(node, fit, confs) {
+        if (!fdt_stringlist_search(fit, node, "compatible", compat)) {
+            conf = node;
+            break;
+        }
+    }
+    if (conf < 0) {
+        return fo_spl_fail("the installer has no configuration for this "
+                           "board's revision");
+    }
+    /* its loadables (TF-A's left out: the machine is it) and its tree */
+    for (int i = 0; (name = fdt_stringlist_get(fit, conf, "loadables", i,
+                                                NULL)); i++) {
+        node = fdt_subnode_offset(fit, images, name);
+        type = node >= 0 ? fdt_getprop(fit, node, "type", NULL) : NULL;
+        if (!type || !strcmp(type, "firmware")) {
+            continue;
+        }
+        if (!fo_falcon_image(s, node, false)) {
+            return fo_spl_fail("an image of the installer could not be "
+                               "loaded");
+        }
+        if (!strcmp(type, "kernel") &&
+            !fo_fit_addr(fit, node, "entry", &entry)) {
+            fo_fit_addr(fit, node, "load", &entry);
+        }
+    }
+    name = fdt_getprop(fit, conf, "fdt", NULL);
+    node = name ? fdt_subnode_offset(fit, images, name) : -1;
+    if (node < 0 || !fo_fit_addr(fit, node, "load", &fdt_at) ||
+        !fo_falcon_image(s, node, true)) {
+        return fo_spl_fail("no device tree in the installer");
+    }
+    if (!entry) {
+        return fo_spl_fail("no kernel in the installer");
+    }
+    s->entry_x0 = fdt_at;
+    qemu_log("flipper-one: SPL (Falcon): the kernel at 0x%" HWADDR_PRIx
+             ", %s at 0x%" HWADDR_PRIx "\n", entry,
+             (const char *)fdt_getprop(fit, conf, "description", NULL) ?: name,
+             fdt_at);
+    return entry;
+}
+
 static void fo_rk_cpu_off(ARMCPU *cpu)
 {
     arm_set_cpu_power_state(cpu, PSCI_OFF);
@@ -917,6 +1091,7 @@ static void fo_rk_power_bh(void *opaque)
     int want = s->rk_want;
     hwaddr entry = 0;
 
+    s->entry_x0 = 0;
     if (want != RK_OFF && !s->rk_rail) {
         want = RK_OFF;
     }
@@ -942,6 +1117,9 @@ static void fo_rk_power_bh(void *opaque)
     } else if (s->uboot) {                      /* the DDR blob, then SPL */
         rk3576_ddr_blob(&s->rk3576, MACHINE(s)->ram_size);
         entry = fo_spl(s);
+    } else if (s->falcon) {                     /* ... SPL in Falcon mode */
+        rk3576_ddr_blob(&s->rk3576, MACHINE(s)->ram_size);
+        entry = fo_falcon(s);
     } else {
         if (!s->rk_nimages) {
             fo_rk_save_images(s);               /* the first start: as loaded */
@@ -963,6 +1141,7 @@ static void fo_rk_power_bh(void *opaque)
             arm_emulate_firmware_reset(cs, 2);  /* as QEMU's own direct boot,
                                                    or TF-A to BL33 */
             cpu_set_pc(cs, entry);
+            cpu->env.xregs[0] = s->entry_x0;
             arm_rebuild_hflags(&cpu->env);
         } else {
             fo_rk_cpu_off(cpu);
@@ -1100,7 +1279,8 @@ static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
     s->rk3576.saradc_in = flipper_one_saradc;
     s->rk3576.saradc_in_opaque = s;
     qdev_prop_set_bit(DEVICE(&s->rk3576), "start-on",
-                      ms->kernel_filename != NULL || s->uboot);
+                      ms->kernel_filename != NULL || s->uboot ||
+                      s->falcon);
     /* its I2C2 is the main board's bus, the MCU's PIO I2C's too */
     object_property_set_link(OBJECT(&s->rk3576), "i2c2-bus",
                              OBJECT(s->main_bus.bus), &error_abort);
@@ -1182,11 +1362,12 @@ static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
         rk_sai_set_source(sai, nau8822_adc, codec);
         nau8822_headset_mic(codec, s->headset == FO_HEADSET_IN);
     }
-    if (s->uboot && ms->kernel_filename) {
-        error_report("flipper-one: uboot=on or -kernel, not both");
+    if ((s->uboot != 0) + (ms->kernel_filename != NULL) +
+        (s->falcon != NULL) > 1) {
+        error_report("flipper-one: one of uboot=on, falcon=FILE, -kernel");
         exit(1);
     }
-    if (!ms->kernel_filename && !s->uboot) {
+    if (!ms->kernel_filename && !s->uboot && !s->falcon) {
         qemu_register_reset(flipper_one_rk3576_reset, &s->rk3576);
         return;
     }
@@ -1197,7 +1378,7 @@ static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
     s->binfo.loader_start = RK3576_DRAM_BASE + RK3576_TFA_SIZE;
     s->binfo.board_id = -1;
     s->binfo.psci_conduit = QEMU_PSCI_CONDUIT_SMC;
-    s->binfo.firmware_loaded = s->uboot;
+    s->binfo.firmware_loaded = s->uboot || s->falcon;
     arm_load_kernel(&s->rk3576.cpu[0], ms, &s->binfo);
     /* (after arm_load_kernel's: reset handlers run in that order) */
     s->linux_boot = true;
@@ -1462,6 +1643,20 @@ static void flipper_one_set_uboot(Object *obj, bool value, Error **errp)
     FLIPPER_ONE(obj)->uboot = value;
 }
 
+static char *flipper_one_get_falcon(Object *obj, Error **errp)
+{
+    return g_strdup(FLIPPER_ONE(obj)->falcon);
+}
+
+static void flipper_one_set_falcon(Object *obj, const char *value,
+                                   Error **errp)
+{
+    FlipperOneState *s = FLIPPER_ONE(obj);
+
+    g_free(s->falcon);
+    s->falcon = *value ? g_strdup(value) : NULL;
+}
+
 static char *flipper_one_get_rev(Object *obj, Error **errp)
 {
     return g_strdup(FLIPPER_ONE(obj)->rev ?: FO_REV_DEFAULT);
@@ -1518,6 +1713,12 @@ static void flipper_one_class_init(ObjectClass *oc, const void *data)
         "Start the RK3576 at U-Boot proper from its microSD card, as SPL "
         "loads it from u-boot.itb (sector 16384), the machine in TF-A's "
         "place and the DDR blob's (in -kernel's stead)");
+    object_class_property_add_str(oc, "falcon", flipper_one_get_falcon,
+                                  flipper_one_set_falcon);
+    object_class_property_set_description(oc, "falcon",
+        "Start the RK3576 at a FIT for SPL's Falcon mode, as the Flipper OS "
+        "installer is: its kernel, ramdisk and device tree, as SPL and TF-A "
+        "would");
     object_class_property_add_str(oc, "rev", flipper_one_get_rev,
                                   flipper_one_set_rev);
     object_class_property_set_description(oc, "rev",

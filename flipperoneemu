@@ -142,6 +142,15 @@ def cmd_run(args):
         if args.kernel_args:
             die("--uboot: the boot entry's options are U-Boot's to give; "
                 "no --kernel-args")
+    if getattr(args, "installer", None):
+        if args.linux is not None or args.kernel_args:
+            die("--installer: on its own (it is the RK3576's start, with its "
+                "own kernel and options)")
+        fit = pathlib.Path(args.installer).resolve()
+        if not fit.is_file() or "," in str(fit):
+            die(f"--installer: no {args.installer} (or a comma in its path)")
+        cmd += ["-machine", f"falcon={fit},rev={board_rev(d)}"] + \
+            device_disks(d, None)
     if args.linux is not None:
         cmd += linux_args(d, args.linux, args.kernel_args,
                           getattr(args, "uboot", False))
@@ -445,6 +454,45 @@ def terminal(args, sock, what, enter):
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old)
 
 
+def board_rev(d):
+    """the board revision the device's MCU firmware is for (f0b0c1, f0b1c2)"""
+    try:
+        uf2 = json.loads((d / "firmware.json").read_text())["uf2"]
+        return "f0b1c2" if "-f2-" in pathlib.Path(uf2).name else "f0b0c1"
+    except (OSError, ValueError, KeyError):
+        return "f0b0c1"
+
+
+def device_disks(d, info):
+    """QEMU's arguments for the device's microSD card and UFS. The card: a
+    build's image the first time (@info: its os.json; QEMU's SD cards are a
+    power of 2 in size: 8 GiB, sparse), or without one blank; the device's
+    from then on. The UFS, the Flipper One's own 64 GB: blank (sparse) the
+    first time, as one that nothing was installed on"""
+    card = d / "sd.img"
+    if not card.exists():
+        if info:
+            zst = OS_DIR / str(info["build"]) / \
+                f"debian-512-flipper-one-{info['build']}.img.zst"
+            if not zst.exists():
+                die(f"no {zst.relative_to(ROOT)}: run scripts/fetch_os.py")
+            print(f"{d.name}: its microSD card, from build {info['build']}")
+            subprocess.run(["zstd", "-q", "-d", "--sparse", "-o", str(card),
+                            str(zst)], check=True)
+        else:
+            print(f"{d.name}: its microSD card, blank")
+            with open(card, "wb"):
+                pass
+        os.truncate(card, 8 << 30)
+    ufs = d / "ufs.img"
+    if not ufs.exists():
+        with open(ufs, "wb"):
+            pass
+        os.truncate(ufs, 64 * 10**9)
+    return ["-drive", f"if=sd,format=raw,file={card}",
+            "-drive", f"if=none,id=ufs,format=raw,file={ufs}"]
+
+
 def linux_args(d, build, more="", uboot=False):
     """QEMU's arguments for Flipper OS's kernel on the RK3576: a build's (the
     newest fetched unless told), with the device tree of the board revision
@@ -460,37 +508,11 @@ def linux_args(d, build, more="", uboot=False):
     if not builds:
         die("no Flipper OS build: run scripts/fetch_os.py")
     info = json.loads(builds[-1].read_text())
-    target = "f1"
-    try:
-        uf2 = json.loads((d / "firmware.json").read_text())["uf2"]
-        target = "f2" if "-f2-" in pathlib.Path(uf2).name else "f1"
-    except (OSError, ValueError, KeyError):
-        pass
-    rev = {"f1": "rev-f0b0c1", "f2": "rev-f0b1c2"}[target]
+    rev = "rev-" + board_rev(d)
     dtb = ROOT / info["dtbs"] / "rockchip" / f"rk3576-flipper-one-{rev}.dtb"
     if not uboot and not dtb.exists():
         die(f"no {dtb.relative_to(ROOT)}")
-    # its microSD card: the build's image, the first time (QEMU's SD cards
-    # are a power of 2 in size: 8 GiB, sparse); the device's from then on
-    card = d / "sd.img"
-    if not card.exists():
-        zst = OS_DIR / str(info["build"]) / \
-            f"debian-512-flipper-one-{info['build']}.img.zst"
-        if not zst.exists():
-            die(f"no {zst.relative_to(ROOT)}: run scripts/fetch_os.py")
-        print(f"{d.name}: its microSD card, from build {info['build']}")
-        subprocess.run(["zstd", "-q", "-d", "--sparse", "-o", str(card),
-                        str(zst)], check=True)
-        os.truncate(card, 8 << 30)
-    # its UFS, the Flipper One's own 64 GB: blank (sparse) the first time,
-    # as one that nothing was installed on; the device's from then on
-    ufs = d / "ufs.img"
-    if not ufs.exists():
-        with open(ufs, "wb"):
-            pass
-        os.truncate(ufs, 64 * 10**9)
-    disks = ["-drive", f"if=sd,format=raw,file={card}",
-             "-drive", f"if=none,id=ufs,format=raw,file={ufs}"]
+    disks = device_disks(d, info)
     if uboot:                   # (SPL's, TF-A's and the DDR blob's parts:
         return ["-machine", f"uboot=on,rev={rev[4:]}"] + disks  # the machine)
     return ["-kernel", str(ROOT / info["kernel"]), "-dtb", str(dtb),
@@ -623,6 +645,11 @@ def main():
                                 "on the device: its boot menu on the Flipper's "
                                 "screen (up, down, OK), the boot entry's own "
                                 "options (the machine plays SPL and TF-A)")
+            p.add_argument("--installer", metavar="FIT",
+                           help="start the RK3576 at the Flipper OS installer "
+                                "(its installer-falcon.itb), as rockusb's "
+                                "download-boot does in the MaskROM: it installs "
+                                "to the UFS or the microSD card (with --net)")
             p.add_argument("--net", action="store_true",
                            help="a cable in the first Ethernet port, to this "
                                 "PC's network (through passt)")

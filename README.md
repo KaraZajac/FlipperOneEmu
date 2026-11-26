@@ -143,6 +143,13 @@ scripts/fetch_os.py                  # a Flipper OS build: its kernel, initrd an
                                      # a key a moment, U-Boot is slow here), the entry's own
                                      # options; `s` on the console at power-on stops it at
                                      # U-Boot's shell
+./flipperoneemu run --installer FIT --net  # the Flipper OS installer, as rockusb's
+                                     # download-boot starts it from the MaskROM: its
+                                     # installer-falcon.itb (dl-linux-images.flipp.dev/
+                                     # falcon-installer/, BUILD/flipper-one/), the machine
+                                     # as SPL in Falcon mode. Its interface on the screen,
+                                     # the server's builds; installing to the UFS waits on
+                                     # the UFS being provisioned (PLAN)
 ./flipperoneemu console [-n NAME] [CMD]  # Linux's console (the RK3576's UART0); Ctrl-] leaves
 ./flipperoneemu console --usb ...    # ... Flipper OS's serial port on its USB gadget
                                      # (a computer plugged in: Ctrl+Shift+U)

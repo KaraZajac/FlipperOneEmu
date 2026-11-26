@@ -1922,3 +1922,50 @@ register headers.
     - **Checked.** linux_check reads the three codes, then channel 1 again after
       the MCU's `saradc set_id 6`. The smoke test and linux_check's default and
       U-Boot modes pass.
+
+87. **The Flipper OS installer runs.**
+    - **What it is.** The docs install Flipper OS this way: the RK3576 in its
+      MaskROM, `rockusb download-boot installer-falcon-loader.bin` from a
+      computer, and the installer, a Linux of its own, installs to the UFS or the
+      microSD card over Ethernet. The loader carries a FIT for U-Boot's SPL in
+      Falcon mode, also published alone as `installer-falcon.itb`. It holds
+      TF-A in three parts, the kernel (zstd, at 0x50000000), its ramdisk
+      (0x5e000000) and a device tree per revision (0x5c000000), picked by
+      `compatible` (`flipper,one-rev-REV`). The tree's `/chosen` has the ramdisk
+      and the kernel's arguments, and SPL adds `/memory`.
+    - **The machine as SPL in Falcon mode.** `falcon=FILE` (the launcher's `run
+      --installer FIT`) does at the RK3576's start what log 75 does for U-Boot:
+      the DDR blob's part, then the configuration for the board's revision. The
+      kernel is decompressed (libzstd, a dependency QEMU has already), the
+      ramdisk and the tree go in place, and the tree gets `/memory` after TF-A's
+      2 MiB, as the direct boot has it. The kernel starts at EL2 with the tree's
+      address in x0. TF-A's and OP-TEE's parts are left out; PSCI and SCMI are
+      the machine's. An installer run needs no OS build: the microSD card is the
+      device's own, or blank.
+    - **What it does.** The kernel and its BusyBox userland come up in about
+      30 s, with DHCP on both ports; with `--net` the first reaches the
+      internet through passt. The interface comes up on the Flipper's screen
+      ("FlipperOS Installation", "Device type: Flipper One rev. F0B0C1
+      [flipper-one]") and as a TUI on the console. It finds the update server
+      ("2 target(s), 430 build(s) found", nightly #158), the target (`/dev/sda
+      [UFS] 59.6 GiB`, the emulated UFS), and the MCU's firmware (0.1.0, f1),
+      which it would update after the system. Its menus answer the Flipper's
+      buttons through the MCU.
+    - **Where it stops.** "installation failed: /dev/sda is UFS but has no boot
+      LU, so the boot ROM would have nothing to boot; reprovision the device
+      first". The installer carries a scheme for the UFS (in its strings):
+      - LU 0 "system", the rest of the capacity;
+      - LU 1 and 2, "u-boot-a" and "u-boot-b": enhanced1, 16 MiB, boot LUs A and
+        B, `bBootLunEn` picking one;
+      - LU 3 "recovery": enhanced1, 128 MiB;
+      - `bBootEnable` on, and WriteBooster if the device offers it.
+
+      It reads and writes the Configuration Descriptor over `/dev/bsg/ufs-bsg`
+      and offers "Reprovision UFS". QEMU's UFS has one LU and no boot LU, a
+      read-only `bBootLunEn`, and a Configuration Descriptor it only answers
+      reads of (patch 0015's).
+    - **Next: provisioning.** LUs carved from the device's image by a written
+      Configuration Descriptor, their unit descriptors (`bBootLunID`,
+      `bMemoryType`), enhanced1 in the Geometry Descriptor, a writable
+      `bBootLunEn`, and the boot W-LUN reading the enabled boot LU. Then a boot
+      from the UFS: SPL from the boot LU.
