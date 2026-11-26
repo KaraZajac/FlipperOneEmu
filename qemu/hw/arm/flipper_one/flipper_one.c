@@ -42,6 +42,7 @@
 #include "target/arm/arm-powerctl.h"
 #include "target/arm/multiprocessing.h"
 #include <libfdt.h>
+#include "qemu/guest-random.h"
 #include <zstd.h>
 
 #define TYPE_FLIPPER_ONE MACHINE_TYPE_NAME("flipper-one")
@@ -1436,6 +1437,28 @@ static void flipper_one_rk3576_reset(void *opaque)
 }
 
 /*
+ * The kernel's tree, booted directly: its /chosen gets a seed for the RNG
+ * (from this PC, or -seed's), as U-Boot gives one on the device, so that
+ * its entropy is there from the start. Not U-Boot's seed for KASLR: on
+ * these cores (no E0PD) KASLR forces KPTI, whose switch of ASID at every
+ * entry to the kernel and return from it costs QEMU its whole TLB each
+ * time, and a boot to the login half again as long (`run --uboot` has it,
+ * as the device does). The images are kept as loaded, so each start of
+ * this run has the same seed.
+ */
+static void flipper_one_modify_dtb(const struct arm_boot_info *info,
+                                   void *fdt)
+{
+    uint8_t rng[32];
+    int chosen = fdt_path_offset(fdt, "/chosen");
+
+    if (chosen < 0 || qemu_guest_getrandom(rng, sizeof(rng), NULL)) {
+        return;
+    }
+    fdt_setprop(fdt, chosen, "rng-seed", rng, sizeof(rng));
+}
+
+/*
  * The CPU, the RK3576, and its DRAM at 0x40000000 (-m, 4 GiB unless told).
  * A kernel (-kernel, -dtb, -initrd, -append) starts on it when the MCU
  * switches its rail on, as U-Boot would start it: at EL2, PSCI from QEMU
@@ -1577,6 +1600,7 @@ static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
     s->binfo.board_id = -1;
     s->binfo.psci_conduit = QEMU_PSCI_CONDUIT_SMC;
     s->binfo.firmware_loaded = s->uboot || s->falcon;
+    s->binfo.modify_dtb = flipper_one_modify_dtb;
     arm_load_kernel(&s->rk3576.cpu[0], ms, &s->binfo);
     /* (after arm_load_kernel's: reset handlers run in that order) */
     s->linux_boot = true;

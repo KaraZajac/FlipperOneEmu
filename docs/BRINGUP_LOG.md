@@ -2247,8 +2247,8 @@ register headers.
       USB/IP: bulk-only transport, a 31-byte command block (USBC: Rockchip's
       command, a sector, a count), the data, a 13-byte status (USBS):
       `chip-info`, `flash-info`, `read START COUNT FILE`, `write START FILE`,
-      `reset`. U-Boot's rockusb takes no flash-info (it answers with a status
-      at once, which fo_rockusb.py says so), and its chip-info is zeros (the
+      `reset`. U-Boot's rockusb takes no flash-info (it answers at once with a
+      status, and fo_rockusb.py says so), and its chip-info is zeros (the
       SoC's code gives it none).
     - **Result.** Eight sectors read in 1.2 s are the card image's; 64 KiB
       written far out on the card read back the same, and are in its image.
@@ -2258,3 +2258,32 @@ register headers.
       on to the menu and Flipper OS (286 s, all of it). The smoke test,
       linux_check (Linux's gadget as before: NCM, MTP, its serial port) and
       the MaskROM mode pass.
+
+96. **The boot's warnings, surveyed; a seed for the RNG, and why not one for
+    KASLR.**
+    - **What the kernel complains of** (Flipper OS booted directly, `dmesg`'s
+      errors and warnings; no unit failed):
+      - **The emulator's:** no GPU (panfrost's resets time out), no video
+        decoder (rkvdec's warm-up times out), the GMAC's CSR clock without a
+        rate ("clk_csr value out of range"), the DDR blob's word without a
+        memory type ("devfreq-event: unsupported memory type 0x0"), the UFS
+        device descriptor without bRefClkGatingWaitTime, and "KASLR disabled
+        due to lack of seed".
+      - **The device's own** (its tree, drivers or packages): the hubs'
+        device links, UCSI (the MCU's PD service is a stub), the GMACs' delay
+        properties, the watchdog's TOPs, the gauge's data memory, a
+        world-writable unit file, an ALSA udev rule.
+    - **A seed for the RNG.** On the device U-Boot gives the kernel seeds from
+      the TRNG. Booted directly it had none. The machine now puts 32 bytes
+      into /chosen's rng-seed (qemu_guest_getrandom: this PC's, or `-seed`'s):
+      "random: crng init done" at 0 s.
+    - **Not one for KASLR.** With a kaslr-seed too, KASLR forces KPTI on these
+      cores, which have no E0PD ("kernel page table isolation forced ON by
+      KASLR"). KPTI switches the ASID at every entry to the kernel and every
+      return from it, and QEMU's TLB has no ASIDs, so each switch flushes it
+      whole. Three boots to the login with the seed: 167, 174, 172 s; without
+      it, 91-111 s. `run --uboot` has KASLR and KPTI, as the device does, and
+      boots as slowly (some 190 s to the login in linux_check's U-Boot
+      mode). An ASID-aware TLB in QEMU would make that cheap: open (PLAN).
+    - **Checked.** Two boots with the RNG's seed alone: 99 and 116 s to the
+      login, KASLR off as before. linux_check passes (443 s).

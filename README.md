@@ -143,7 +143,10 @@ scripts/fetch_os.py                  # a Flipper OS build: its kernel, initrd an
                                      # device: its boot menu on the Flipper's screen (the
                                      # pad's up, down and OK pick a profile and kernel; hold
                                      # a key a moment, U-Boot is slow here), the entry's own
-                                     # options; `s` on the console at power-on stops it at
+                                     # options (KASLR too, as on the device, and with it
+                                     # KPTI, which costs QEMU a TLB flush at every entry to
+                                     # the kernel: it boots half again as slowly here);
+                                     # `s` on the console at power-on stops it at
                                      # U-Boot's shell, where `rockusb 0 mmc 0` makes USB0 a
                                      # Rockusb device, the card behind it (with --usbip 3240:
 scripts/fo_rockusb.py --port 3240 read 0 8 FILE | write START FILE  # Rockusb's Loader
