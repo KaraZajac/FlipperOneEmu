@@ -35,12 +35,14 @@ LAUNCHER = ROOT / "flipperoneemu"
 
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self, name, zoom=2, start=True, linux=False, uboot=False,
-                 cpus=None):
+                 cpus=None, net=False, wifi=False):
         super().__init__()
         self.name = name
         self.linux = linux or uboot     # Flipper OS on the RK3576 too
         self.uboot = uboot              # ... through U-Boot's boot menu
         self.cpus = cpus                # ... on that many of its cores
+        self.net = net                  # ... its Ethernet on this PC's network
+        self.wifi = wifi                # ... an access point near it
         self.dir = ROOT / "devices" / name
         self.state = "connecting"
         self.setWindowTitle(f"{name}: Flipper One (FlipperOneEmu)")
@@ -181,7 +183,9 @@ class MainWindow(QtWidgets.QMainWindow):
         r = self._launch("run", "--detach",
                          *(["--linux"] if self.linux else []),
                          *(["--uboot"] if self.uboot else []),
-                         *(["--cpus", str(self.cpus)] if self.cpus else []))
+                         *(["--cpus", str(self.cpus)] if self.cpus else []),
+                         *(["--net"] if self.net else []),
+                         *(["--wifi"] if self.wifi else []))
         if r.returncode:
             self._say((r.stderr or r.stdout).strip().splitlines()[-1]
                       if (r.stderr or r.stdout).strip() else "could not start")
@@ -338,6 +342,12 @@ def main():
                          "on the screen, the pad to pick an entry")
     ap.add_argument("--cpus", type=int, metavar="N",
                     help="... Linux on N of its eight cores (4: quicker here)")
+    ap.add_argument("--net", action="store_true",
+                    help="... its first Ethernet port on this PC's network "
+                         "(passt)")
+    ap.add_argument("--wifi", action="store_true",
+                    help="... and an access point near it, on this PC's "
+                         "network (passt): an open and a WPA2 network")
     ap.add_argument("--no-start", action="store_true",
                     help="do not start the device; wait for it")
     ap.add_argument("--shot", metavar="FILE.png",
@@ -348,7 +358,8 @@ def main():
     app = QtWidgets.QApplication(sys.argv[:1])
     app.setApplicationName("FlipperOneEmu")
     w = MainWindow(args.name, args.zoom, start=not args.no_start,
-                   linux=args.linux, uboot=args.uboot, cpus=args.cpus)
+                   linux=args.linux, uboot=args.uboot, cpus=args.cpus,
+                   net=args.net, wifi=args.wifi)
     w.show()
     if args.shot:
         def shoot():

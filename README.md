@@ -84,6 +84,10 @@ scripts/fetch_firmware.py    # the MCU firmware's newest build, and the RP2350 b
 scripts/fetch_os.py          # a Flipper OS build (2 GB), for ...
 ./flipperoneemu gui --linux  # ... the whole device: Flipper OS on its RK3576 too
 ./flipperoneemu gui --linux --cpus 4  # ... on four of its eight cores
+./flipperoneemu gui --linux --net --wifi  # ... on this PC's network: its Ethernet, and
+                             # an access point near it (passt): FlipCTL's Network >
+                             # Wi-Fi joins FlipperOneEmu, or FlipperOneEmu-WPA2
+                             # (passphrase flipperone)
 ./flipperoneemu gui --uboot  # ... through U-Boot, as the device boots: its boot menu on
                              # the screen, the pad to pick a profile
 ```

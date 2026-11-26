@@ -303,7 +303,9 @@ def cmd_gui(args):
                                           if args.zoom else []) +
                            (["--linux"] if args.linux else []) +
                            (["--uboot"] if args.uboot else []) +
-                           (["--cpus", str(args.cpus)] if args.cpus else []))
+                           (["--cpus", str(args.cpus)] if args.cpus else []) +
+                           (["--net"] if args.net else []) +
+                           (["--wifi"] if args.wifi else []))
 
 
 def cmd_log(args):
@@ -734,6 +736,12 @@ def main():
             p.add_argument("--cpus", type=int, metavar="N",
                            help="... Linux on N of its eight cores (4 boots "
                                 "quicker here)")
+            p.add_argument("--net", action="store_true",
+                           help="... its first Ethernet port on this PC's "
+                                "network (passt)")
+            p.add_argument("--wifi", action="store_true",
+                           help="... and an access point near it (passt): an "
+                                "open and a WPA2 network to join")
         if name == "gdb":
             p.add_argument("--linux", action="store_true",
                            help="the RK3576's two clusters too (inferiors 2, 3)")
