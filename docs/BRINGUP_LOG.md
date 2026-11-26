@@ -1678,3 +1678,30 @@ register headers.
       holds a key 0.15 s, and presses OK only once the selection has stayed on its
       entry for 1.5 s. The checks pass: the smoke test, the Linux check
       (41, FlipCTL's drawing and its key among them) and the U-Boot one (15).
+
+79. **The MCU's RPC: its screen, streamed.** The firmware's CLI has `rpc`: after a
+    ready byte (0xFD) it talks the protocol of flipperdevices/
+    flipperone-mcu-protobuf. Messages go each way after their length, a varint. A
+    `StartVirtualDisplayRequest` gets a `Frame` for each change of the screen (258x144,
+    8-bit grey, sent PLAIN). `ButtonEvent`s and `TouchEvent`s are injected as given:
+    a key is PRESS, SHORT and RELEASE, sent by the computer, since the firmware derives
+    nothing from them. It is what a computer's app would use, over USB.
+    scripts/fo_rpc.py speaks it, with the standard library only: frames to PNGs, keys
+    pressed, the session closed.
+    - **The stream works.** Over the CLI's UART, at its 115200 baud, a frame takes
+      about 3.5 s. Each is the firmware's own canvas, whose columns 1-256 are the
+      screen's, pixel for pixel: the smoke test now checks that.
+    - **The firmware's FW-02.** A frame drawn while one is still on its way is lost.
+      `rpc_screen_fb_callback()` only tries the stream's mutex and returns without a
+      copy or a flag, and the thread holds that mutex through a whole send. A
+      screen that then stays as it is never reaches the computer. Over the UART
+      that is most changes.
+    - **Keys over the UART.** Injected while frames go, they came late or not at
+      all: Settings, pressed through the RPC, showed its key pressed and opened its
+      menu only seconds later, or not in 10 s. The firmware's UART transport moves
+      received bytes into its pipe from its interrupt. So where the keys wait (the
+      firmware's input or GUI threads, or the RP2350's UART under a steady transmit)
+      is not found yet. The smoke test checks the stream alone.
+    - **Found on the way:** a session closed while a frame is on its way still
+      sends the rest of it before the CLI's prompt comes back. The smoke test waits
+      for that prompt.

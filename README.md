@@ -150,6 +150,9 @@ scripts/fo_picoboot.py --port 3240 load FIRMWARE.uf2 --reboot
                                      # CLI's `power boot` (or --bootsel), a computer
                                      # plugged in (Ctrl+Shift+U)
 ./flipperoneemu log [-n NAME]        # the firmware's log, from its RTT buffer
+scripts/fo_rpc.py [-n NAME] [--frames N] [--press KEY ...]  # the firmware's RPC, as a
+                                     # computer's app speaks it: its screen streamed
+                                     # to PNGs, its keys pressed (--usb: over USB)
 ./flipperoneemu cli [-n NAME] [CMD]  # the firmware's CLI (UART1); Ctrl-] leaves
 ./flipperoneemu cli --usb ...         # ... on its USB serial port (a computer plugged in)
 ./flipperoneemu where [-n NAME]      # where each core is: its PC and function

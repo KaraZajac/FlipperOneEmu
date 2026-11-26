@@ -21,6 +21,8 @@ Boots a throwaway device, devices/smoke-PID (removed at the end unless
 - the buttons and the touchpad: `input dump` sees a key and a touch sent on
   the front-panel link; a headset in the jack, its mic, a button on it;
 - Power's Flipper OS menu over the frame, and Stop there: the MCU's desktop;
+  the RPC (the CLI's `rpc`, scripts/fo_rpc.py): the screen streamed, as it
+  shows;
 - a charger plugged in, then pulled out: the charger's interrupts through
   the main board's expander, `power show` charging;
 - a computer plugged in: it enumerates the MCU's USB device, and the CLI
@@ -55,6 +57,9 @@ import tempfile
 import threading
 import time
 import zlib
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import fo_rpc                           # noqa: E402  (the RPC's client)
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 LAUNCHER = ROOT / "flipperoneemu"
@@ -299,6 +304,14 @@ def shows(frame, screen):
                frame[y * FRAME_W:y * FRAME_W + LCD_W] for y in range(H))
 
 
+def shows_gui(frame, screen):
+    """the firmware's own canvas (258 columns, as the RPC streams it) on the
+    screen: its columns 1-256 are the ones that show"""
+    return len(frame) == FRAME_W * H and all(
+        screen[y * LCD_W:(y + 1) * LCD_W] ==
+        frame[y * FRAME_W + 1:y * FRAME_W + 1 + LCD_W] for y in range(H))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--keep", action="store_true",
@@ -536,6 +549,23 @@ def body(check, name, d, out, port):
           until(lambda: panel.screen() not in (menu, before), 3))
     time.sleep(1.0)
     panel.save(out / "desktop.png")
+
+    # ------------------------------------------- the RPC: the screen
+    # (the CLI's `rpc`, as a computer's app speaks it; over the UART here,
+    # a frame each 3.5 s or so at its 115200 baud)
+    try:
+        rpc = fo_rpc.Rpc(d / "cli.sock")
+        rpc.start_screen()
+        first = rpc.frame(15)
+        check("the RPC (the CLI's `rpc`): the screen streamed, as it shows",
+              first is not None and first[:2] == (FRAME_W, H) and
+              shows_gui(first[2], panel.screen()), first and first[:2])
+        rpc.stop_screen()
+        rpc.close()
+        # (a frame on its way still ends before the CLI's prompt is back)
+        cli(d, "", r"control>:\s*$", 15)
+    except (OSError, TimeoutError, ValueError) as e:
+        check("the RPC (the CLI's `rpc`)", False, str(e))
 
     # ---------------------------------- a charger, with the MCU in charge
     # (with the Linux side off, the main board's expander is the MCU's)

@@ -18,8 +18,9 @@ screen and its CLI.
 - ☑ The coprocessors: GPIO (CP0), double-precision (CP4 and CP5, the DCP, 2026-11-24),
       redundancy (CP7, the boot ROM's). QEMU patch 0001 lets a machine have them
 - ◐ Boot: the boot ROM verifies the partition table and starts the firmware from
-      partition A (QMI direct mode, the flash, ATRANS, SHA-256); OTP reads as blank,
-      try-before-you-buy images and the watchdog's reboots to come
+      partition A (QMI direct mode, the flash, ATRANS, SHA-256); try-before-you-buy:
+      the flash-update boot of partition B and the image's buy, as an update from
+      Flipper OS makes them (2026-11-25); OTP reads as blank
 - ☑ The firmware's settings (its key-value store in the flash's NVM partition):
       written through the boot ROM's program and erase, kept across restarts
       (2026-11-24)
@@ -61,7 +62,10 @@ screen and its CLI.
       supplies on the control expander, 2026-11-24); the headphone jack: its switch,
       and a headset's mic and buttons on the ADC (2026-11-24)
 - ☑ The desktop and menus, the buttons and the touchpad from the window (2026-11-24)
-- ☐ RPC: the screen stream and input, through the CLI's `rpc`
+- ◐ RPC: the screen stream and input, through the CLI's `rpc`: the screen streamed
+      over the CLI's UART, frame for frame as it shows (scripts/fo_rpc.py, the smoke
+      test; the firmware's FW-02) (2026-11-25); keys through it arrive late over the
+      UART while frames go, to look into; over USB
 - ☑ USB: the RP2350's controller as a device, and a computer at the cable's end that
       enumerates it: the firmware's CDC port (`37C1:F101`) on `devices/NAME/usb.sock`
       (2026-11-24); BOOTSEL: the boot ROM's own USB boot enumerates (2026-11-24); USB/IP,

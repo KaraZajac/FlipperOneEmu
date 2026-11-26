@@ -22,6 +22,7 @@ keeps its row, with the build that fixed it.
 | No. | What happens | Builds | Kind | Reported |
 | --- | --- | --- | --- | --- |
 | FW-01 | After a NACK on the main board's bus, that bus's state machine runs off its program, and every later transfer on the bus times out until the MCU restarts | dev 87f6cca3 | bus lost | no |
+| FW-02 | The RPC's screen stream loses a frame drawn while it is still sending the one before; when the screen then stays as it is, the computer's view of it stays stale until the next change | dev 2e3290e4 | stale screen over RPC | no |
 | OS-01 | Past a thermal zone's last trip, Linux cannot set the TSADC's alarm ("Failed to set trips: -34") and leaves it armed below the temperature, so it goes off at every sample until the chip is off | Flipper OS 2501 | log errors, alarm left on | no |
 | OS-02 | With no computer on the USB gadget, the getty on its serial port (flipserial0) blocks while holding the console's lock, and now and then the debug UART's and tty1's gettys never start: no login | Flipper OS 2501 | no console login | no |
 | OS-03 | The image's boot entries for the 6.1.172 kernel (one per profile) cannot boot: their `vmlinuz` is the kernel's configuration, and their device-tree directory has no Flipper One tree. U-Boot lists them in its boot menu, and picking one fails ("Bad Linux ARM64 Image magic!") | Flipper OS 2501 | four of nine boot entries do not boot | no |
@@ -65,6 +66,35 @@ keeps its row, with the build that fixed it.
 - **A fix, for the firmware:** one more forced `out null, 32` after the drain, which
   empties the OSR with nothing left to refill it from.
 - **Log:** entry 53.
+
+### FW-02: the RPC's screen stream loses a frame drawn while it sends
+
+- **What happens:** a computer that streams the MCU's screen over the RPC (the CLI's
+  `rpc`, a `StartVirtualDisplayRequest`) gets a frame for each change of the screen,
+  except one that comes while a frame is still on its way. Then it gets none: when
+  the screen then stays as it is, as a menu does once it is drawn, the computer's
+  view stays stale until the next change. Here, over the CLI's UART: Settings
+  pressed through the RPC on the desktop; the frame of its key shown pressed came,
+  and then none for 18 s, while the Settings menu came to the screen.
+- **Why:** `rpc_screen_fb_callback()` (applications/services/rpc/rpc_screen_stream.c),
+  which the GUI calls with each new frame, takes the stream's mutex with no wait,
+  `furi_mutex_acquire(stream->mutex, 0)`, and returns if it cannot: the frame is
+  neither copied nor flagged. The stream's thread holds that mutex for the whole of
+  `rpc_screen_send_frame()`, the frame's sending. So a frame drawn during a send is
+  lost, and the GUI does not draw an unchanging screen again.
+- **When:** whenever the screen changes while a frame goes. Over the CLI's UART at
+  115200 baud a frame (37 KB) takes about 3.5 s, so it is most changes. Over USB it
+  takes milliseconds, so it is the last frame of a quick run of them (an animation's
+  end) now and then.
+- **What of the emulator is in its path:** the UART carries the frames at its baud
+  rate, as on the device. The callback and the thread are the firmware's.
+- **Seen on:** MCU firmware dev-25112026-2e3290e4, in the emulator. Not tried on a
+  real Flipper One.
+- **A fix, for the firmware:** when the copy cannot be made, set a flag that the
+  frame was lost (or keep a second buffer), and have the thread, after a send, take
+  the GUI's current frame if one was lost (`gui_update()` draws it again). A
+  computer can ask for a fresh frame meanwhile: a stop and a start of the stream.
+- **Log:** entry 79.
 
 ### OS-01: the TSADC's alarm, past the last trip, with a sensor's trim
 
