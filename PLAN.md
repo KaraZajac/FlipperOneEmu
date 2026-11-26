@@ -125,7 +125,9 @@ screen and its CLI.
       keys reaching it through the MCU (2026-11-24)
 - ◐ The CPU's state, power off, reboot: Linux's states reach the MCU's Host service,
       which cuts the rail after a power-off; its CPU app powers Linux on again
-      (2026-11-24); the console UART between the two; the MCU update over I2C
+      (2026-11-24); the MCU's firmware updated from Flipper OS over I2C, staged in its
+      other slot and booted by the boot ROM's flash-update boot, bought (2026-11-25); the
+      console UART between the two
 
 ## M5: Flipper OS's hardware ☐
 - ☑ Ethernet (GMAC, dwmac 4.20a, RTL8211F): both ports and their PHYs; the first on the

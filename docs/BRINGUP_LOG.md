@@ -1627,3 +1627,27 @@ register headers.
       through 192.168.77.1, beside port 1's passt network. The LAN host's ping is
       answered, and so is the Flipper's ping of it. The Linux check now has port 2
       on that LAN.
+
+77. **The MCU's firmware, updated from Flipper OS.** Flipper OS's kernel has an
+    update path for the MCU, in its `flipper-one-fw-update` driver. An image (a UF2,
+    or raw) written to the firmware class, `/sys/class/firmware/flipper-one-mcu/`,
+    goes to the MCU over the I2C link in 256-byte blocks. Each goes to the window at
+    0xf040, with a CRC, commands and a status at 0xf000. The MCU's updater writes it
+    to its inactive slot. At Linux's next reboot or power-off, the MCU cuts the
+    host's power and asks the boot ROM for a flash-update boot of that slot. The new
+    image has to "buy" itself from the boot ROM, its try-before-you-buy, before the
+    boot ROM's watchdog runs out, or the boot ROM reverts it.
+    - **It works as it is.** The emulator needed no change. Flipper OS fetched the
+      MCU's older build (87f6cca3, 1.1 MB) over port 1's network, from this PC's
+      loopback through passt's gateway. The upload took 5 minutes, about 3.7 KB/s:
+      the I2C link carries it a byte at a time, each an interrupt on either side.
+      It was staged in slot B. At the reboot the MCU booted the staged image
+      ("Booting the staged image at 0x00782000"), the boot ROM's flash-update boot
+      started it, and it bought itself 323 ms in ("Flash-update boot: committing new
+      image", "Current FW slot: B"). The MCU then powered Linux again, which read
+      slot B. So the real boot ROM's partition table, flash-update boot and explicit
+      buy all run on the RP2350's model.
+    - **The check.** `scripts/linux_check.py --mcu-update` does it with the MCU's
+      own build. It checks the updater's answers, the upload and the staging, the
+      boot ROM's switch and the buy, and Flipper OS reading slot B and a
+      flash-update boot after it.

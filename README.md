@@ -139,6 +139,10 @@ scripts/fetch_os.py                  # a Flipper OS build: its kernel, initrd an
 ./flipperoneemu console [-n NAME] [CMD]  # Linux's console (the RK3576's UART0); Ctrl-] leaves
 ./flipperoneemu console --usb ...    # ... Flipper OS's serial port on its USB gadget
                                      # (a computer plugged in: Ctrl+Shift+U)
+                                     # The MCU's firmware from Flipper OS, as on the
+                                     # device: a .uf2 written to /sys/class/firmware/
+                                     # flipper-one-mcu/data (loading 1, then 0) goes to the
+                                     # MCU over I2C; Linux's next reboot boots it
 socat - UNIX-CONNECT:devices/NAME/monitor.sock  # QEMU's monitor: device_add usb-kbd,bus=usb-bus.1
                                      # plugs a keyboard into the RK3576's USB1
 scripts/fo_picoboot.py --port 3240 load FIRMWARE.uf2 --reboot

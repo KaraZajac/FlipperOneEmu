@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 """Headless check of the whole device: does Flipper OS run beside the MCU?
 
-    scripts/linux_check.py [--keep] [--fresh] [--uboot] [--out DIR]
+    scripts/linux_check.py [--keep] [--fresh] [--uboot | --mcu-update] [--out DIR]
 
 Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
 (removed at the end unless --keep), and checks it through its sockets:
@@ -64,6 +64,15 @@ the DRAM past TF-A's 2 MiB; Flipper OS reaches its login; and a reboot
 comes back to U-Boot's menu, and from there to the kernel again. A
 computer is on the USB-C port from the start: the boot entry's options
 mask no getty (OS-02).
+
+With --mcu-update it checks the MCU's firmware updated from Flipper OS, as
+the device's own update does it (needs passt): the MCU's updater answers over
+I2C (its version, slot A, a normal boot); Flipper OS fetches the MCU's own
+image over port 1's network (from this PC's loopback) and writes it to the
+firmware class, which sends it to the MCU over I2C to be staged in slot B; at
+a reboot the MCU boots it (the boot ROM's flash-update boot), buys it (its
+try-before-you-buy), and powers Flipper OS again, which reads slot B and a
+flash-update boot.
 
 A first boot takes several minutes (Flipper OS sets itself up); the first
 run keeps its card as build/linux-check/sd.img, as it is after the checked
@@ -640,6 +649,63 @@ def uboot_checks(check, d, out):
     return con
 
 
+def mcu_update_checks(check, d, out, port, fw):
+    linux, mcu = d / "linux.log", d / "mcu.log"
+    sysfs = "/sys/bus/platform/drivers/flipper-one-fw-update/*"
+    if not check("Flipper OS reaches its login",
+                 wait_text(linux, r"login:", 1200)):
+        return None
+    con = Console(d / "linux.sock")
+    check("its console answers", con.ready(300))
+
+    def state():
+        got = con.run("for f in firmware_version staged_version boot_slot "
+                      f"boot_type; do echo $(cat {sysfs}/$f); done", 60) or []
+        return [line.strip() for line in got]
+    now = state()
+    check("the MCU's updater, over I2C: its firmware's version, slot A, a "
+          "normal boot",
+          len(now) == 4 and now[0] != "0.0.0" and now[2:] == ["A", "normal"],
+          str(now))
+    size = fw.stat().st_size
+    got = con.run("G=$(ip route | awk '/default/{print $3; exit}'); "
+                  f"curl -s -o /tmp/fw.uf2 http://$G:{port}/{fw.name} && "
+                  "stat -c %s /tmp/fw.uf2", 300)
+    t0 = time.time()
+    sent = bool(got) and got[-1].strip() == str(size) and con.run(
+        "D=/sys/class/firmware/flipper-one-mcu; "
+        "echo 1 | sudo tee $D/loading >/dev/null; "
+        "sudo dd if=/tmp/fw.uf2 of=$D/data bs=64k status=none; "
+        "echo 0 | sudo tee $D/loading >/dev/null; echo sent", 300) == ["sent"]
+    idle = False
+    while sent and time.time() - t0 < 1800:
+        status = con.run("cat /sys/class/firmware/flipper-one-mcu/status", 60)
+        if status and status[0].strip() == "idle":
+            idle = True
+            break
+        time.sleep(10)
+    now = state()
+    check(f"its own image ({size} bytes) over port 1's network, to the MCU "
+          f"through the firmware class, staged in slot B "
+          f"({time.time() - t0:.0f} s over I2C)",
+          idle and len(now) == 4 and now[1] != "0.0.0" and
+          wait_text(mcu, r"\[Updater\] Image staged at", 10), f"{got} {now}")
+    mmark, lmark = len(text_of(mcu)), len(text_of(linux))
+    con.send("sudo systemctl reboot")
+    check("reboot: the MCU boots the staged image (the boot ROM's flash-update "
+          "boot) and buys it",
+          wait_text(mcu, r"Booting the staged image", 600, mmark) and
+          wait_text(mcu, r"Flash-update boot: committing new image", 120,
+                    mmark) and
+          wait_text(mcu, r"Current FW slot: B", 60, mmark))
+    back = wait_text(linux, r"login:", 1500, lmark) and con.ready(300)
+    now = state() if back else []
+    check("... and powers Flipper OS again, which reads slot B and a "
+          "flash-update boot", back and now[2:] == ["B", "flash-update"],
+          str(now))
+    return con
+
+
 def log_checks(check, d):
     k = text_of(d / "linux.log")
     bad = re.findall(r"Oops|Kernel panic|BUG: |Unable to handle kernel|"
@@ -661,6 +727,9 @@ def main():
     ap.add_argument("--uboot", action="store_true",
                     help="the boot through U-Boot instead (run --uboot), "
                     "from the kept card")
+    ap.add_argument("--mcu-update", action="store_true",
+                    help="the MCU's firmware updated from Flipper OS instead, "
+                    "from the kept card (needs passt)")
     ap.add_argument("--out", help="where the screenshots go "
                     "(default: a new folder in the system's temp)")
     args = ap.parse_args()
@@ -674,8 +743,9 @@ def main():
     if d.exists():
         sys.exit(f"{d} is there already")
     first_boot = args.fresh or not template_ok()
-    if args.uboot and first_boot:
-        sys.exit("--uboot: from a kept card (run the check without it first)")
+    if (args.uboot or args.mcu_update) and first_boot:
+        sys.exit("--uboot, --mcu-update: from a kept card (run the check "
+                 "without them first)")
     kept = TEMPLATE / "sd.img.new"
     d.mkdir(parents=True)
     if not first_boot:
@@ -693,15 +763,27 @@ def main():
     # docs/FIRMWARE_BUGS.md; 2 boots of 19 here). The audio codec's sound
     # goes to the device's audio.wav.
     mic_wav(d / "mic.wav")
+    mask = ["--kernel-args", "systemd.mask=serial-getty@flipserial0.service"]
+    if args.mcu_update and not net:
+        sys.exit("--mcu-update: Flipper OS fetches the image over the "
+                 "network: passt is needed")
     run = [sys.executable, str(st.LAUNCHER), "run", "-n", name, "--detach",
-           "--linux"] + (["--uboot"] if args.uboot else [
-           "--kernel-args", "systemd.mask=serial-getty@flipserial0.service",
+           "--linux"] + (["--uboot"] if args.uboot else
+                         mask + ["--net"] if args.mcu_update else mask + [
            "--audio", str(d / "audio.wav"), "--mic", str(d / "mic.wav"),
            "--nvme", "--hdmi", "--lan"] + (["--net"] if net else []))
     if subprocess.run(run).returncode:
         sys.exit("the device did not start")
-    lan_host = None
-    if not args.uboot:                  # (port 2's other end, from the start)
+    lan_host = web = None
+    if args.mcu_update:                 # (the MCU's own image, to be fetched)
+        fw = pathlib.Path(json.loads((d / "firmware.json").read_text())[
+            "uf2"].replace("-recovery-", "-firmware-"))
+        port = 18000 + os.getpid() % 1000
+        web = subprocess.Popen(
+            [sys.executable, "-m", "http.server", "--bind", "127.0.0.1",
+             str(port), "--directory", str(fw.parent)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    elif not args.uboot:                # (port 2's other end, from the start)
         lan_host = subprocess.Popen(
             [sys.executable, str(ROOT / "scripts" / "lan_host.py"), "-n", name],
             stdout=open(d / "lan.log", "w"), stderr=subprocess.STDOUT)
@@ -714,12 +796,15 @@ def main():
     try:
         if args.uboot:
             uboot_checks(check, d, out)
+        elif args.mcu_update:
+            mcu_update_checks(check, d, out, port, fw)
         else:
             checks(check, d, out, first_boot, off, net)
         log_checks(check, d)
     finally:
-        if lan_host:
-            lan_host.terminate()
+        for p in (lan_host, web):
+            if p:
+                p.terminate()
         subprocess.run([sys.executable, str(st.LAUNCHER), "stop", "-n", name],
                        stdout=subprocess.DEVNULL)
     if kept.exists():
