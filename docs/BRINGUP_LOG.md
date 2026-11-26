@@ -2208,3 +2208,18 @@ register headers.
       clearly gain on eight.
     - **Checked.** The smoke test, linux_check, its U-Boot, MCU-update and
       MaskROM modes pass.
+
+94. **The expanders' RESET filter at 20 ms.** One boot on four cores never
+    started Linux. The RK3576 started at 76 ms and was off at 279 ms, and
+    the MCU never powered it again: no "Host is powered" in its log.
+    - **Why.** The MCU firmware's open-drain setup of the expanders' RESET
+      pins drives them low for a few instructions (log 85), and the machine
+      let a low pass if it lasted under 100 µs of virtual time. Those
+      instructions are two writes to IO_BANK0, each needing the BQL. With the
+      RK3576's cores booting from 76 ms on, the wait between them passed
+      100 µs, and the main expander was reset, its rails with it.
+    - **Fixed.** A low now resets the expanders once it has lasted 20 ms. The
+      firmware's own resets hold it 50 ms.
+    - **Checked.** Six boots, three with `--cpus 4` (82, 89, 94 s to the
+      login) and three with eight (104, 111, 91 s), reached the login with
+      the RK3576 never switched off. The smoke test passes.

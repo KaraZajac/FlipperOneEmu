@@ -443,11 +443,14 @@ static void flipper_one_host_power(void *opaque, int n, int level)
  * chips would be reset at every MCU start, and the main one's rails with
  * them, where the firmware has a powered host run on across an MCU
  * restart. On the board that glitch does not reset them. Here a low resets
- * them once it has lasted 100 us (the virtual clock follows the host's, so
- * a few instructions can take a while); the firmware's own resets hold it
+ * them once it has lasted 20 ms: the virtual clock follows the host's, and
+ * the glitch's few instructions are two writes to IO_BANK0, each needing
+ * the BQL, which the RK3576's eight cores keep busy while Linux boots (a
+ * 100 us threshold once let the glitch reset the main expander, and cut
+ * the Linux side's rail as it started). The firmware's own resets hold it
  * 50 ms.
  */
-#define EXPANDER_RESET_NS   100000
+#define EXPANDER_RESET_NS   (20 * SCALE_MS)
 
 static void flipper_one_buttons_reset(void *opaque)
 {
