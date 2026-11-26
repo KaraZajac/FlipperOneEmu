@@ -1216,15 +1216,19 @@ static void fo_rk_start(FlipperOneState *s, hwaddr entry)
  * DRAM, is SPL: the machine plays U-Boot's SPL in its Falcon mode on the
  * FIT that the payload has after SPL's code, as rockusb's download-boot of
  * the Flipper OS installer's loader has it (fo_falcon_boot()). The boot ROM
- * is left then, whatever comes of it.
+ * is left then, whatever comes of it. 0x472 code with no FIT is a usbplug,
+ * as a Rockchip loader for rkdeveloptool has one: the machine plays that
+ * too, Rockusb's Loader mode on USB0 (rk_maskrom_loader()), the UFS's LU 0
+ * behind it (or the card, if Rockusb switches to it). Its reset restarts
+ * the RK3576.
  */
 static void fo_maskrom_run(void *opaque, uint16_t code, const uint8_t *data,
                            size_t len)
 {
     FlipperOneState *s = opaque;
     bool running = runstate_is_running();
-    const uint8_t *fit;
-    size_t fit_len;
+    const uint8_t *fit = NULL;
+    size_t fit_len = 0;
     hwaddr entry = 0;
 
     if (code == 0x471) {
@@ -1235,6 +1239,15 @@ static void fo_maskrom_run(void *opaque, uint16_t code, const uint8_t *data,
                  qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL));
         return;
     }
+    if (s->dram_up && !(fit = fo_find_fit(data, len, &fit_len))) {
+        qemu_log("flipper-one: %" PRId64 " ms: the boot ROM's 0x472 code has "
+                 "no FIT: a usbplug, which the machine plays: Rockusb's Loader "
+                 "mode on USB0, %s behind it\n",
+                 qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL),
+                 blk_by_name("ufs") ? "the UFS's LU 0" : "the microSD card");
+        rk_maskrom_loader(&s->rk3576.maskrom, blk_by_name("ufs"), s->sd_blk);
+        return;
+    }
     s->in_maskrom = false;                      /* SPL's from here */
     rk_maskrom_set(&s->rk3576.maskrom, false);
     flipper_one_usb_data(s);
@@ -1242,9 +1255,6 @@ static void fo_maskrom_run(void *opaque, uint16_t code, const uint8_t *data,
     if (!s->dram_up) {
         fo_spl_fail("0x472 code with the DRAM not up (no 0x471 code before "
                     "it): it cannot run");
-    } else if (!(fit = fo_find_fit(data, len, &fit_len))) {
-        fo_spl_fail("no FIT in the 0x472 code: the machine plays SPL in its "
-                    "Falcon mode only (the Flipper OS installer's loader)");
     } else {
         g_free(s->falcon_fit);
         s->falcon_fit = g_memdup2(fit, fit_len);
@@ -1281,6 +1291,8 @@ static void fo_rk_power_bh(void *opaque)
         return;                                 /* (on already) */
     }
     s->rk_lost = false;
+    rk_maskrom_set(&s->rk3576.maskrom, false);  /* (its USB0 goes, to come
+                                                   back if it is still due) */
     if (running) {
         pause_all_vcpus();
     }
@@ -1491,6 +1503,8 @@ static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
     s->rk3576.maskrom.pullup_opaque = s->usb_host;
     s->rk3576.maskrom.run = fo_maskrom_run;
     s->rk3576.maskrom.run_opaque = s;
+    s->rk3576.maskrom.reset = flipper_one_rk_cru_reset;
+    s->rk3576.maskrom.reset_opaque = s;
     /* the MCU on I2C0, its PMIC on I2C1, its real-time clock on I2C8 */
     s->link = (RkI2cTarget){
         .start = flipper_one_link_start, .write = flipper_one_link_write,

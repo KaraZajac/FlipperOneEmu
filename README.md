@@ -64,12 +64,13 @@ Flipper's screen; with KASLR, and so KPTI, about three minutes here), and Flippe
 installs onto it as the docs do it: in its MaskROM, rockusb's download-boot of the
 installer's loader (`scripts/fo_rockusb.py`, over USB/IP); the installer provisions the
 UFS, installs Flipper OS and updates the MCU's firmware over I2C, and the boot ROM then
-boots the UFS. Flipper OS updates the MCU's firmware as on the device, and U-Boot's
-rockusb reads and writes the card from the PC. The RK3576's DisplayPort (over the USB-C
-port) and more come next. [RESEARCH.md](RESEARCH.md) is the survey this starts from:
-the device, what Flipper Devices publishes, and what emulating it takes.
-[PLAN.md](PLAN.md) is the order of work; the MCU comes first.
-[docs/BRINGUP_LOG.md](docs/BRINGUP_LOG.md) is what was found on the way.
+boots the UFS. Flipper OS updates the MCU's firmware as on the device, and Rockusb's
+Loader mode (a Rockchip loader's usbplug, or U-Boot's rockusb) reads and writes the UFS
+or the card from the PC. The RK3576's DisplayPort (over the USB-C port) and more come
+next. [RESEARCH.md](RESEARCH.md) is the survey this starts from: the device, what
+Flipper Devices publishes, and what emulating it takes. [PLAN.md](PLAN.md) is the order
+of work; the MCU comes first. [docs/BRINGUP_LOG.md](docs/BRINGUP_LOG.md) is what was
+found on the way.
 
 ## Trying it
 
@@ -175,6 +176,12 @@ scripts/fo_rockusb.py --port 3240 download-boot installer-falcon-loader.bin  # r
                                      # computer plugged in: Ctrl+Shift+U): the installer
                                      # starts, the docs' way (`list` finds the device;
                                      # sudo scripts/usbip_attach.py: the real rockusb)
+scripts/fo_rockusb.py --port 3240 download-boot rk3576_loader.bin  # ... or Rockchip's
+                                     # own (rkbin's, its usbplug): the machine plays the
+                                     # usbplug, Rockusb's Loader mode on USB0, the UFS's
+                                     # LU 0 behind it (`switch-storage sd`: the card);
+                                     # then read, write, flash-info, reset (rkdeveloptool's
+                                     # rl, wl, rfi, rd)
 ./flipperoneemu console [-n NAME] [CMD]  # Linux's console (the RK3576's UART0); Ctrl-] leaves
 ./flipperoneemu console --usb ...    # ... Flipper OS's serial port on its USB gadget
                                      # (a computer plugged in: Ctrl+Shift+U)
@@ -207,7 +214,9 @@ scripts/linux_check.py               # ... with Flipper OS too: boot, screen, ke
                                      # USB, reboot, power-off (keeps a booted card in build/)
 scripts/linux_check.py --maskrom [--loader FILE]  # ... or a new device's boot ROM in
                                      # its USB download: the maskrom protocol, a loader's
-                                     # download-boot (the installer's), the MCU's Maskrom
+                                     # download-boot (the installer's) or a usbplug's
+                                     # Loader mode (the UFS and the card written), the
+                                     # MCU's Maskrom
 ```
 
 A device is a folder, `devices/NAME`: the MCU's flash (made from the newest recovery

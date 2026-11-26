@@ -92,8 +92,14 @@ device; over USB/IP, 0x471 code with a wrong CRC is dropped, and with its CRC
 runs (the machine's DDR blob); with --loader, the loader's download-boot (the
 Flipper OS installer's installer-falcon-loader.bin: SPL in Falcon mode, the
 machine's, starts the installer's kernel, and its interface comes to the
-Flipper's screen), else 0x472 code with no FIT in it is refused; then Stop,
-and the MCU's Maskrom (MASKROM_EN) puts it in its USB download again.
+Flipper's screen), else 0x472 code with no FIT in it, a usbplug, which the
+machine plays: the device comes back in Rockusb's Loader mode (bcdUSB 2.01);
+its chip-info, flash-info, capability and storage (the UFS's LU 0); 64 KiB
+written far out on the UFS read back the same and are in its image, then
+erased; the same on the card, after a switch of storage; a read past the
+end fails; its reset restarts the RK3576, which, blank, waits in its MaskROM
+again. Then Stop, and the MCU's Maskrom (MASKROM_EN) puts it in its USB
+download again.
 
 A first boot takes several minutes (Flipper OS sets itself up); the first
 run keeps its card as build/linux-check/sd.img, as it is after the checked
@@ -916,15 +922,19 @@ def maskrom_checks(check, d, out, port, loader):
               "machine's DDR blob)", wait_text(qlog, r"0x471 code ran", 5,
                                                mark))
         if not loader:
-            fo_rockusb.write_area(c, 0x472, bytes(1000))
-            check("0x472 code with no FIT in it: refused (the machine plays "
-                  "SPL in its Falcon mode), the boot ROM left",
-                  wait_text(qlog, r"no FIT in the 0x472 code", 5, mark))
+            seen = enumerated()
+            fo_rockusb.write_area(c, 0x472, b"usbplug" + bytes(1000))
+            check("0x472 code with no FIT in it, a usbplug: the device "
+                  "leaves the bus and comes back (the machine's Loader mode)",
+                  wait_text(qlog, r"a usbplug, which the machine plays", 5,
+                            mark) and st.until(lambda: enumerated() > seen, 15))
     except (OSError, ValueError) as e:
         check("the maskrom protocol over USB/IP", False, str(e))
     finally:
         if c:
             c.close()
+    if not loader:
+        loader_checks(check, d, port, rock, enumerated)
     if loader:
         before = panel.screen()
         t = time.time()
@@ -960,6 +970,110 @@ def maskrom_checks(check, d, out, port, loader):
           "again", wait_text(qlog, r"waits in its MaskROM", 15, mark))
     check("... which the computer enumerates again",
           st.until(lambda: enumerated() > seen, 15))
+
+
+def loader_checks(check, d, port, rock, enumerated):
+    """Rockusb's Loader mode, as the machine plays a usbplug: its commands,
+    the UFS's LU 0 and the card behind it (their images read where it
+    wrote), its reset"""
+    import fo_rockusb
+    qlog = d / "qemu.log"
+
+    def image_at(name, lba, n):         # (the image's bytes there alone)
+        with open(d / name, "rb") as f:
+            f.seek(lba * fo_rockusb.SECTOR)
+            return f.read(n)
+
+    def run(*args):
+        r = subprocess.run(rock + list(args), capture_output=True, text=True,
+                           timeout=60)
+        return (r.stdout + r.stderr).strip()
+
+    c = None
+    try:
+        c = fo_rockusb.connect(port=port)
+        desc = c.control(0x80, 6, 0x0100, 0, 18)
+        check("its device descriptor says Loader (bcdUSB 2.01, as rockusb "
+              "and rkdeveloptool tell it)", desc[2:4] == b"\x01\x02",
+              desc[:4].hex(" "))
+        ld = fo_rockusb.Loader(c)
+        chip = ld.command(0x1B, 16)
+        check("chip-info: the RK3576's (6753)", chip[:4] == b"6753",
+              chip.hex(" "))
+        # (LU 0 as the launcher gives it: the 64 GB less 160 MiB for the
+        # other LUs, in whole 4 MiB allocation units)
+        lu0 = (64 * 10**9 - (160 << 20)) // (4 << 20) * (4 << 20)
+        for name, image, index, size in (
+                ("the UFS's LU 0", "ufs.img", 12, lu0),
+                ("the card", "sd.img", 2, (d / "sd.img").stat().st_size)):
+            if index != 12:
+                ld.command(0x2A, 0, False, opcode=index)
+            bits = int.from_bytes(ld.command(0x2B, 4), "little")
+            sectors = size // fo_rockusb.SECTOR
+            info = ld.command(0x1A, 11)
+            check(f"{name}: storage {index}, flash-info its {sectors} "
+                  "sectors", bits == 1 << index and
+                  int.from_bytes(info[:4], "little") == sectors,
+                  f"storage bits {bits:#x}, {info.hex(' ')}")
+            lba, data = sectors - 1000, os.urandom(64 << 10)
+            ld.write_lba(lba, data)
+            back = ld.read_lba(lba, len(data) // fo_rockusb.SECTOR)
+            check(f"... 64 KiB written at sector {lba} read back the same, "
+                  f"and are in {image}", back == data and
+                  image_at(image, lba, len(data)) == data)
+            ld.command(0x25, 0, False, lba, len(data) // fo_rockusb.SECTOR,
+                       cdb=0x0A)
+            zero = bytes(len(data))
+            check("... erased: zeros, there and in the image",
+                  ld.read_lba(lba, len(data) // fo_rockusb.SECTOR) == zero
+                  and image_at(image, lba, len(data)) == zero)
+            try:
+                ld.read_lba(sectors, 1)
+                past = "read"
+            except IOError as e:
+                past = str(e)
+            check("... a read past its end fails", "failed (status 1)" in past,
+                  past)
+        ld.command(0x2A, 0, False, opcode=12)
+        lba, data = lu0 // fo_rockusb.SECTOR - 10000, os.urandom(4 << 20)
+        t0 = time.monotonic()
+        ld.write_lba(lba, data)
+        t1 = time.monotonic()
+        back = ld.read_lba(lba, len(data) // fo_rockusb.SECTOR)
+        t2 = time.monotonic()
+        ld.command(0x25, 0, False, lba, len(data) // fo_rockusb.SECTOR,
+                   cdb=0x0A)
+        print(f"      (Rockusb: 4 MiB written in {t1 - t0:.1f} s, read back "
+              f"in {t2 - t1:.1f} s{'' if back == data else ', NOT the same'})")
+    except (OSError, ValueError) as e:
+        check("Rockusb's Loader mode over USB/IP", False, str(e))
+    finally:
+        if c:
+            c.close()
+    out = "\n".join(run(c) for c in ("capability", "storage", "flash-id"))
+    check("fo_rockusb.py capability, storage and flash-id: direct LBA, a "
+          "switch of storage; the UFS; SATA (a SCSI disk to the usbplug)",
+          "switch storage" in out and "12 (ufs)" in out and "'SATA '" in out,
+          out)
+    mark, seen = len(text_of(qlog)), enumerated()
+    out = run("reset")
+    check("reset: the RK3576 starts again, finds nothing to boot, and waits "
+          "in its MaskROM", out == "reset" and
+          wait_text(qlog, r"finds nothing to boot", 15, mark) and
+          wait_text(qlog, r"waits in its MaskROM", 10, mark), out)
+    c = None
+    try:
+        check("... which the computer enumerates again",
+              st.until(lambda: enumerated() > seen, 15))
+        c = fo_rockusb.connect(port=port)
+        desc = c.control(0x80, 6, 0x0100, 0, 18)
+        check("... a MaskROM again (bcdUSB 2.00)", desc[2:4] == b"\x00\x02",
+              desc[:4].hex(" "))
+    except (OSError, ValueError) as e:
+        check("the MaskROM after the Loader's reset", False, str(e))
+    finally:
+        if c:
+            c.close()
 
 
 def log_checks(check, d):

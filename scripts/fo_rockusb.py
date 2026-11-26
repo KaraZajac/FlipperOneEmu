@@ -11,7 +11,10 @@ its Loader mode, from here.
     the RK3576 in its MaskROM, its USB0 on the cable
     scripts/fo_rockusb.py [--port 3240] list
     scripts/fo_rockusb.py [--port 3240] download-boot LOADER.bin [--no-crc]
-    scripts/fo_rockusb.py [--port 3240] chip-info | flash-info | reset
+    scripts/fo_rockusb.py [--port 3240] download-sram | download-ddr FILE
+    scripts/fo_rockusb.py [--port 3240] chip-info | flash-id | flash-info
+    scripts/fo_rockusb.py [--port 3240] capability | storage | reset
+    scripts/fo_rockusb.py [--port 3240] switch-storage ufs | sd | emmc ...
     scripts/fo_rockusb.py [--port 3240] read START COUNT FILE | write START FILE
 
 The boot ROM takes code in vendor requests on the control endpoint (0x40,
@@ -19,18 +22,21 @@ The boot ROM takes code in vendor requests on the control endpoint (0x40,
 the payload; its last two bytes are a CRC-16 (CCITT, from 0xffff) of what
 came before them, or two zeros, which the RK3576 takes unchecked
 (--no-crc). download-boot sends a Rockchip loader's 0x471 entries (the DDR
-blob), each followed by its delay, then its 0x472 ones (SPL), as rockusb
-does: for the Flipper OS installer, its installer-falcon-loader.bin. No root
+blob), each followed by its delay, then its 0x472 ones (SPL, or a usbplug),
+as rockusb does: for the Flipper OS installer, its installer-falcon-loader.bin
+(download-sram and download-ddr send a file as 0x471 or 0x472 code). No root
 is needed: this speaks USB/IP from userspace (fo_usbip.py), as the PC's
 kernel would. With the real rockusb, `usbip attach` the device instead.
 
-The Loader mode is what a usbplug runs, or U-Boot's `rockusb 0 mmc 0` (its
+The Loader mode is what a usbplug runs (0x472 code with no FIT: the
+emulator plays one, the UFS behind it), or U-Boot's `rockusb 0 mmc 0` (its
 shell: `s` on the console at power-on): bulk-only transport, a 31-byte
 command block (USBC: Rockchip's command, a sector, a count) out on the bulk
-endpoint, the data, a 13-byte status (USBS) in. chip-info, flash-info,
-read and write (512-byte sectors of the storage U-Boot gave it) and reset
-are rockusb's commands of the same names. (U-Boot's rockusb takes no
-flash-info, and its chip-info is zeros unless the SoC's code gives one.)
+endpoint, the data, a 13-byte status (USBS) in. chip-info, flash-id,
+flash-info, capability, storage, switch-storage, read and write (512-byte
+sectors of the storage) and reset are rockusb's commands of the same names.
+(U-Boot's rockusb takes no flash-info or storage, and its chip-info is zeros
+unless the SoC's code gives one.)
 
 Standard library only.
 """
@@ -47,6 +53,14 @@ import fo_usbip  # noqa: E402
 ROCKCHIP = 0x2207
 CHUNK = 4096
 SECTOR = 512
+# Rockusb's storages: their indexes (rockusb's, rkdeveloptool's)
+STORAGES = {"nand": 0, "emmc": 1, "sd": 2, "sd0": 2, "sd1": 3, "spinor": 4,
+            "spinand": 5, "ram": 6, "sata": 10, "pcie": 11, "ufs": 12}
+CAPABILITIES = ((0, 0x01, "direct LBA"), (0, 0x02, "vendor storage"),
+                (0, 0x04, "first 4M access"), (0, 0x08, "read LBA"),
+                (0, 0x20, "read com log"), (0, 0x40, "read IDB config"),
+                (0, 0x80, "read secure mode"), (1, 0x01, "new IDB"),
+                (1, 0x02, "switch storage"))
 
 
 def loader_entries(blob):
@@ -151,17 +165,21 @@ class Loader:
                bytes((0x80 if read else 0, 0, cdb, code, opcode)) +
                struct.pack(">IxH", address, count))
         self._out(cbw.ljust(31, b"\0"))
-        got = b""
+        got, csw = b"", None
         if read:
             while len(got) < length:
                 chunk = self._in(min(length - len(got), 65536))
+                if len(chunk) == 13 and chunk[:4] == b"USBS" and \
+                        struct.unpack(">I", chunk[4:8])[0] == self.tag:
+                    csw = chunk         # (its status at once: no data)
+                    break
                 if not chunk:
                     break
                 got += chunk
         else:
             for i in range(0, len(data), 65536):
                 self._out(data[i:i + 65536])
-        csw = self._in(13)
+        csw = csw or self._in(13)
         if len(csw) < 13 or csw[:4] != b"USBS" or \
                 struct.unpack(">I", csw[4:8])[0] != self.tag:
             raise IOError(f"Rockusb: command {code:#04x}: no status for it")
@@ -196,8 +214,18 @@ def main():
     db.add_argument("loader", type=pathlib.Path)
     db.add_argument("--no-crc", action="store_true",
                     help="two zero bytes where the CRC goes")
+    for name, code in (("download-sram", 0x471), ("download-ddr", 0x472)):
+        dl = sub.add_parser(name, help=f"a file as {code:#x} code")
+        dl.add_argument("file", type=pathlib.Path)
+        dl.add_argument("--no-crc", action="store_true",
+                        help="two zero bytes where the CRC goes")
     sub.add_parser("chip-info", help="(Loader mode) the chip's 16 bytes")
+    sub.add_parser("flash-id", help="(Loader mode) the storage's 5 bytes")
     sub.add_parser("flash-info", help="(Loader mode) the storage's size")
+    sub.add_parser("capability", help="(Loader mode) what it takes")
+    sub.add_parser("storage", help="(Loader mode) the storage it is on")
+    ss = sub.add_parser("switch-storage", help="(Loader mode) another storage")
+    ss.add_argument("storage", choices=sorted(STORAGES))
     rd = sub.add_parser("read", help="(Loader mode) sectors into a file")
     rd.add_argument("start", type=int)
     rd.add_argument("count", type=int)
@@ -220,6 +248,17 @@ def main():
                   + (" (Rockusb)" if (0xFF, 0x06, 0x05) in d["interfaces"] else ""))
         return 0
 
+    if a.cmd in ("download-sram", "download-ddr"):
+        c = connect(a.host, a.port, a.busid)
+        try:
+            data = a.file.read_bytes()
+            code = 0x471 if a.cmd == "download-sram" else 0x472
+            write_area(c, code, data, crc=not a.no_crc)
+            print(f"{code:#x}: {len(data)} bytes")
+        finally:
+            c.close()
+        return 0
+
     if a.cmd != "download-boot":
         c = connect(a.host, a.port, a.busid)
         try:
@@ -227,6 +266,23 @@ def main():
             if a.cmd == "chip-info":
                 info = ld.command(0x1B, 16)
                 print(info.hex(" "), repr(info[:4][::-1].decode("latin-1")))
+            elif a.cmd == "flash-id":
+                info = ld.command(0x01, 5)
+                print(info.hex(" "), repr(info.decode("latin-1")))
+            elif a.cmd == "capability":
+                info = ld.command(0xAA, 8)
+                print(info.hex(" ") + ": " + (", ".join(
+                    name for byte, bit, name in CAPABILITIES
+                    if len(info) > byte and info[byte] & bit) or "nothing"))
+            elif a.cmd == "storage":
+                bits = int.from_bytes(ld.command(0x2B, 4).ljust(4, b"\0"), "little")
+                index = (bits & -bits).bit_length() - 1
+                names = [n for n, i in STORAGES.items() if i == index]
+                print(f"{index} ({names[0] if names else 'unknown'})"
+                      if bits else "none")
+            elif a.cmd == "switch-storage":
+                ld.command(0x2A, 0, False, opcode=STORAGES[a.storage])
+                print(f"on {a.storage} ({STORAGES[a.storage]})")
             elif a.cmd == "flash-info":
                 info = ld.command(0x1A, 11)
                 sectors = struct.unpack_from("<I", info)[0]

@@ -136,8 +136,9 @@ screen and its CLI.
       Flipper OS installer's loader (the machine as SPL in Falcon mode), over
       USB/IP (scripts/fo_rockusb.py) (2026-11-26, log 90); U-Boot's rockusb: Rockusb's
       Loader mode on USB0, the card read and written over USB/IP (2026-11-26, log
-      95); a usbplug's Loader mode (rkdeveloptool's `db`, then `wl`), U-Boot over USB
-      (SPL with u-boot.itb)
+      95); a usbplug's Loader mode, the machine's (rkbin's loader: rkdeveloptool's
+      `db`, then `wl`): the UFS's LU 0 or the card behind it (2026-11-26, log 97);
+      U-Boot over USB (SPL with u-boot.itb)
 
 ## M4: the link ◐
 - ◐ A program in the RK3576's place on the link: the host link (docs/HOST_LINK.md,

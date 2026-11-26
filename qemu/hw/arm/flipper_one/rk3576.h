@@ -239,12 +239,32 @@ typedef struct RkMaskrom {
     void *run_opaque;
     void (*pullup_fn)(void *opaque, bool on);
     void *pullup_opaque;
+    /* ... or, after 0x472 code that the board plays as a usbplug, Rockusb's
+     * Loader mode: bulk-only transport on endpoint 1, a storage behind it */
+    bool loader;
+    bool away;                          /* (the usbplug's own new start) */
+    QEMUTimer *back;
+    BlockBackend *storage[2];           /* the UFS's LU 0, the card */
+    int media;                          /* ... which (rockusb's 12, 2) */
+    int phase;                          /* a command's: LD_* */
+    uint8_t csw[13];
+    uint8_t *buf;                       /* ... its data */
+    uint32_t buf_len, buf_pos;
+    uint32_t residue;                   /* ... what it leaves unmoved */
+    int64_t at;                         /* ... a write's: where */
+    bool reset_due;                     /* a reset, once its status is out */
+    QEMUTimer *reset_timer;
+    void (*reset)(void *opaque);        /* Rockusb's reset: the board's */
+    void *reset_opaque;
 } RkMaskrom;
 
 extern const struct FoUsbDevOps rk_maskrom_usb_ops;
 void rk_maskrom_init(RkMaskrom *m);
 /* the boot ROM goes into its USB download mode, or leaves it */
 void rk_maskrom_set(RkMaskrom *m, bool on);
+/* ... for a usbplug's Loader mode, as the board plays one: the device goes
+ * and comes back, @ufs (or @sd: Rockusb's switch of storage) behind it */
+void rk_maskrom_loader(RkMaskrom *m, BlockBackend *ufs, BlockBackend *sd);
 
 /* rk_sai.c: a SAI (serial audio interface): FIFOs between its DMAC and an
  * I2S link. As the link's master its frame clock is its own; as a slave

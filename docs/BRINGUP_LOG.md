@@ -2287,3 +2287,61 @@ register headers.
       mode). An ASID-aware TLB in QEMU would make that cheap: open (PLAN).
     - **Checked.** Two boots with the RNG's seed alone: 99 and 116 s to the
       login, KASLR off as before. linux_check passes (443 s).
+
+97. **A usbplug's Loader mode: the UFS and the card written from the PC, as
+    rkdeveloptool and rockusb do it.**
+    - **What.** Rockchip's own loader for the RK3576 (rkbin's
+      RK3576MINIALL.ini: the DDR blob as 0x471 code, `rk3576_usbplug` as 0x472)
+      is what rkdeveloptool's `db` and rockusb's download-boot send to a chip
+      in its MaskROM, before `wl` or `write-file` writes an image to its
+      storage. The usbplug starts USB0 again, as a Rockusb device in its
+      Loader mode, the board's storage behind it. The machine took 0x472 code
+      with a FIT only (the Flipper OS installer's SPL, in Falcon mode) and
+      refused the rest.
+    - **The usbplug.** rkbin's `rk3576_usbplug_v1.04.bin` is a Rockchip U-Boot
+      with its device tree appended, not a FIT. So 0x472 code with no FIT is a
+      usbplug now, and the machine plays it, as it plays the boot ROM and SPL
+      (rk3576_maskrom.c):
+      - The device leaves the bus for 100 ms and comes back with bcdUSB 2.01:
+        its bit 0 tells rkdeveloptool and rockusb a Loader from a MaskROM.
+      - Bulk-only transport on endpoint 1. It takes test unit ready, the
+        flash's ID, flash info, chip info (`6753`, the RK3576's number
+        backwards), the capabilities (direct LBA, a switch of storage), the
+        storage got and switched, and sectors read, written and erased. Each
+        command is laid out as rkdeveloptool's RKComm.cpp lays it out.
+      - Behind it is the UFS's LU 0 (rockusb's storage 12), or the microSD
+        card (2) after a switch.
+      - The flash IDs are the usbplug's own names. Its table has only EMMC,
+        NAND, SNAND, NOR, SATA, PCIE and UNKN, and its U-Boot sees the UFS as a
+        SCSI disk, which it calls SATA, and the card as an MMC one, EMMC.
+      - A command that fails gives its status at once, as Rockchip's code
+        does. One whose data comes out from the PC has that data taken and
+        dropped, so the PC's OUT transfer does not hang.
+    - **Its reset** (Rockusb's 0xff, whatever its subcode) restarts the RK3576
+      20 ms after the PC has the command's status. The boot ROM then boots the
+      UFS or the card, or with neither (or with MASKROM_EN still held) waits in
+      its MaskROM again.
+      - Every restart of the RK3576 now takes the boot ROM off USB0 first, so
+        a MaskROM restarted into its MaskROM comes back to the computer as a
+        new device. Before, it stayed as it was (and here it would have stayed
+        a Loader).
+    - **fo_rockusb.py** gains rockusb's flash-id, capability, storage,
+      switch-storage, download-sram and download-ddr (a file as 0x471 or 0x472
+      code). It also takes a status where data should have been.
+    - **Checked.** linux_check's MaskROM mode, with no `--loader`:
+      - 0x472 code with no FIT: the device leaves the bus and comes back as a
+        Loader (bcdUSB 2.01), with chip-info 6753.
+      - The UFS's LU 0 is storage 12, with flash-info its 124,665,856 sectors
+        (the launcher's view of it). 64 KiB written near its end read back the
+        same and are in ufs.img; erased, they are zeros there and in the image;
+        a read past the end fails.
+      - The same on the card after switch-storage: 16,777,216 sectors, in
+        sd.img.
+      - The CLI's capability, storage and flash-id (SATA) give the same.
+      - Reset: the RK3576 starts again, finds nothing to boot (the device is
+        blank), and waits in its MaskROM, which the computer enumerates again
+        (bcdUSB 2.00).
+      - The MCU's Stop and Maskrom follow as before: PASS in 13 s.
+      - 4 MiB went through it in 0.4 s written and 0.5 s read back (some
+        10 MB/s, nearly all of it USB/IP's round trips).
+      - The smoke test and linux_check (422 s) pass.
