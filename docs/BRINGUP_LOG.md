@@ -1751,3 +1751,22 @@ register headers.
     - **`run --linux --cpus N`** gives it, as `maxcpus=N`, for the direct boot only:
       through U-Boot the kernel's options are the boot entry's. The default stays the
       device's eight, and the checks run with eight.
+
+82. **MASKROM_EN: a question for the board.** The MCU's Settings have Maskrom.
+    - **What the firmware does.** Its Host service cuts the RK3576's rail. That
+      resets the main expander, whose outputs are then written as
+      VCC5V0_DEV_S0_EN alone. Then it raises the rail, USB20_SEL and MASKROM_EN
+      (pin 15) in one write, and lets MASKROM_EN go a second later.
+    - **Modelled as a strap,** the one the boot ROM samples at its reset (the
+      RK3576 waiting in its USB download mode, starting nothing), it worked: the
+      menu's Maskrom left the RK3576 there, with no kernel.
+    - **But the first start is the same.** At the MCU's own boot, the main
+      expander's init reads the output register and writes it back with
+      VCC5V0_DEV_S0_EN. A PCAL6416 resets that register to all ones, so the rail
+      and MASKROM_EN came up together, and the strap model left that first boot in
+      MaskROM too. Electrically the two starts are one. On the device either both
+      are MaskROM, and Linux would not start after the MCU's reset until a power
+      cycle, or neither is, and the menu's Maskrom would do nothing.
+    - **Left open.** Which of the two it is, the board's schematic would say. The
+      strap is left unmodelled meanwhile: the RK3576 boots on. This is a question
+      for the hardware, not a bug recorded.

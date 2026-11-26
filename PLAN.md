@@ -116,7 +116,9 @@ screen and its CLI.
       the UFS
 - ◐ The MCU powers it: `VCC5V0_SYS_S5_EN` (the main expander's pin 12) switches it on
       and off, and Linux's PSCI SYSTEM_OFF and SYSTEM_RESET are its own (QEMU patch
-      0005) (2026-11-24); `MASKROM_EN`; BOOT1's voltage on a SARADC input
+      0005) (2026-11-24); `MASKROM_EN` (the MCU's own first start raises it with the
+      rail, as its Maskrom does: what the board makes of it is open, log 82); BOOT1's
+      voltage on a SARADC input
 
 ## M4: the link ◐
 - ◐ A program in the RK3576's place on the link: the host link (docs/HOST_LINK.md,
