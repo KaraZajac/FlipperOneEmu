@@ -47,7 +47,9 @@
  * (cleared by its reading) with INER, which drive its INTB ("phy-int", 1
  * asserted). There is a link while the port's network backend is there and
  * its link up (the monitor's set_link takes it down, as a cable pulled
- * out) and the PHY is not powered down.
+ * out), something is at the backend's other end (a stream socket's client
+ * connected: looked at each second, as a PHY sees a link come and go), and
+ * the PHY is not powered down.
  *
  * Copyright (c) 2026, Kara Zajac
  * SPDX-License-Identifier: BSD-3-Clause
@@ -57,6 +59,7 @@
 #include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
 #include "net/net.h"
+#include "qemu/timer.h"
 #include "system/dma.h"
 #include "system/address-spaces.h"
 #include "rk3576.h"
@@ -212,7 +215,7 @@ static void phy_int(RkGmacState *s)
 static void gmac_link(RkGmacState *s)
 {
     NetClientState *nc = qemu_get_queue(s->nic);
-    bool link = nc->peer && !nc->link_down &&
+    bool link = nc->peer && !nc->link_down && !nc->peer->link_down &&
                 !(s->phy.bmcr & BMCR_PDOWN);
 
     if (link != s->link) {
@@ -630,6 +633,15 @@ static void gmac_reset(DeviceState *dev)
     phy_int(s);
 }
 
+/* the backend's end of the cable, which tells no one when it changes */
+static void gmac_cable(void *opaque)
+{
+    RkGmacState *s = opaque;
+
+    gmac_link(s);
+    timer_mod(s->cable, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 1000);
+}
+
 static void gmac_realize(DeviceState *dev, Error **errp)
 {
     RkGmacState *s = RK_GMAC(dev);
@@ -644,6 +656,10 @@ static void gmac_realize(DeviceState *dev, Error **errp)
                           object_get_typename(OBJECT(dev)), dev->id,
                           &dev->mem_reentrancy_guard, s);
     qemu_format_nic_info_str(qemu_get_queue(s->nic), s->conf.macaddr.a);
+    if (qemu_get_queue(s->nic)->peer) {
+        s->cable = timer_new_ms(QEMU_CLOCK_VIRTUAL, gmac_cable, s);
+        timer_mod(s->cable, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 1000);
+    }
 }
 
 static const Property gmac_props[] = {

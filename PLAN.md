@@ -128,9 +128,10 @@ screen and its CLI.
       (2026-11-24); the console UART between the two; the MCU update over I2C
 
 ## M5: Flipper OS's hardware ☐
-- ◐ Ethernet (GMAC, dwmac 4.20a, RTL8211F): both ports and their PHYs; the first on the
+- ☑ Ethernet (GMAC, dwmac 4.20a, RTL8211F): both ports and their PHYs; the first on the
       host's network through passt (`run --net`), SSH from the host (`run --ssh PORT`)
-      (2026-11-24); a network for the second port
+      (2026-11-24); the second on a LAN of its own (`run --lan`: a socket that a VM or
+      scripts/lan_host.py joins, the link up while one is there) (2026-11-25)
 - ◐ USB: both DWC3 cores (dual-role; QEMU's xHCI for the host role, patch 0011), the
       USBDP PHY, the Type-C port, the charger and battery in Linux; devices plugged in
       from the monitor (2026-11-25); USB0's device role, high speed: a computer on the

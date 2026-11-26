@@ -96,7 +96,7 @@ def cmd_run(args):
     if args.uf2 or not (d / "flash.bin").exists():
         make_flash(d, args.uf2)
     for sock in ("panel.sock", "monitor.sock", "cli.sock", "host.sock",
-                 "usb.sock", "linux.sock", "linux4.sock"):
+                 "usb.sock", "linux.sock", "linux4.sock", "lan.sock"):
         (d / sock).unlink(missing_ok=True)
     machine = f"flipper-one,flash={d / 'flash.bin'},log=mculog"
     if args.bootsel:
@@ -139,8 +139,15 @@ def cmd_run(args):
         # the RK3576's first Ethernet port on this PC's network, through
         # passt (QEMU starts it): NAT, DHCP and DNS, no root needed; and
         # this PC's port (on its loopback only) to the device's SSH
-        cmd += ["-nic", "passt" + (f",tcp-ports=127.0.0.1/{args.ssh}:22"
-                                   if args.ssh else "")]
+        cmd += ["-nic", "passt,model=gmac0" +
+                (f",tcp-ports=127.0.0.1/{args.ssh}:22" if args.ssh else "")]
+    if getattr(args, "lan", False):
+        # a cable in the second port, to a socket: a LAN that another VM, or
+        # scripts/lan_host.py, joins at the other end (no one there: no link)
+        # (-nic's options cannot name a stream's address: -netdev's can)
+        cmd += ["-netdev", "stream,id=lan,server=on,addr.type=unix,"
+                f"addr.path={d / 'lan.sock'}",
+                "-net", "nic,netdev=lan,model=gmac1"]
     if args.usbip:
         cmd += ["-chardev", f"socket,id=usbip,host=127.0.0.1,port={args.usbip},"
                 "server=on,wait=off",
@@ -569,6 +576,10 @@ def main():
             p.add_argument("--net", action="store_true",
                            help="a cable in the first Ethernet port, to this "
                                 "PC's network (through passt)")
+            p.add_argument("--lan", action="store_true",
+                           help="a cable in the second Ethernet port, to a LAN "
+                                "at devices/NAME/lan.sock (QEMU's stream netdev): "
+                                "a VM or scripts/lan_host.py at the other end")
             p.add_argument("--ssh", type=int, metavar="PORT",
                            help="... and this PC's PORT to Flipper OS's SSH "
                                 "(port 22): ssh -p PORT user@127.0.0.1")

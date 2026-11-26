@@ -65,7 +65,8 @@
  *             its PLL locked and clock recovered whenever Linux looks
  *   GMAC0-1   rk_gmac.c, 0x2a220000 and 0x2a230000, SPIs 293 and 301: the
  *             Ethernet ports, each with the board's PHY; each takes the next
- *             -nic (its network), and has no link without one
+ *             -nic (its network), or the one whose model is gmac0 or gmac1,
+ *             and has no link without one
  *   SAI0/2/6  rk_sai.c, 0x2a600000, 0x2a620000, 0x27d50000, SPIs 187, 189,
  *             193: the serial audio interfaces Flipper OS enables (SAI2:
  *             the codec's I2S link, SAI6: HDMI's); their DMA requests on
@@ -1137,11 +1138,12 @@ static void rk3576_realize(DeviceState *dev, Error **errp)
                   false);
     s->usbdp.read = usbdp_read;
 
-    /* the Ethernet ports: each takes the next -nic for it (none: no cable) */
+    /* the Ethernet ports: each takes the next -nic for it, or the one of its
+     * model, gmac0 or gmac1 (none: no cable) */
     for (int n = 0; n < 2; n++) {
         SysBusDevice *gmac = SYS_BUS_DEVICE(&s->gmac[n]);
 
-        qemu_configure_nic_device(DEVICE(gmac), true, NULL);
+        qemu_configure_nic_device(DEVICE(gmac), true, n ? "gmac1" : "gmac0");
         if (!sysbus_realize(gmac, errp)) {
             return;
         }

@@ -1607,3 +1607,23 @@ register headers.
       reboot back through U-Boot's menu to the kernel. It passes, 15 checks
       in about 6 minutes. A computer is on the USB-C port from the start, since the
       boot entry's options mask no getty (OS-02).
+
+76. **Ethernet port 2, on a LAN of its own.** The second port had its PHY but no
+    network. QEMU's NICs went to the GMACs in the order of the `-nic` options, so the
+    second port could not have one alone. The SoC now also names the ports' NIC
+    models, gmac0 and gmac1, so that a NIC can say which port it is for.
+    - **`run --lan`** gives port 2 a cable to a socket, devices/NAME/lan.sock: QEMU's
+      stream netdev, as its server. (`-nic` cannot name a stream's address, so it is
+      `-netdev` and `-net nic,netdev=lan,model=gmac1`.) Whoever connects is at the
+      other end: another VM, or scripts/lan_host.py. That is a small host in Python.
+      By default it is the LAN's DHCP server and gateway: 192.168.77.1, offering .10.
+      With `--client` it is a DHCP client of the Flipper's, for its Router profile.
+    - **The cable.** The PHY had a link whenever the port had a backend. A stream's
+      backend is there before anyone connects. So the link now also follows the
+      backend's own state, which QEMU's stream backend changes as a client comes and
+      goes, without telling the NIC. The GMAC looks each second, as a PHY sees a link
+      come and go, and its INTB tells Linux.
+    - **Flipper OS** (Minimal) takes 192.168.77.10 on end1 by DHCP, with a route
+      through 192.168.77.1, beside port 1's passt network. The LAN host's ping is
+      answered, and so is the Flipper's ping of it. The Linux check now has port 2
+      on that LAN.

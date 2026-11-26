@@ -355,6 +355,8 @@ struct RkGmacState {
     uint8_t txbuf[RKGMAC_FRAME];
     uint8_t rxbuf[RKGMAC_FRAME + 4];    /* (with its FCS) */
     bool link;                          /* the PHY's link */
+    QEMUTimer *cable;                   /* ... looked at each second: the
+                                           backend's end of the cable */
     struct {
         uint16_t bmcr, anar, gbcr, page, insr;
         uint16_t vnd[6][16];            /* 0x10-0x1f, by page */

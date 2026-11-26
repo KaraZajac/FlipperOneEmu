@@ -24,7 +24,10 @@ Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
   its device role with its Type-C port, USB1's root hubs are there, and the
   battery reads (its chain waits on USB0's role switch); each Ethernet port
   has its RTL8211F, and with passt installed port 1 is on this PC's network
-  (`run --net`): a link, an address by DHCP, a gateway that answers;
+  (`run --net`): a link, an address by DHCP, a gateway that answers; port 2
+  has a cable to a LAN of its own (`run --lan`), where scripts/lan_host.py
+  is the DHCP server and gateway: a link, an address from it, its ping
+  answered, and the Flipper's to it;
   the CPU clusters' clocks come from TF-A's SCMI server, and cpufreq has
   both clusters; the six thermal zones read the TSADC, with the trims the
   OTP holds;
@@ -393,9 +396,10 @@ def checks(check, d, out, first_boot, off, net):
                   "$(cat /sys/class/net/$p/phydev/phy_id) "
                   "$(cat /sys/class/net/$p/carrier 2>/dev/null || echo -); "
                   "done")
-    want = [f"end0 0x001cc916 {1 if net else 0}", "end1 0x001cc916 0"]
+    want = [f"end0 0x001cc916 {1 if net else 0}", "end1 0x001cc916 1"]
     check("the Ethernet ports: an RTL8211F on each, "
-          + ("port 1 with a link" if net else "no link (no network given)"),
+          + ("port 1 with a link" if net else "port 1 without (no network)")
+          + ", port 2 with one (the LAN host's cable)",
           eth is not None and [e.strip() for e in eth] == want, str(eth))
     if net:
         ping = con.run("ip -4 -br addr show end0; ping -c 2 -W 3 "
@@ -404,6 +408,16 @@ def checks(check, d, out, first_boot, off, net):
         check("... an address by DHCP, and the gateway answers (passt)",
               bool(ping) and len(ping[0].split()) >= 3 and
               ping[-1].strip() == "pinged", str(ping))
+    leased = st.until(lambda: "ping answered by 192.168.77.10" in
+                      text_of(d / "lan.log"), 120 * slow, 1)
+    lan = con.run("ip -4 -br addr show end1; ping -c 2 -W 3 -I end1 "
+                  "192.168.77.1 >/dev/null && echo pinged", 60)
+    check("... port 2: an address by DHCP from the LAN's host, which it "
+          "answers, and pings",
+          leased and bool(lan) and "192.168.77.10/24" in lan[0] and
+          lan[-1].strip() == "pinged" and
+          "ping from 192.168.77.10" in text_of(d / "lan.log"),
+          f"{lan} {text_of(d / 'lan.log')[-200:]!r}")
     freq = con.run("cat /sys/devices/system/cpu/cpufreq/policy0/"
                    "scaling_cur_freq /sys/devices/system/cpu/cpufreq/"
                    "policy4/scaling_cur_freq")
@@ -683,9 +697,14 @@ def main():
            "--linux"] + (["--uboot"] if args.uboot else [
            "--kernel-args", "systemd.mask=serial-getty@flipserial0.service",
            "--audio", str(d / "audio.wav"), "--mic", str(d / "mic.wav"),
-           "--nvme", "--hdmi"] + (["--net"] if net else []))
+           "--nvme", "--hdmi", "--lan"] + (["--net"] if net else []))
     if subprocess.run(run).returncode:
         sys.exit("the device did not start")
+    lan_host = None
+    if not args.uboot:                  # (port 2's other end, from the start)
+        lan_host = subprocess.Popen(
+            [sys.executable, str(ROOT / "scripts" / "lan_host.py"), "-n", name],
+            stdout=open(d / "lan.log", "w"), stderr=subprocess.STDOUT)
     def off():
         if first_boot and not check.failed:
             TEMPLATE.mkdir(parents=True, exist_ok=True)
@@ -699,6 +718,8 @@ def main():
             checks(check, d, out, first_boot, off, net)
         log_checks(check, d)
     finally:
+        if lan_host:
+            lan_host.terminate()
         subprocess.run([sys.executable, str(st.LAUNCHER), "stop", "-n", name],
                        stdout=subprocess.DEVNULL)
     if kept.exists():

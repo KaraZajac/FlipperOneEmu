@@ -102,6 +102,12 @@ the MCU switches its power on, and Flipper OS's interface replaces that screen.
 scripts/fetch_os.py                  # a Flipper OS build: its kernel, initrd and device trees
 ./flipperoneemu run --linux --net ... # ... with its first Ethernet port on this PC's
                                      # network (NAT, through passt: installed with podman)
+./flipperoneemu run --linux --lan ... # ... and a cable in its second port, to a LAN at
+                                     # devices/NAME/lan.sock (QEMU's stream netdev): a VM
+                                     # joins it with -netdev stream,addr.type=unix,
+                                     # addr.path=...; scripts/lan_host.py is a host there
+                                     # (the LAN's DHCP server and gateway, or with
+                                     # --client a DHCP client of the Flipper's)
 ./flipperoneemu run --linux --audio FILE.wav ...  # ... the sound Flipper OS plays, into
                                      # a WAV file (or a driver this QEMU has: this PC's
                                      # sound needs pipewire-devel when QEMU is configured)
