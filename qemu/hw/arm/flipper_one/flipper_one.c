@@ -311,6 +311,40 @@ static void flipper_one_maskrom(void *opaque, int n, int level)
 #define MAIN_HOST_ON    ((1 << 8) | (1 << 11) | (1 << 12))  /* USB20_SEL,
                                        VCC5V0_DEV_S0_EN, VCC5V0_SYS_S5_EN */
 
+/*
+ * What the RK3576's SARADC reads, on Rockchip's ladder of eleven codes
+ * (0, 416, 816, 1231, 1658, 2048, 2437, 2862, 3279, 3680, 4095). Channel 0
+ * is SARADC_VIN0_BOOT, which its boot ROM reads for its boot media's order:
+ * the board's divider has UFS, then the microSD card, then USB (Rockchip's
+ * config 8, 2862, the order the docs give), and MASKROM_EN (BOOT0) pulls it
+ * to ground (config 1: USB, the MaskROM). Channel 1 is BOOT1, the MCU's PWM
+ * on GPIO4 (12 bits, 2 kHz) through a filter: the firmware's levels are the
+ * ladder's codes, so the code is its duty. Channel 2 is the board's
+ * revision, a divider U-Boot reads (0-208 f0b0c1, 209-616 f0b1c2, the
+ * halfway points between codes): 0 and 416. The others: 0.
+ */
+#define SARADC_BOOT_ORDER   2862
+
+static int flipper_one_saradc(void *opaque, int ch)
+{
+    FlipperOneState *s = opaque;
+    int duty;
+
+    switch (ch) {
+    case 0:
+        return s->maskrom_strap ? 0 : SARADC_BOOT_ORDER;
+    case 1:
+        duty = rp2350_pwm_duty(&s->mcu, 4);
+        if (duty < 0) {                         /* (a plain pin) */
+            duty = (s->mcu.pin_level >> 4) & 1 ? 65535 : 0;
+        }
+        return (duty * 4095 + 32767) / 65535;
+    case 2:
+        return strcmp(s->rev ?: FO_REV_DEFAULT, "f0b1c2") ? 0 : 416;
+    }
+    return 0;
+}
+
 static void flipper_one_usb20_sel(void *opaque, int n, int level)
 {
     FlipperOneState *s = opaque;
@@ -1063,6 +1097,8 @@ static void flipper_one_rk3576_reset(void *opaque)
 static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
 {
     object_initialize_child(OBJECT(ms), "rk3576", &s->rk3576, TYPE_RK3576);
+    s->rk3576.saradc_in = flipper_one_saradc;
+    s->rk3576.saradc_in_opaque = s;
     qdev_prop_set_bit(DEVICE(&s->rk3576), "start-on",
                       ms->kernel_filename != NULL || s->uboot);
     /* its I2C2 is the main board's bus, the MCU's PIO I2C's too */

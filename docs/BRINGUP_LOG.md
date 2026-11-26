@@ -1890,3 +1890,35 @@ register headers.
       `saradc*`, and Flipper's is `adc@2ae00000`, so that check never fires.
       Channel 2 is the board's revision (U-Boot: 0-208 f0b0c1, 209-616
       f0b1c2). The RK3576's SARADC is not modelled yet.
+
+86. **The RK3576's SARADC: the boot strap, BOOT1, the board's revision.**
+    - **The ladder.** The docs' "Config Table for SARADC_VIN0_BOOT" (an image in
+      the docs repository, read here) has eleven codes: 0, 416, 816, 1231, 1658,
+      2048, 2437, 2862, 3279, 3680, 4095. They are exactly the MCU firmware's
+      levels for BOOT1 (`saradc_id_pwm`), and the halfway points between them are
+      U-Boot's revision ranges (0-208 f0b0c1, 209-616 f0b1c2). It is Rockchip's
+      standard resistor ladder.
+    - **What the channels read.** Channel 0 is SARADC_VIN0_BOOT: the board's
+      divider gives UFS, then the microSD card, then USB (config 8, 2862, the
+      order the docs give), and MASKROM_EN (BOOT0) grounds it (config 1, USB,
+      the MaskROM). Channel 1 is BOOT1, the MCU's PWM on GPIO4 (12 bits, 2 kHz),
+      filtered: its code is the duty, the firmware's levels being the codes
+      (its pin is `cpu_adc_in1_boot`). Channel 2 is the revision: 0 for f0b0c1,
+      416 for f0b1c2. The rest read 0.
+    - **The model.** rk3576_saradc.c is the RK3588's second version, which the
+      device tree falls back to. A single conversion through CONV_CON
+      (hiword-masked), 20 µs. Then DATA, END_INT_ST (a 1 written clears it) and
+      SPI 124 while END_INT_EN allows it: U-Boot polls, Linux takes the interrupt.
+    - **What it gives.** U-Boot reads channel 2 and now sets `fdtfile` from the
+      board's revision, as on the device (`adc single adc@2ae00000 0`: 2862,
+      1.258 V). Flipper OS has the three in sysfs (`in_voltage0_raw` 2862,
+      `in_voltage1_raw` 0, `in_voltage2_raw` 0). The MCU's `saradc set_id 6`
+      makes channel 1 read 2047, `set_id 11` 4093: the PWM model's duty rounds a
+      code or two off.
+    - **What it does not.** U-Boot's download-key check reads channel 1 of a
+      device named `saradc*`, and Flipper's is `adc@2ae00000`, so the default
+      BOOT1 (0 V) does not send it to the MaskROM. Nothing reads BOOT1 yet (the
+      docs: it "selects the OS boot source").
+    - **Checked.** linux_check reads the three codes, then channel 1 again after
+      the MCU's `saradc set_id 6`. The smoke test and linux_check's default and
+      U-Boot modes pass.

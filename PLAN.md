@@ -121,7 +121,9 @@ screen and its CLI.
       0005) (2026-11-24); `MASKROM_EN` (BOOT0): the RK3576 waits in its MaskROM when
       the rail comes up with it, the MCU's Maskrom does that; the main expander's
       enables pulled down, the machine started as a device in use (2026-11-26, log
-      85); BOOT1's voltage on a SARADC input; the boot ROM's USB download
+      85); the SARADC: the boot strap (BOOT0 grounds it), BOOT1 (the MCU's PWM) and
+      the board's revision, which U-Boot reads (2026-11-26, log 86); the boot ROM's
+      USB download
 
 ## M4: the link ◐
 - ◐ A program in the RK3576's place on the link: the host link (docs/HOST_LINK.md,

@@ -413,6 +413,20 @@ void rk_tsadc_reset(RkTsadc *t);
 /* the sensors' trims, into the OTP's non-secure part */
 void rk_tsadc_otp_trims(uint8_t *otp);
 
+/* rk3576_saradc.c: the SARADC, eight channels of 12 bits over 1.8 V; what
+ * they read, the board's (RK3576State's saradc_in) */
+#define RK3576_SARADC_CHANNELS  8
+typedef struct RkSaradc {
+    MemoryRegion mr;
+    struct RK3576State *soc;
+    qemu_irq irq;
+    QEMUTimer *timer;                   /* a conversion's end */
+    uint32_t regs[0x200 / 4];
+} RkSaradc;
+void rk_saradc_init(struct RK3576State *s, RkSaradc *a, hwaddr base,
+                    qemu_irq irq);
+void rk_saradc_reset(RkSaradc *a);
+
 #define RK3576_NCPUS        8
 #define RK3576_NI2C         9           /* I2C0 ... I2C8 */
 #define RK3576_NGPIO        5           /* GPIO0 ... GPIO4 */
@@ -446,6 +460,7 @@ struct RK3576State {
     RkBlock otp;                        /* the OTP's controller */
     uint8_t otp_ns[0x100];              /* ... the part it reads */
     RkTsadc tsadc;                      /* the temperature sensor */
+    RkSaradc saradc;                    /* the ADC */
     DeviceState *ufs_pcie;              /* a PCI host of its own, for ... */
     PCIDevice *ufs;                     /* ... the UFS host (QEMU's) */
     MemoryRegion ufs_hci;               /* its registers, where the RK3576
@@ -477,6 +492,9 @@ struct RK3576State {
      * PSCI's SYSTEM_RESET is */
     void (*cru_reset)(void *opaque);
     void *cru_reset_opaque;
+    /* the code (0-4095, 1.8 V full scale) at SARADC channel @ch's pin */
+    int (*saradc_in)(void *opaque, int ch);
+    void *saradc_in_opaque;
     I2CBus *i2c2_bus;                   /* I2C2's bus, if it is shared */
     bool start_on;                      /* CPU 0 runs from the start (a
                                            kernel given), else all are off */

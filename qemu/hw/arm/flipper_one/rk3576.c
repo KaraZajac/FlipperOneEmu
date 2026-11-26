@@ -42,6 +42,8 @@
  *             the Ethernet ports' addresses from it), the temperature
  *             sensors' trims; what nothing reads is 0
  *   TSADC     rk3576_tsadc.c, 0x2ae70000, SPI 123: six temperatures
+ *   SARADC    rk3576_saradc.c, 0x2ae00000, SPI 124: eight channels, the
+ *             board's inputs
  *   GPIO0-4   0x27320000, 0x2ae10000-0x2ae40000; SPIs 153, 157, 161, 165,
  *             169: Rockchip's v2 banks (VER_ID 0x010219c8; each register in
  *             two halves with write masks): outputs, inputs from the board
@@ -152,6 +154,8 @@
 #define OTP_NS_WORD     0x1c0           /* the non-secure part's first word */
 #define TSADC_BASE      0x2ae70000
 #define TSADC_SPI       123
+#define SARADC_BASE     0x2ae00000
+#define SARADC_SPI      124
 #define UFS_BASE        0x2a2d0000
 #define UFS_SPI         361
 #define GMAC_BASE       0x2a220000      /* GMAC0; GMAC1 0x10000 on */
@@ -864,6 +868,7 @@ void rk3576_reset_devices(RK3576State *s)
     memset(s->rng.regs, 0, RNG_SIZE);
     memset(s->otp.regs, 0, OTP_SIZE);
     rk_tsadc_reset(&s->tsadc);
+    rk_saradc_reset(&s->saradc);
     for (int b = 0; b < RK3576_NGPIO; b++) {
         RkGpio *g = &s->gpio[b];
 
@@ -1070,6 +1075,7 @@ static void rk3576_realize(DeviceState *dev, Error **errp)
     s->otp.wrote = otp_wrote;
     otp_init(s);
     rk_tsadc_init(s, &s->tsadc, TSADC_BASE, rk3576_spi(s, TSADC_SPI));
+    rk_saradc_init(s, &s->saradc, SARADC_BASE, rk3576_spi(s, SARADC_SPI));
 
     s->timer0.soc = s;
     s->timer0.irq = rk3576_spi(s, TIMER0_SPI);

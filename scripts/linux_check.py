@@ -31,7 +31,9 @@ Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
   answered, and the Flipper's to it;
   the CPU clusters' clocks come from TF-A's SCMI server, and cpufreq has
   both clusters; the six thermal zones read the TSADC, with the trims the
-  OTP holds;
+  OTP holds; the SARADC reads the boot strap's divider, the MCU's BOOT1
+  (and follows it as the MCU's `saradc set_id` changes it) and the board's
+  revision;
 - a computer plugged into the USB-C port (the panel's `usb 2`) reaches
   USB0, and enumerates Flipper OS's gadget (NCM, MTP, a serial port), which
   Linux sees configured at high speed; a line goes each way over its
@@ -507,6 +509,21 @@ def checks(check, d, out, first_boot, off, net):
           bool(temps) and len(temps) == 6 and
           all(t.strip().isdigit() and 25000 <= int(t) < 85000
               for t in temps), str(temps))
+    # the SARADC: the boot strap's divider (UFS, the microSD card, USB:
+    # Rockchip's config 8), BOOT1 (the MCU's PWM, its default ID: 0 V) and
+    # the board's revision (f0b0c1: 0); then BOOT1 as the MCU sets it
+    adc = ("d=$(dirname $(grep -l 2ae00000.adc /sys/bus/iio/devices/*/name))"
+           "; for c in 0 1 2; do cat $d/in_voltage${c}_raw; done")
+    codes = [c.strip() for c in con.run(adc) or []]
+    check("the SARADC: the boot strap (2862: UFS, SD, USB), BOOT1 (0) and "
+          "the board's revision (0: f0b0c1)", codes == ["2862", "0", "0"],
+          str(codes))
+    st.cli(d, "saradc set_id 6", r"SARADC ID set to", 10)
+    codes = [c.strip() for c in con.run(adc) or []]
+    check("... BOOT1 as the MCU sets it (saradc set_id 6: 2048)",
+          len(codes) == 3 and codes[1].isdigit() and
+          abs(int(codes[1]) - 2048) <= 4, str(codes))
+    st.cli(d, "saradc set_id 1", r"SARADC ID set to", 10)
 
     # a computer on the USB-C port: with the Linux side on, the USB mux has
     # its USB 2 on the RK3576's USB0, where Flipper OS's gadget is

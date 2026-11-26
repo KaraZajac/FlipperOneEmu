@@ -36,7 +36,8 @@ interface on the Flipper's screen (its frames go over the display SPI to the MCU
 firmware, which shows them) and answers its keys (which the MCU firmware passes on over
 their I2C link). Its CPU clusters' clocks come from TF-A's SCMI (cpufreq), its
 temperature sensors, calibrated from its OTP, read the chip warming as its cores run,
-and its 64 GB UFS (blank, as one that nothing was installed on) is a disk to Linux.
+its SARADC reads the boot-order strap, the MCU's BOOT1 and the board's revision (which
+U-Boot tells the board by), and its 64 GB UFS (blank, as one that nothing was installed on) is a disk to Linux.
 Its two Ethernet ports have their PHYs, and with `--net` the first is on this PC's
 network: DHCP, DNS, and the internet through NAT. Its USB controllers come up (USB
 devices can be plugged into the second from QEMU's monitor), and with them its Type-C
