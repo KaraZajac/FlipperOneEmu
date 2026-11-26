@@ -279,7 +279,8 @@ def cmd_gui(args):
                             args.name] + (["--zoom", str(args.zoom)]
                                           if args.zoom else []) +
                            (["--linux"] if args.linux else []) +
-                           (["--uboot"] if args.uboot else []))
+                           (["--uboot"] if args.uboot else []) +
+                           (["--cpus", str(args.cpus)] if args.cpus else []))
 
 
 def cmd_log(args):
@@ -629,6 +630,9 @@ def main():
             p.add_argument("--uboot", action="store_true",
                            help="... through U-Boot: its boot menu on the "
                                 "screen (up, down, OK)")
+            p.add_argument("--cpus", type=int, metavar="N",
+                           help="... Linux on N of its eight cores (4 boots "
+                                "quicker here)")
         if name == "shot":
             p.add_argument("file")
             p.add_argument("--hdmi", action="store_true",

@@ -68,6 +68,7 @@ scripts/fetch_firmware.py    # the MCU firmware's newest build, and the RP2350 b
 ./flipperoneemu gui          # the window: it starts a device, devices/one
 scripts/fetch_os.py          # a Flipper OS build (2 GB), for ...
 ./flipperoneemu gui --linux  # ... the whole device: Flipper OS on its RK3576 too
+./flipperoneemu gui --linux --cpus 4  # ... on four of its eight cores: quicker here
 ./flipperoneemu gui --uboot  # ... through U-Boot, as the device boots: its boot menu on
                              # the screen, the pad to pick a profile
 ```

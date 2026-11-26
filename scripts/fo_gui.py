@@ -34,11 +34,13 @@ LAUNCHER = ROOT / "flipperoneemu"
 
 
 class MainWindow(QtWidgets.QMainWindow):
-    def __init__(self, name, zoom=2, start=True, linux=False, uboot=False):
+    def __init__(self, name, zoom=2, start=True, linux=False, uboot=False,
+                 cpus=None):
         super().__init__()
         self.name = name
         self.linux = linux or uboot     # Flipper OS on the RK3576 too
         self.uboot = uboot              # ... through U-Boot's boot menu
+        self.cpus = cpus                # ... on that many of its cores
         self.dir = ROOT / "devices" / name
         self.state = "connecting"
         self.setWindowTitle(f"{name}: Flipper One (FlipperOneEmu)")
@@ -178,7 +180,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def start(self):
         r = self._launch("run", "--detach",
                          *(["--linux"] if self.linux else []),
-                         *(["--uboot"] if self.uboot else []))
+                         *(["--uboot"] if self.uboot else []),
+                         *(["--cpus", str(self.cpus)] if self.cpus else []))
         if r.returncode:
             self._say((r.stderr or r.stdout).strip().splitlines()[-1]
                       if (r.stderr or r.stdout).strip() else "could not start")
@@ -333,6 +336,8 @@ def main():
     ap.add_argument("--uboot", action="store_true",
                     help="... through U-Boot, as on the device: its boot menu "
                          "on the screen, the pad to pick an entry")
+    ap.add_argument("--cpus", type=int, metavar="N",
+                    help="... Linux on N of its eight cores (4: quicker here)")
     ap.add_argument("--no-start", action="store_true",
                     help="do not start the device; wait for it")
     ap.add_argument("--shot", metavar="FILE.png",
@@ -343,7 +348,7 @@ def main():
     app = QtWidgets.QApplication(sys.argv[:1])
     app.setApplicationName("FlipperOneEmu")
     w = MainWindow(args.name, args.zoom, start=not args.no_start,
-                   linux=args.linux, uboot=args.uboot)
+                   linux=args.linux, uboot=args.uboot, cpus=args.cpus)
     w.show()
     if args.shot:
         def shoot():
