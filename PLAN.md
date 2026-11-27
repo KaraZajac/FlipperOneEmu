@@ -230,5 +230,7 @@ screen and its CLI.
 ## Not planned
 - The RK3576's mask ROM and DDR training blob (closed), SPL and TF-A's BL31: the machine
   starts at U-Boot proper, in their place, or at the kernel
-- The NPU, the GPU (Panfrost falls back to software rendering), the video codecs
+- The NPU, the GPU (Panfrost falls back to software rendering), the video codecs. So
+  FlipCTL's "Testing: flipctl2" row, whose browser (cog, GLES) takes the GPU's DRM
+  nodes, stops FlipCTL and leaves the panel dark (2026-11-27)
 - Cycle accuracy
