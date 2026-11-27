@@ -35,7 +35,8 @@ Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
   firmware running, wlx000ce7464f02, NetworkManager's, and a scan completes
   and finds nothing, or with passt (`run --wifi`) the access point near it,
   whose open network NetworkManager joins (an address by DHCP, a gateway that
-  answers), then its WPA2 one (the 4-way handshake);
+  answers, its data at 802.11n's MCS 15), then its WPA2 one (the 4-way
+  handshake);
   with its rfkill blocked the chip leaves USB, unblocked it comes back cold;
   each Ethernet port
   has its RTL8211F, and with passt installed port 1 is on this PC's network
@@ -616,12 +617,15 @@ def checks(check, d, out, first_boot, off, net):
                        "G=$(ip route | awk '/^default/ && /wl/ {print $3; "
                        "exit}'); ping -c 2 -W 2 -I $W $G >/dev/null 2>&1; "
                        "echo ping $?; sudo iw dev $W link | grep -E "
-                       "'SSID|signal' | xargs", 150) or []
-        check("... NetworkManager joins it (FlipperOneEmu, -42 dBm): an "
-              "address by DHCP, and the gateway answers (passt)",
+                       "'SSID|signal|rx bitrate' | xargs", 150) or []
+        check("... NetworkManager joins it (FlipperOneEmu, -42 dBm, 802.11n: "
+              "its data at MCS 15): an address by DHCP, and the gateway "
+              "answers (passt)",
               len(join) == 4 and join[0] == "0" and "/" in join[1] and
               join[2] == "ping 0" and "SSID: FlipperOneEmu" in join[3] and
-              "signal: -42 dBm" in join[3], str(join))
+              "signal: -42 dBm" in join[3] and
+              "rx bitrate: 144.4 MBit/s MCS 15 short GI" in join[3],
+              str(join))
         check("... and Flipper OS lights the Wi-Fi LED (the MCU's chain)",
               led == ["000000"] and st.until(
                   lambda: panel.leds[1:2] not in ([], ["000000"]), 15),

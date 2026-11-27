@@ -222,8 +222,9 @@ screen and its CLI.
       access point near it (`run --wifi`): an open 11g network that a scan finds and
       NetworkManager joins (802.11 frames received and sent, TX status, ROC grants),
       bridged to this PC's network through passt (2026-11-26, log 102); a WPA2-PSK
-      network beside it, the 4-way handshake its AP's (2026-11-26, log 103); HT
-      rates, WPA3 (SAE)
+      network beside it, the 4-way handshake its AP's (2026-11-26, log 103); the
+      AP 802.11n: HT with WMM, its data at MCS 15 (144.4 Mbit/s), Block Ack
+      sessions accepted (2026-11-27, log 110); WPA3 (SAE), 5 GHz, 802.11ax
 
 ## Not planned
 - The RK3576's mask ROM and DDR training blob (closed), SPL and TF-A's BL31: the machine

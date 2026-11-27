@@ -57,8 +57,13 @@
  * done, and are logged.
  *
  * With an uplink (its "netdev", a -nic of model mt7921) an access point is
- * near it: an open 11g network ("ap-ssid", FlipperOneEmu, on "ap-channel"
- * 6), whose beacon each scan of its channel finds. Frames go as the chip
+ * near it: an open 802.11n network ("ap-ssid", FlipperOneEmu, on
+ * "ap-channel" 6), whose beacon each scan of its channel finds. It is HT
+ * (two streams, 20 MHz, short guard interval: MCS 0-15) with WMM, which
+ * mac80211 wants for HT: its data to the station comes at MCS 15 (144.4
+ * Mbit/s), as do the TX statuses of the station's data; management frames
+ * at 6 Mbit/s, as an AP sends them. A Block Ack session the station asks
+ * for is accepted (its ADDBA Response). Frames go as the chip
  * receives them (an RXD of type 2, the channel, RCPI for -42 dBm, the
  * 802.11 frame) on 0x84; those the host sends come as a TXD and the frame
  * (802.11, or 802.3 once the station is authorized), and each that asks
@@ -1831,19 +1836,29 @@ static void aes_wrap(const uint8_t *kek, const uint8_t *in, int n,
     memcpy(out, a, 8);
 }
 
+/* the rates, as P-RXV word 0 and TX status word 0 have them: OFDM 6
+ * Mbit/s (mode 1, index 0xb); HT MCS 15 (mode 2: two streams, NSTS 1,
+ * 20 MHz) with the short guard interval (RXV only; mt76 keeps its TX
+ * rate's from what it set) */
+#define RXV_OFDM6       0x0100000b
+#define RXV_HT_MCS15    (0x02000000 | 1 << 15 | 1 << 7 | 15)
+#define TXS_OFDM6       0x004b
+#define TXS_HT_MCS15    (1 << 10 | 2 << 6 | 15)
+
 /* a frame as the chip receives it, on 0x84: its RXD (type 2, group 3: the
- * rate, OFDM 6 Mbit/s, and RCPI 0x82 on two chains: -42 dBm), the AP's
- * channel, @addr_type (1: unicast to the station, 2: multicast, 3:
- * broadcast) */
+ * rate, and RCPI 0x82 on two chains: -42 dBm), the AP's channel,
+ * @addr_type (1: unicast to the station, 2: multicast, 3: broadcast). Data
+ * to the station comes at HT MCS 15, the rest at 6 Mbit/s */
 static void ap_rx_sec(MT7921State *s, const uint8_t *f, int n, int addr_type,
                       bool decrypted)
 {
     uint8_t h[32] = { 0 };
+    bool data = n >= 2 && (f[0] & 0x0c) == 0x08;
 
     stl_le_p(h, 0x10000000 | (32 + n));
     stl_le_p(h + 4, BIT(13) | (decrypted ? 4 << 16 : 0));  /* (CCMP) */
     stl_le_p(h + 12, s->ap_chan << 8 | addr_type << 16);
-    stl_le_p(h + 24, 0x0100000b);
+    stl_le_p(h + 24, data && addr_type == 1 ? RXV_HT_MCS15 : RXV_OFDM6);
     stl_le_p(h + 28, 0x8282);
     wifi_in(s, 0, h, 32, f, n);
 }
@@ -1875,6 +1890,38 @@ static const uint8_t bcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
 static const uint8_t rsn_ie[] = { 48, 20, 1, 0, 0x00, 0x0f, 0xac, 4,
                                   1, 0, 0x00, 0x0f, 0xac, 4,
                                   1, 0, 0x00, 0x0f, 0xac, 2, 0, 0 };
+
+/* HT capabilities: LDPC, SM power save off, short GI at 20 MHz, TX STBC
+ * and one stream of RX STBC, 20 MHz only; A-MPDUs to 64 KiB; MCS 0-15
+ * both ways */
+static const uint8_t ht_cap_ie[] = { 45, 26, 0xad, 0x01, 0x03,
+                                     0xff, 0xff, 0, 0, 0, 0, 0, 0, 0, 0,
+                                     0, 0, 0x01, 0, 0, 0,
+                                     0, 0, 0, 0, 0, 0, 0 };
+
+/* WMM's parameters (the usual: best effort, background, video, voice) */
+static const uint8_t wmm_ie[] = { 221, 24, 0x00, 0x50, 0xf2, 2, 1, 1, 0, 0,
+                                  0x03, 0xa4, 0x00, 0x00,
+                                  0x27, 0xa4, 0x00, 0x00,
+                                  0x42, 0x43, 0x5e, 0x00,
+                                  0x62, 0x32, 0x2f, 0x00 };
+
+/* HT capabilities, HT operation (the AP's channel, 20 MHz, no
+ * protection) and WMM: what an 802.11n AP adds, at @f */
+static int ap_ht_ies(MT7921State *s, uint8_t *f)
+{
+    int n = 0;
+
+    memcpy(f, ht_cap_ie, sizeof(ht_cap_ie));
+    n += sizeof(ht_cap_ie);
+    f[n++] = 61;
+    f[n++] = 22;
+    f[n++] = s->ap_chan;
+    memset(f + n, 0, 21);
+    n += 21;
+    memcpy(f + n, wmm_ie, sizeof(wmm_ie));
+    return n + sizeof(wmm_ie);
+}
 
 static void ap_beacon_of(MT7921State *s, int net)
 {
@@ -1909,6 +1956,7 @@ static void ap_beacon_of(MT7921State *s, int net)
     }
     memcpy(f + n, ap_xrates, sizeof(ap_xrates));
     n += sizeof(ap_xrates);
+    n += ap_ht_ies(s, f + n);
     ap_rx(s, f, n, 3);
 }
 
@@ -2053,7 +2101,7 @@ static void ap_uplink(MT7921State *s, const uint8_t *eth, int n)
 static void ap_frame(MT7921State *s, const uint8_t *f, int n)
 {
     static const uint8_t snap[6] = { 0xaa, 0xaa, 0x03, 0, 0, 0 };
-    uint8_t r[64], eth[2400];
+    uint8_t r[192], eth[2400];
     uint16_t fc;
     int h, m, net;
 
@@ -2094,10 +2142,32 @@ static void ap_frame(MT7921State *s, const uint8_t *f, int n)
         m += sizeof(ap_rates);
         memcpy(r + m, ap_xrates, sizeof(ap_xrates));
         m += sizeof(ap_xrates);
+        m += ap_ht_ies(s, r + m);
         ap_reply(s, r, m);
         if (net) {                              /* then the handshake */
             timer_mod(s->eapol, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                       80 * SCALE_MS);
+        }
+        break;
+    case 0xd0:                                  /* action: an ADDBA Request */
+        if (n < 33 || f[24] != 3 || f[25] != 0 ||
+            s->sta_state != AP_ASSOC || memcmp(f + 10, s->sta, 6)) {
+            break;
+        }
+        {
+            uint16_t ba = lduw_le_p(f + 27), size = ba >> 6;
+
+            /* accepted: its TID, immediate, its buffer up to 64 */
+            ba = (ba & 0x3c) | 0x02 | (size && size < 64 ? size : 64) << 6;
+            m = ap_hdr(s, r, 0x00d0, s->sta, ap_bssid(s, net),
+                       ap_bssid(s, net));
+            r[m++] = 3;                         /* Block Ack: ADDBA Response */
+            r[m++] = 1;
+            r[m++] = f[26];                     /* (its dialog token) */
+            stw_le_p(r + m, 0);                 /* success */
+            stw_le_p(r + m + 2, ba);
+            stw_le_p(r + m + 4, lduw_le_p(f + 29));    /* (its timeout) */
+            ap_reply(s, r, m + 6);
         }
         break;
     case 0xa0:                                  /* disassociation */
@@ -2169,14 +2239,15 @@ static NetClientInfo ap_net_info = {
     .receive = ap_receive,
 };
 
-/* a TX status, acked (OFDM 6 Mbit/s), for @wcid's frame @pid: a packet of
+/* a TX status, acked at @rate (TXS_*), for @wcid's frame @pid: a packet of
  * type 0 on 0x84, one record */
-static void wifi_txs(MT7921State *s, uint16_t wcid, uint8_t pid)
+static void wifi_txs(MT7921State *s, uint16_t wcid, uint8_t pid,
+                     uint32_t rate)
 {
     uint8_t r[40] = { 0 };
 
     stl_le_p(r, 40);
-    stl_le_p(r + 8, 0x004b | BIT(15));
+    stl_le_p(r + 8, rate | BIT(15));
     stl_le_p(r + 16, (uint32_t)(wcid & 0x3ff) << 16);
     stl_le_p(r + 20, (uint32_t)pid << 24);
     stl_le_p(r + 24, (uint32_t)qemu_clock_get_us(QEMU_CLOCK_VIRTUAL));
@@ -2202,7 +2273,11 @@ static void wifi_tx(MT7921State *s, const uint8_t *b, int len)
         return;
     }
     if ((txd5 & BIT(10)) && (txd5 & 0xff) >= 3) {
-        wifi_txs(s, txd1 & 0x3ff, txd5 & 0xff);
+        /* (data, 802.3 or 802.11, at HT MCS 15; management at 6 Mbit/s) */
+        bool data = ((txd1 >> 16) & 3) == 0 || (b[68] & 0x0c) == 0x08;
+
+        wifi_txs(s, txd1 & 0x3ff, txd5 & 0xff,
+                 data ? TXS_HT_MCS15 : TXS_OFDM6);
     }
     if (((txd1 >> 16) & 3) == 0) {             /* 802.3: as it is */
         ap_uplink(s, b + 68, n);

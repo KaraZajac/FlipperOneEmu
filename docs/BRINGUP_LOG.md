@@ -2946,3 +2946,35 @@ register headers.
        chip leaves the hub's port and comes back, pass as before.
        linux_check passes (491 s), as do its U-Boot mode (421 s), its MaskROM
        mode (16 s) and the smoke test (52 s).
+
+110. **The access point is 802.11n.** It was an 11g one: 54 Mbit/s at most,
+     and its frames came in at 6.
+     - **Its elements.** Its beacons and association responses carry HT
+       Capabilities, HT Operation and WMM's parameters:
+       - two streams, 20 MHz, the short guard interval: MCS 0-15;
+       - LDPC, STBC, A-MPDUs to 64 KiB;
+       - on its channel, with nothing to protect.
+
+       mac80211 makes an association HT only with WMM ("WMM/QoS not
+       supported, disabling HT"), which is why the AP has it.
+     - **Its rates.**
+       - Unicast data to the station comes at MCS 15 with the short guard
+         interval, 144.4 Mbit/s: P-RXV's word 0, HT mode.
+       - Management frames, beacons and broadcasts stay at 6 Mbit/s, as an
+         AP sends them.
+       - A TX status for the station's data has MCS 15 too; for management,
+         6 Mbit/s.
+     - **Block Ack.** With HT, mt76 starts a Block Ack session for the
+       station's traffic, and mac80211 sends the AP an ADDBA Request. The AP
+       accepts it with an ADDBA Response: the same TID, immediate, a buffer
+       of up to 64.
+     - **Checked.**
+       - `iw link` after a join: rx bitrate 144.4 MBit/s MCS 15 short GI,
+         tx bitrate 130.0 MBit/s MCS 15. mt76 keeps the TX rate's guard
+         interval as it last set it.
+       - A temporary log line in the AP saw the station's ADDBA Requests
+         for TID 0 and TID 7 as it joined, each answered with a buffer of 64,
+         and none repeated.
+       - linux_check's join now checks the rx bitrate. It passes (506 s), as
+         do its U-Boot mode (392 s), its MaskROM mode (16 s) and the smoke
+         test (49 s).
