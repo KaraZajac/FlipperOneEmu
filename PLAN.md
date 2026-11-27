@@ -227,7 +227,7 @@ screen and its CLI.
       ones flush between two TBs, the others before they next run (patch 0028:
       a process starts 2.5 to 4 times quicker, linux_check 447 s from 481-520,
       its U-Boot mode 293 s from 403-435) (2026-11-27, log 117)
-- ◐ Wi-Fi (the MT7921 on USB, its Bluetooth there too, log 99): mt7921u on its
+- ☑ Wi-Fi (the MT7921 on USB, its Bluetooth there too, log 99): mt7921u on its
       interface 3, its real firmware through the emulated MCU, the interface
       NetworkManager's and FlipCTL's, scans that complete (2026-11-26, log 101); an
       access point near it (`run --wifi`): an open 11g network that a scan finds and
@@ -237,7 +237,10 @@ screen and its CLI.
       AP 802.11n: HT with WMM, its data at MCS 15 (144.4 Mbit/s), Block Ack
       sessions accepted (2026-11-27, log 110); a third network, on 5 GHz
       (channel 36, 80 MHz), open, 802.11ax: VHT and HE, its data at HE-MCS 11
-      both ways (1200.9 Mbit/s) (2026-11-27, log 116); WPA3 (SAE)
+      both ways (1200.9 Mbit/s) (2026-11-27, log 116); a WPA3 network beside
+      it: SAE (group 19, the PWE by hunting and pecking: sae.c), management
+      frames protected (an IGTK; the AP's ADDBA Response protected), AKM 8's
+      4-way handshake; a wrong passphrase refused (2026-11-27, log 118)
 
 ## Not planned
 - The RK3576's mask ROM and DDR training blob (closed), SPL and TF-A's BL31: the machine

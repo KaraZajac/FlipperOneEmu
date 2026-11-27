@@ -54,6 +54,7 @@ arm_common_ss.add(when: 'CONFIG_FLIPPER_ONE', if_true: files(
   'rp2350_usb.c',
   'usb_host.c',
   'mt7921.c',
+  'sae.c',
   'sl6341.c',
   'uart_link.c',
 ))

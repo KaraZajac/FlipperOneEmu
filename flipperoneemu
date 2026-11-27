@@ -705,12 +705,13 @@ def main():
                            help="an access point near the Flipper, on this "
                                 "PC's network (through passt): an open network, "
                                 "FlipperOneEmu, a WPA2 one, FlipperOneEmu-WPA2 "
-                                "(2.4 GHz, 802.11n), and an open one on 5 GHz, "
-                                "FlipperOneEmu-5G (802.11ax); its Wi-Fi finds "
-                                "and joins them")
+                                "(2.4 GHz, 802.11n), and on 5 GHz (802.11ax) an "
+                                "open one, FlipperOneEmu-5G, and a WPA3 one, "
+                                "FlipperOneEmu-WPA3; its Wi-Fi finds and joins "
+                                "them")
             p.add_argument("--wifi-psk", metavar="PASSPHRASE",
                            default="flipperone",
-                           help="the WPA2 network's passphrase (8-63 "
+                           help="the WPA2 and WPA3 networks' passphrase (8-63 "
                                 "characters; flipperone unless told)")
             p.add_argument("--lan", action="store_true",
                            help="a cable in the second Ethernet port, to a LAN "

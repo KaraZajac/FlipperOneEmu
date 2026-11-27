@@ -3291,3 +3291,62 @@ register headers.
          error is now not shown.
        - README's boot times are now about a minute and a quarter, and two
          minutes through U-Boot.
+
+118. **WPA3-Personal: SAE and protected management frames.** This was the
+     Wi-Fi bullet's last open item.
+     - **FlipperOneEmu-WPA3.** It is beside the 5 GHz network (channel 36,
+       802.11ax), its BSSID the next one, with the WPA2 network's passphrase
+       (`--wifi-psk`). Its RSN element: CCMP, AKM 8 (SAE), MFP required and
+       capable (0x00c0), BIP-CMAC-128 for group management frames.
+     - **SAE (sae.c).**
+       - Group 19: P-256 in Montgomery form on 64-bit limbs, its points
+         Jacobian.
+       - The PWE by hunting and pecking: the first x that is on the curve,
+         y's parity that of the seed.
+       - The commit: a scalar (rand + mask) and the inverse of mask times the
+         PWE.
+       - From the peer's commit, K = rand (peer scalar × PWE + peer
+         element). The KCK and the PMK come from KDF-SHA256-512, and the
+         confirms are HMAC-SHA256.
+       - It was checked on the host against a textbook Python
+         implementation (affine points, Python's integers): the PWE, both
+         commits, the KCK, the PMK, the PMKID and the AP's confirm, all
+         equal on 21 cases (random scalars and passwords).
+     - **The exchange.**
+       - The station's commit is answered with the AP's, and its confirm,
+         once checked, with the AP's. The station is then authenticated.
+       - Another group gets status 77, a wrong confirm (the passphrase
+         wrong) status 15, and open authentication status 13.
+     - **Its handshake, AKM 8's.**
+       - The PMK is SAE's, and the PTK comes from KDF-SHA256 (384 bits).
+       - The MICs are AES-128-CMAC (in mt7921.c beside the key wrap), with
+         key descriptor version 0.
+       - Message 3 has WPA3's RSN element, the GTK and the IGTK (key 4, IPN
+         0), padded and wrapped.
+     - **Protected management frames.** The station's ADDBA Request may
+       carry room for CCMP's header. The AP's ADDBA Response has the
+       Protected bit and comes as the chip decrypted it.
+     - **What Flipper OS makes of it.**
+       - `iw dev scan` finds four BSSs. FlipperOneEmu-WPA3 shows
+         "Authentication suites: SAE" and "MFP-required MFP-capable
+         (0x00c0)".
+       - `nmcli dev wifi connect FlipperOneEmu-WPA3 password flipperone`
+         activates it. dmesg shows two authentications (the commit, then the
+         confirm), then the association (capability 0x11).
+       - The connection's key-mgmt is sae, and `iw dev station dump` shows
+         it authorized, MFP yes. Its rate is HE-MCS 11 both ways, and the
+         gateway answers.
+       - mac80211's tracepoints show both Block Ack sessions (TIDs 0 and 7)
+         start and turn operational (TX_START, then TX_OPERATIONAL with a
+         buffer of 64), so the protected ADDBA Response was taken.
+       - A wrong passphrase: "denied authentication (status 15)", and
+         NetworkManager gives up.
+     - **Checked.**
+       - linux_check's scan now wants four networks, two on 2.4 GHz and two
+         on 5 GHz.
+       - It joins FlipperOneEmu-WPA3: an address, the gateway answering, MFP
+         yes, key-mgmt sae.
+       - Then a wrong passphrase must fail with SAE's confirm refused.
+       - linux_check passes (370 s, the login at 61.9 s), as do its U-Boot
+         mode (240 s), its MaskROM mode (17 s) and the smoke test (44 s).
+       - The Wi-Fi bullet in PLAN is now done.

@@ -67,20 +67,21 @@ BlueZ connects to (its GATT services: its battery, its heart rate), and a BR/EDR
 speaker, which BlueZ pairs with (SSP, its services by SDP) and PipeWire plays to (A2DP,
 SBC: what it plays to a file, `run --speaker`). With `--wifi` an access point is near
 it, on this PC's network (through passt): an open network and a WPA2 one on 2.4 GHz
-(802.11n, 144.4 Mbit/s) and an open one on 5 GHz (802.11ax on 80 MHz, 1200.9 Mbit/s),
-which the Wi-Fi finds and joins, from FlipCTL too; nothing else is ever found (no
-radio). It also boots as the device does, through U-Boot from the card (its boot menu
-on the Flipper's screen; with KASLR, and so KPTI, about two minutes here), and Flipper
-OS installs onto it as the docs do it: in its MaskROM, rockusb's download-boot of the
-installer's loader (`scripts/fo_rockusb.py`, over USB/IP); the installer provisions the
-UFS, installs Flipper OS and updates the MCU's firmware over I2C, and the boot ROM then
-boots the UFS. Flipper OS updates the MCU's firmware as on the device, and Rockusb's
-Loader mode (a Rockchip loader's usbplug, or U-Boot's rockusb) reads and writes the UFS
-or the card from the PC. The RK3576's DisplayPort (over the USB-C port) and more come
-next. [RESEARCH.md](RESEARCH.md) is the survey this starts from: the device, what
-Flipper Devices publishes, and what emulating it takes. [PLAN.md](PLAN.md) is the order
-of work; the MCU comes first. [docs/BRINGUP_LOG.md](docs/BRINGUP_LOG.md) is what was
-found on the way.
+(802.11n, 144.4 Mbit/s) and on 5 GHz (802.11ax on 80 MHz, 1200.9 Mbit/s) an open one
+and a WPA3 one (SAE, management frames protected), which the Wi-Fi finds and joins,
+from FlipCTL too; nothing else is ever found (no radio). It also boots as the device
+does, through U-Boot from the card (its boot menu on the Flipper's screen; with KASLR,
+and so KPTI, about two minutes here), and Flipper OS installs onto it as the docs do
+it: in its MaskROM, rockusb's download-boot of the installer's loader
+(`scripts/fo_rockusb.py`, over USB/IP); the installer provisions the UFS, installs
+Flipper OS and updates the MCU's firmware over I2C, and the boot ROM then boots the
+UFS. Flipper OS updates the MCU's firmware as on the device, and Rockusb's Loader mode
+(a Rockchip loader's usbplug, or U-Boot's rockusb) reads and writes the UFS or the card
+from the PC. The RK3576's DisplayPort (over the USB-C port) and more come next.
+[RESEARCH.md](RESEARCH.md) is the survey this starts from: the device, what Flipper
+Devices publishes, and what emulating it takes. [PLAN.md](PLAN.md) is the order of
+work; the MCU comes first. [docs/BRINGUP_LOG.md](docs/BRINGUP_LOG.md) is what was found
+on the way.
 
 ## Trying it
 
@@ -95,7 +96,7 @@ scripts/fetch_os.py          # a Flipper OS build (2 GB), for ...
                              # an access point near it (passt): FlipCTL's Network >
                              # Wi-Fi joins FlipperOneEmu, FlipperOneEmu-WPA2
                              # (passphrase flipperone) or, on 5 GHz,
-                             # FlipperOneEmu-5G
+                             # FlipperOneEmu-5G or FlipperOneEmu-WPA3 (the same)
 ./flipperoneemu gui --uboot  # ... through U-Boot, as the device boots: its boot menu on
                              # the screen, the pad to pick a profile
 ```
@@ -133,11 +134,12 @@ scripts/fetch_os.py                  # a Flipper OS build: its kernel, initrd an
 ./flipperoneemu run --linux --wifi ... # ... and an access point near it, on this PC's
                                      # network (through passt): an open network,
                                      # FlipperOneEmu, a WPA2 one, FlipperOneEmu-WPA2
-                                     # (passphrase flipperone, or --wifi-psk's), and an
-                                     # open 802.11ax one on 5 GHz, FlipperOneEmu-5G;
-                                     # its Wi-Fi (the MT7921) finds and joins them:
-                                     # FlipCTL's Network > Wi-Fi, or nmcli dev wifi
-                                     # connect
+                                     # (passphrase flipperone, or --wifi-psk's), and on
+                                     # 5 GHz (802.11ax) an open one, FlipperOneEmu-5G,
+                                     # and a WPA3 one, FlipperOneEmu-WPA3 (the same
+                                     # passphrase); its Wi-Fi (the MT7921) finds and
+                                     # joins them: FlipCTL's Network > Wi-Fi, or nmcli
+                                     # dev wifi connect
 ./flipperoneemu run --linux --lan ... # ... and a cable in its second port, to a LAN at
                                      # devices/NAME/lan.sock (QEMU's stream netdev): a VM
                                      # joins it with -netdev stream,addr.type=unix,

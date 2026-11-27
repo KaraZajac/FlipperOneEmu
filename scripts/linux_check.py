@@ -38,7 +38,9 @@ Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
   and finds nothing, or with passt (`run --wifi`) the access point near it,
   whose open network NetworkManager joins (an address by DHCP, a gateway that
   answers, its data at 802.11n's MCS 15), then its WPA2 one (the 4-way
-  handshake) and its 5 GHz one (802.11ax: 80 MHz, HE-MCS 11 both ways);
+  handshake), its 5 GHz one (802.11ax: 80 MHz, HE-MCS 11 both ways) and
+  its WPA3 one (SAE, management frames protected; a wrong passphrase
+  refused);
   with its rfkill blocked the chip leaves USB, unblocked it comes back cold;
   each Ethernet port
   has its RTL8211F, and with passt installed port 1 is on this PC's network
@@ -680,9 +682,9 @@ def checks(check, d, out, first_boot, off, net):
     else:
         # --wifi: an access point near it (an open network), its uplink
         # through passt
-        check("... a scan finds the access point near it, its three "
-              "networks (two on 2.4 GHz, one on 5 GHz) (run --wifi)",
-              wifi[-1:] == ["scan 0 3"], str(wifi))
+        check("... a scan finds the access point near it, its four "
+              "networks (two on 2.4 GHz, two on 5 GHz) (run --wifi)",
+              wifi[-1:] == ["scan 0 4"], str(wifi))
         led = panel.leds[1:2]                   # (the Wi-Fi LED, off)
         join = con.run("W=$(ls /sys/class/ieee80211/phy0/device/net/ | head "
                        "-1); sudo timeout 90 nmcli dev wifi connect "
@@ -729,6 +731,33 @@ def checks(check, d, out, first_boot, off, net):
               "SSID: FlipperOneEmu-5G" in five[2] and
               "freq: 5180" in five[2] and f"rx bitrate: {he}" in five[2] and
               f"tx bitrate: {he}" in five[2], str(five))
+        wpa3 = con.run("W=$(ls /sys/class/ieee80211/phy0/device/net/ | head "
+                       "-1); sudo timeout 90 nmcli dev wifi connect "
+                       "FlipperOneEmu-WPA3 password flipperone ifname $W "
+                       ">/dev/null 2>&1; echo $?; sleep 3; G=$(ip route | awk "
+                       "'/^default/ && /wl/ {print $3; exit}'); ping -c 2 -W 2 "
+                       "-I $W $G >/dev/null 2>&1; echo ping $?; sudo iw dev $W "
+                       "link | grep SSID | xargs; sudo iw dev $W station dump "
+                       "| grep -o 'MFP:.*' | xargs; nmcli -g "
+                       "802-11-wireless-security.key-mgmt connection show "
+                       "FlipperOneEmu-WPA3", 150) or []
+        check("... and its WPA3 one (FlipperOneEmu-WPA3: SAE, management "
+              "frames protected), the gateway answering through it",
+              wpa3 == ["0", "ping 0", "SSID: FlipperOneEmu-WPA3",
+                       "MFP: yes", "sae"], str(wpa3))
+        # (a wrong passphrase: SAE's confirm refused, status 15)
+        wrong = con.run("W=$(ls /sys/class/ieee80211/phy0/device/net/ | head "
+                        "-1); sudo nmcli connection delete FlipperOneEmu-WPA3 "
+                        ">/dev/null 2>&1; sudo nmcli dev wifi rescan "
+                        ">/dev/null 2>&1; sleep 6; sudo timeout 90 nmcli dev "
+                        "wifi connect FlipperOneEmu-WPA3 password wrongpassword "
+                        "ifname $W >/dev/null 2>&1; echo $?; sudo dmesg -t | "
+                        "grep -c 'denied authentication (status 15)'; sudo "
+                        "nmcli connection delete FlipperOneEmu-WPA3 >/dev/null "
+                        "2>&1", 200) or []
+        check("... where a wrong passphrase fails (SAE's confirm refused)",
+              len(wrong) == 2 and wrong[0] != "0" and wrong[1].isdigit() and
+              int(wrong[1]) >= 1, str(wrong))
     cycle = con.run("sudo rfkill block wlan; sleep 3; "
                     "lsusb -d 0e8d:7961 | wc -l; ls /sys/class/bluetooth | "
                     "wc -l; sudo rfkill unblock wlan; "
