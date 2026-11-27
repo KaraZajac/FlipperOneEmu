@@ -41,7 +41,8 @@ Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
   is the DHCP server and gateway: a link, an address from it, its ping
   answered, and the Flipper's to it;
   the CPU clusters' clocks come from TF-A's SCMI server, and cpufreq has
-  both clusters; the six thermal zones read the TSADC, with the trims the
+  both clusters; the cores idle with WFI (the machine drops the tree's
+  power-down idle state); the six thermal zones read the TSADC, with the trims the
   OTP holds; the SARADC reads the boot strap's divider, the MCU's BOOT1
   (and follows it as the MCU's `saradc set_id` changes it) and the board's
   revision;
@@ -644,6 +645,12 @@ def checks(check, d, out, first_boot, off, net):
     check("the clusters' clocks over SCMI: cpufreq has both",
           bool(freq) and len(freq) == 2 and
           all(f.strip().isdigit() for f in freq), str(freq))
+    idle = con.run("cat /sys/devices/system/cpu/cpuidle/current_driver; "
+                   "ls /sys/devices/system/cpu/cpu0/cpuidle 2>/dev/null | "
+                   "wc -l", 60) or []
+    check("its cores idle with WFI: the tree's power-down idle state "
+          "(cpu-sleep), which QEMU's PSCI runs as a WFI, dropped",
+          idle == ["none", "0"], str(idle))
     temps = con.run("for z in /sys/class/thermal/thermal_zone*; do "
                     "case $(cat $z/type) in *-thermal) cat $z/temp;; esac; "
                     "done")                     # (not the battery's zone)

@@ -202,7 +202,12 @@ screen and its CLI.
       other CPUs' TLB flushes under the BQL, MMIO's; KPTI (KASLR forces it under
       U-Boot, as on the device): QEMU flushed its whole TLB at each of its flips
       of TTBR1, which keep it now (patch 0024: a system call ten times quicker,
-      as quick as without KPTI; the login 15-40 s sooner) (2026-11-26, log 105)
+      as quick as without KPTI; the login 15-40 s sooner) (2026-11-26, log 105);
+      the cores' power-down idle state, which QEMU's PSCI runs as a WFI, dropped
+      from the kernel's tree in a direct boot (QEMU idle at a third of the host
+      CPU, an IPI to an idle core four times quicker) (2026-11-26, log 106);
+      U-Boot's tree keeps it; the guest's capacity-aware placement (little cores
+      as slow as big here) moves tasks between cores for nothing
 - ◐ Wi-Fi (the MT7921 on USB, its Bluetooth there too, log 99): mt7921u on its
       interface 3, its real firmware through the emulated MCU, the interface
       NetworkManager's and FlipCTL's, scans that complete (2026-11-26, log 101); an

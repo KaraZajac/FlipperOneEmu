@@ -59,6 +59,8 @@ struct FlipperOneState {
                                    U-Boot: */
     bool uboot;                 /* ... U-Boot proper from its microSD card,
                                    the machine as SPL and TF-A (property) */
+    bool deep_idle;             /* the kernel's tree keeps its CPUs' power-
+                                   down idle states (property) */
     char *rev;                  /* the board's revision (property) */
     char *falcon;               /* ... or a FIT for SPL's Falcon mode, as
                                    the Flipper OS installer is (property) */
@@ -1034,6 +1036,36 @@ static const uint8_t *fo_falcon_data(FlipperOneState *s, int node,
     return s->falcon_fit + off;
 }
 
+/*
+ * The kernel's tree, as the machine gives it (a direct boot, or SPL's
+ * Falcon mode): its CPUs' idle states that power a core down (the RK3576's
+ * cpu-sleep: PSCI's power-down, its local timer stopped) unavailable, as
+ * firmware does with a state it does not provide. QEMU's PSCI does a
+ * CPU_SUSPEND as a WFI and returns, which Linux takes for a failed entry,
+ * after its whole way into and out of a power-down state for nothing: the
+ * CPU PM notifiers (the GIC's per-CPU state saved and restored), the tick
+ * handed to the broadcast timer and back. Idle, QEMU took 2.6 times the
+ * host CPU, and an IPI to an idle core four times as long (log 106).
+ * Linux idles with WFI then, as with no idle states. Not with deep-idle=on:
+ * the tree as it is, the device's.
+ */
+static int fo_fdt_idle_states(FlipperOneState *s, void *fdt)
+{
+    int node = -1, err;
+
+    if (s->deep_idle) {
+        return 0;
+    }
+    while ((node = fdt_node_offset_by_compatible(fdt, node,
+                                                 "arm,idle-state")) >= 0) {
+        err = fdt_setprop_string(fdt, node, "status", "disabled");
+        if (err) {
+            return err;
+        }
+    }
+    return 0;
+}
+
 /* an image of the configuration to its load address: its end, 0 if not */
 static hwaddr fo_falcon_image(FlipperOneState *s, int node, bool tree)
 {
@@ -1077,7 +1109,8 @@ static hwaddr fo_falcon_image(FlipperOneState *s, int node, bool tree)
         if (fdt_open_into(data, t, len + 1024) ||
             (m = fdt_add_subnode(t, 0, "memory@40200000")) < 0 ||
             fdt_setprop_string(t, m, "device_type", "memory") ||
-            fdt_setprop(t, m, "reg", reg, sizeof(reg)) || fdt_pack(t)) {
+            fdt_setprop(t, m, "reg", reg, sizeof(reg)) ||
+            fo_fdt_idle_states(s, t) || fdt_pack(t)) {
             g_free(t);
             return 0;
         }
@@ -1480,18 +1513,21 @@ static void flipper_one_rk3576_reset(void *opaque)
  * The kernel's tree, booted directly: its /chosen gets a seed for the RNG
  * (from this PC, or -seed's), as U-Boot gives one on the device, so that
  * its entropy is there from the start. Not U-Boot's seed for KASLR: on
- * these cores (no E0PD) KASLR forces KPTI, whose switch of ASID at every
- * entry to the kernel and return from it costs QEMU its whole TLB each
- * time, and a boot to the login half again as long (`run --uboot` has it,
- * as the device does). The images are kept as loaded, so each start of
- * this run has the same seed.
+ * these cores (no E0PD) KASLR forces KPTI, which still costs a boot some
+ * time, if far less since its flips keep QEMU's TLB (patch 0024; `run
+ * --uboot` has it, as the device does). Its CPUs' power-down idle states
+ * go (fo_fdt_idle_states). The images are kept as loaded, so each start
+ * of this run has the same seed.
  */
 static void flipper_one_modify_dtb(const struct arm_boot_info *info,
                                    void *fdt)
 {
+    FlipperOneState *s = container_of(info, FlipperOneState, binfo);
     uint8_t rng[32];
-    int chosen = fdt_path_offset(fdt, "/chosen");
+    int chosen;
 
+    fo_fdt_idle_states(s, fdt);
+    chosen = fdt_path_offset(fdt, "/chosen");
     if (chosen < 0 || qemu_guest_getrandom(rng, sizeof(rng), NULL)) {
         return;
     }
@@ -1914,6 +1950,16 @@ static void flipper_one_set_hdmi(Object *obj, bool value, Error **errp)
     FLIPPER_ONE(obj)->hdmi_at_start = value;
 }
 
+static bool flipper_one_get_deep_idle(Object *obj, Error **errp)
+{
+    return FLIPPER_ONE(obj)->deep_idle;
+}
+
+static void flipper_one_set_deep_idle(Object *obj, bool value, Error **errp)
+{
+    FLIPPER_ONE(obj)->deep_idle = value;
+}
+
 static bool flipper_one_get_uboot(Object *obj, Error **errp)
 {
     return FLIPPER_ONE(obj)->uboot;
@@ -2005,6 +2051,13 @@ static void flipper_one_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(oc, "rev",
         "The board's revision, as its device trees name it (f0b0c1 unless "
         "told, or f0b1c2): the configuration of u-boot.itb that SPL takes");
+    object_class_property_add_bool(oc, "deep-idle", flipper_one_get_deep_idle,
+                                   flipper_one_set_deep_idle);
+    object_class_property_set_description(oc, "deep-idle",
+        "Keep the CPUs' power-down idle states (cpu-sleep) in the kernel's "
+        "tree, in a direct boot or SPL's Falcon mode: the device's tree as "
+        "it is. QEMU's PSCI runs them as a WFI; without them Linux idles "
+        "with WFI, and spares itself their way in and out");
     object_class_property_add_bool(oc, "hdmi", flipper_one_get_hdmi,
                                    flipper_one_set_hdmi);
     object_class_property_set_description(oc, "hdmi",

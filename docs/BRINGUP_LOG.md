@@ -2702,3 +2702,69 @@ register headers.
        516 s in the last two runs), its kernel reaching the login in 102 s
        (117, 138). The default mode (507 s), the MaskROM mode and the smoke
        test pass.
+
+106. **Idle cores: the power-down idle state dropped; QEMU idles at a third
+     of the host CPU.**
+     - **Where this started.** In a direct boot, 300 fork-and-execs of
+       `/bin/true` took 22 s (log 105's reference). ftrace's sched and ipi
+       events over a loop of forks showed two things:
+       - Children were placed on idle cores, and some were moved again by
+         the stopper threads. To the guest the A53s are little; here they
+         are as fast as the A72s.
+       - Every hand-off to an idle core was slow. An IPI to an idle core
+         took 1.26 ms (median; p90 7 ms), against 0.28 ms to a busy one.
+     - **Not the host.** A thread on this PC wakes in about 70 µs (p99 about
+       100 µs) after sleeping 20 ms. A small test program measured it, with
+       a condition variable signalled.
+     - **The idle state.** Split by the target core's idle state:
+
+       | Target core | IPIs | Median |
+       |---|---|---|
+       | in WFI | 4 | 0.19 ms |
+       | in cpu-sleep | 292 | 0.84 ms |
+
+       The device's tree has one idle state, cpu-sleep: PSCI's power-down
+       (0x10000), with its local timer stopped. Linux's way into it:
+       - the CPU PM notifiers (the GIC's per-CPU state saved, the FP
+         state);
+       - the tick handed to the broadcast timer (the Rockchip timer: a
+         global lock, MMIO);
+       - the context saved, then PSCI's CPU_SUSPEND;
+       - and the same way back.
+
+       QEMU's PSCI does CPU_SUSPEND as a WFI and returns. Linux therefore
+       takes each entry for a failed one: cpuidle counted 21,046
+       "rejected" entries on core 0 after three minutes, each after the
+       whole way in and out, for a WFI.
+     - **Measured** in one boot, with the state then disabled through
+       cpuidle's sysfs:
+       - QEMU at idle: 159 % → 60 % of a host core.
+       - An IPI: 0.83 → 0.21 ms (median), 1.68 → 0.46 ms (p90).
+     - **The fix.** In a direct boot and in SPL's Falcon mode (the
+       installer), where the machine plays the firmware, it marks the tree's
+       `arm,idle-state` nodes disabled, as firmware does with a state it
+       does not provide. Linux then registers no PSCI cpuidle driver and
+       idles with WFI.
+       - `run --deep-idle` (the machine's `deep-idle`) keeps the tree as it
+         is.
+       - U-Boot's tree (`run --uboot`) is U-Boot's to give, and keeps the
+         state.
+     - **Measured with the fix**, against `--deep-idle`:
+       - QEMU at idle: 51 % of a host core, against 150 %.
+       - IPIs: 0.22 ms, against 1.04 ms (median).
+     - **Seen on the way**, the same slow wakes:
+       - dw_mmc's newer driver arms a watchdog of about 11 ms for each
+         command. It warns "Interrupt latency" when the completion is
+         latched but not yet handled at expiry, because the core that the
+         SD card's interrupt goes to woke slowly.
+       - mt7921u reads its registers with USB control transfers, some 6 ms
+         each: a chain of such wakes.
+       - The guest's capacity-aware placement still moves tasks between
+         cores for no gain (open).
+     - **Checked.**
+       - linux_check passes (493 s), with a new check that the cores idle
+         with WFI.
+       - Its U-Boot mode passes in 394 s, the login at 129 s. A first run
+         failed: the launcher's new option had split an if/elif, so
+         `--linux --uboot` gave U-Boot's drives twice.
+       - The MaskROM mode and the smoke test pass.

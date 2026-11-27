@@ -157,6 +157,10 @@ def cmd_run(args):
         # LU (Flipper OS installed there), or else the microSD card
         cmd += ["-machine", f"uboot=on,rev={board_rev(d)}"] + \
             device_disks(d, None)
+    if getattr(args, "deep_idle", False):
+        # the kernel's tree as it is: its CPUs' power-down idle state kept
+        # (the machine drops it in a direct boot or the installer's start)
+        cmd += ["-machine", "deep-idle=on"]
     (d / "gdb.port").unlink(missing_ok=True)
     if args.gdb:
         cmd += ["-gdb", f"tcp:127.0.0.1:{args.gdb}"]
@@ -681,6 +685,13 @@ def main():
                                 "(its installer-falcon.itb), as rockusb's "
                                 "download-boot does in the MaskROM: it installs "
                                 "to the UFS or the microSD card (with --net)")
+            p.add_argument("--deep-idle", action="store_true",
+                           help="keep the CPUs' power-down idle state in the "
+                                "kernel's tree, as the device has it (QEMU runs "
+                                "it as a WFI: without it, the default, Linux "
+                                "idles with WFI and spares its way in and out: "
+                                "QEMU idles at a third of the host CPU it "
+                                "takes with it)")
             p.add_argument("--net", action="store_true",
                            help="a cable in the first Ethernet port, to this "
                                 "PC's network (through passt)")

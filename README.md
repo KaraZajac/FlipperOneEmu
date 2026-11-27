@@ -161,6 +161,11 @@ scripts/fetch_os.py                  # a Flipper OS build: its kernel, initrd an
 ./flipperoneemu run --linux --cpus 4 ...  # ... on four of its eight cores (the device has
                                      # eight; here both boot to the login in some 70-110 s,
                                      # since QEMU patches 0019-0022)
+./flipperoneemu run --linux --deep-idle ...  # ... with the cores' power-down idle
+                                     # state (cpu-sleep) that the device's tree has; the
+                                     # machine drops it otherwise: QEMU's PSCI runs it as a
+                                     # WFI, and without it QEMU idles at a third of the host
+                                     # CPU, an IPI to an idle core a quarter as slow
 ./flipperoneemu run --linux --uboot ...  # ... through U-Boot from that card, as on the
                                      # device: its boot menu on the Flipper's screen (the
                                      # pad's up, down and OK pick a profile and kernel; hold
