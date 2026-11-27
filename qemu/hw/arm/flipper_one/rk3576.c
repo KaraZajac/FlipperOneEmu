@@ -1227,6 +1227,16 @@ static void rk3576_realize(DeviceState *dev, Error **errp)
     s->ufs = pci_new(PCI_DEVFN(1, 0), "ufs");
     qdev_prop_set_string(DEVICE(s->ufs), "serial", "FlipperOneEmu");
     qdev_prop_set_uint8(DEVICE(s->ufs), "lanes", 2);    /* (patch 0009) */
+    /*
+     * (patch 0025) the Flipper One's: UFS 2.2 (its specification), so
+     * HS-G3 at most; new, so its health descriptor says normal, 0-10%
+     * of its life used
+     */
+    qdev_prop_set_uint16(DEVICE(s->ufs), "spec-version", 0x0220);
+    qdev_prop_set_uint8(DEVICE(s->ufs), "hs-gear", 3);
+    qdev_prop_set_uint8(DEVICE(s->ufs), "pre-eol-info", 1);
+    qdev_prop_set_uint8(DEVICE(s->ufs), "life-time-est-a", 1);
+    qdev_prop_set_uint8(DEVICE(s->ufs), "life-time-est-b", 1);
     /* (patch 0017) provisioned with its boot feature on, boot LU A first */
     qdev_prop_set_bit(DEVICE(s->ufs), "boot-enable", s->ufs_boot_enable);
     qdev_prop_set_uint8(DEVICE(s->ufs), "boot-lun-en",

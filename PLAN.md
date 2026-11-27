@@ -53,8 +53,9 @@ screen and its CLI.
       display's supply)
 - ◐ The main bus (PIO I2C, decoded from GPIO22/23's levels, 2026-11-24): PCAL6416 (rails,
       `MASKROM_EN`; the firmware powers the Linux side and shows "CPU not responding",
-      2026-11-24), BQ28Z620 (the gauge: a battery at 80 %, `battery=N`), BQ25792 (the
-      charger, no USB input yet), INA219 (VSYS), FUSB302 and HD3SS3220 (USB-C, nothing
+      2026-11-24), BQ28Z620 (the gauge: a battery at 80 %, `battery=N`; 3100 mAh,
+      the tree's, 2026-11-27), BQ25792 (the charger, no USB input yet), INA219
+      (VSYS), FUSB302 and HD3SS3220 (USB-C, nothing
       plugged in) (2026-11-24): the self-check finds every chip; a charger to plug in
       (the window's Ctrl+U): the charger's flow, the battery charging over time, the
       USB-C chips' partner (2026-11-24); INA4230 ×5, the RK3576's rails and the control
@@ -127,8 +128,10 @@ screen and its CLI.
       0017: boot LUs A and B, bBootLunEn kept), an install, and Flipper OS booted
       from the UFS, the machine as the boot ROM (UFS, then the card) (2026-11-26,
       log 88); the MCU's update within the installer's 180 s: 55 s, the I2C
-      link at about its real speed (2026-11-26, log 89); a UFS reprovisioned (LUs
-      carved by a written Configuration Descriptor)
+      link at about its real speed (2026-11-26, log 89); the UFS as the Flipper
+      One's: UFS 2.2 on an HS-G3 link, new by its health descriptor (patch 0025,
+      2026-11-27, log 108); a UFS reprovisioned (LUs carved by a written
+      Configuration Descriptor)
 - ◐ The MCU powers it: `VCC5V0_SYS_S5_EN` (the main expander's pin 12) switches it on
       and off, and Linux's PSCI SYSTEM_OFF and SYSTEM_RESET are its own (QEMU patch
       0005) (2026-11-24); `MASKROM_EN` (BOOT0): the RK3576 waits in its MaskROM when

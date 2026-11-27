@@ -915,7 +915,10 @@ def uboot_checks(check, d, out, port):
     linux, qlog = d / "linux.log", d / "qemu.log"
     info = json.loads((ROOT / "firmware" / "os" / str(os_build()) /
                        "os.json").read_text())
-    want = f"flipperos-{info['profile']}-{info['version']}+"
+    # (its entry's file, with or without its boot counter: once Flipper OS
+    # has booted it well, its boot counting takes the "+3-0" off the name,
+    # and the reboot's menu lists it so)
+    want = f"flipperos-{info['profile']}-{info['version']}"
     panel = st.Panel(d / "panel.sock")
     panel.send("usb 2")                 # (a computer: OS-02)
     uboot_rockusb_checks(check, d, port)

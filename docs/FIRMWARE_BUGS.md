@@ -2,7 +2,8 @@
 
 Bugs in the Flipper One's firmware that turned up while FlipperOneEmu was built and
 checked: in its MCU firmware (flipperdevices/flipperone-mcu-firmware), numbered `FW-`,
-and in Flipper OS (its kernel, flipperdevices/flipper-linux-kernel), numbered `OS-`.
+and in Flipper OS (its kernel, flipperdevices/flipper-linux-kernel, and its interface,
+FlipCTL, flipperdevices/flipctl-slint), numbered `OS-`.
 They are the firmware's, not the emulator's: each one is read in the firmware's
 source, and the entry says what of the emulator, if anything, is in its path.
 
@@ -30,6 +31,7 @@ keeps its row, with the build that fixed it.
 | OS-01 | Past a thermal zone's last trip, Linux cannot set the TSADC's alarm ("Failed to set trips: -34") and leaves it armed below the temperature, so it goes off at every sample until the chip is off | Flipper OS 2501 | log errors, alarm left on | no |
 | OS-02 | With no computer on the USB gadget, the getty on its serial port (flipserial0) blocks while holding the console's lock, and now and then the debug UART's and tty1's gettys never start: no login | Flipper OS 2501 | no console login | no |
 | OS-03 | The image's boot entries for the 6.1.172 kernel (one per profile) cannot boot: their `vmlinuz` is the kernel's configuration, and their device-tree directory has no Flipper One tree. U-Boot lists them in its boot menu, and picking one fails ("Bad Linux ARM64 Image magic!") | Flipper OS 2501 | four of nine boot entries do not boot | no |
+| OS-04 | FlipCTL's Settings row "USB-C1 power out" opens nothing: FlipCTL reads Type-C port 0, which on the Flipper One's tree is USB-C2's (the HD3SS3220's), not USB-C1's (the FUSB302's, port 1) | Flipper OS 2501 | a setting that does nothing | no |
 
 ### FW-01: the main bus after a NACK, with words still queued
 
@@ -331,3 +333,38 @@ keeps its row, with the build that fixed it.
   until there is one.
 - **Log:** entry 75.
 
+
+### OS-04: "USB-C1 power out" reads USB-C2's port
+
+- **What happens:** Settings, "USB-C1 power out": Ok opens nothing, and the row
+  shows no value. The popup it should open offers charging the Flipper or powering
+  what is plugged in with one of the tree's three sets (5 V, 18 W, 27 W).
+- **Why:** FlipCTL (`crates/flipper-ui/src/usb_pd.rs`, at the build's revision
+  6c8c74e and still on its `dev` branch) reads the port at
+  `/sys/class/typec/port0`, and gives up when that port has no
+  `select_usb_power_delivery`. On the Flipper One's tree, port 0 is the HD3SS3220's
+  (i2c2 0x47, `usb-mux@47`): USB-C2, a host port, with no capability sets. USB-C1,
+  the FUSB302's (i2c2 0x22, `typec-portc@22`), with the sets `[pd0] pd1 pd2`, is
+  port 1:
+  - The typec class numbers ports in the order they register. Both drivers are
+    built in (`CONFIG_TYPEC_FUSB302=y`, `CONFIG_TYPEC_HD3SS3220=y`).
+  - The FUSB302 comes first in the tree, but its probe needs the charger's VBUS
+    regulator (`vbus-supply`, `charger@6b/regulators/vbus`). It defers until the
+    BQ25792 has probed, and the BQ25792 comes after both in the tree.
+  - The HD3SS3220 needs only two fixed regulators, its interrupt and its pins, so
+    it registers first: `hd3ss3220 2-0047: probed revision=0x2`.
+
+  In the emulator, `/sys/class/typec/port0` is `.../2-0047/typec/port0` (power role
+  `[source]`) and `port1` is `.../2-0022/typec/port1`
+  (`select_usb_power_delivery`: `[pd0] pd1 pd2`).
+- **What of the emulator is in its path:** the order comes from the kernel's own
+  probing of the board's tree. The emulator's part is that both chips answer on
+  the bus. A real HD3SS3220 stays silent for some tens of milliseconds after it is
+  powered, which its driver waits out inside its probe; the FUSB302 still waits for
+  the charger after it. A real Flipper One should number the ports the same way.
+- **Seen on:** Flipper OS build 2501 (FlipCTL 6c8c74e), in the emulator. Not tried on
+  a real Flipper One.
+- **A fix, for FlipCTL:** look for the port rather than assume its number. For
+  example, take the `/sys/class/typec/port*` that has `select_usb_power_delivery`,
+  or the one whose device is bound to `fusb302`.
+- **Log:** entry 108.

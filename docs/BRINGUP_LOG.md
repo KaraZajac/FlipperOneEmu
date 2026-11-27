@@ -2823,3 +2823,56 @@ register headers.
          disconnects.
        - linux_check passes (502 s), as do its U-Boot mode (401 s), its
          MaskROM mode and the smoke test.
+
+108. **FlipCTL's screens, one by one; the UFS as the Flipper One's.**
+     - **The tour.** With `--net --wifi`, each of FlipCTL's screens opened
+       from the menu.
+       - Filled in as on a device:
+         - Settings' System info: model, SoC, CPU serial, memory, MCU, OS,
+           kernel, the SD card, the battery, the radios, every address;
+         - Battery info;
+         - LED Brightness: a group set to 80 % reached the MCU, and FlipCTL
+           read it back;
+         - Disk info;
+         - OS Profiles: its five profiles, after about a minute of reading
+           them and loading the highlighted one's kexec image;
+         - Network: Wi-Fi, Ethernet (ETH0 at 1 Gb/s over DHCP), Routing info.
+       - Apps and App Manager are empty: `/home/user/Apps` does not exist in
+         the published image.
+       - The UFS read as QEMU's: "UFS 4.1", "HS-G4 x2", and "-" for its life
+         used and its health.
+       - "USB-C1 power out" opened nothing. That is FlipCTL's (OS-04):
+         - it reads Type-C port 0;
+         - port 0 is the HD3SS3220's, USB-C2;
+         - USB-C1's FUSB302, with the tree's three sets, is port 1;
+         - the FUSB302 defers until the charger has registered its VBUS
+           regulator, and the charger comes after the HD3SS3220 in the tree.
+     - **The UFS (QEMU patch 0025).** QEMU's UFS takes what device it is as
+       properties:
+       - its version: wSpecVersion;
+       - its link's highest HS gear, at both ends;
+       - its health descriptor: pre-EOL info and both life-time estimates.
+
+       The machine's is the Flipper One's:
+       - UFS 2.2, by its specification, so HS-G3 at most;
+       - new: normal, 0-10 % of its life used.
+
+       Linux runs its link at HS-G3 x2 (rate B), with WriteBooster on (a 2.2
+       device with the feature). FlipCTL shows "UFS 2.2", "HS-G3 x2", "0-10%"
+       and "normal". Its name stays QEMU's, since the part is not published,
+       and so does the host controller's version. U-Boot's "invalid UFS
+       version 0x410" is about that register, UFSHCI 4.1, which its list of
+       versions stops short of.
+     - **The battery** is the tree's: 3100 mAh, not the 3000 assumed in log 29.
+       Its node has two cells, 8.65 V to charge and 6.0 V empty.
+     - **A check that raced Flipper OS.** linux_check's U-Boot mode picks its
+       boot entry by file name, and looked for it with its boot counter,
+       `+3-0`. Once Flipper OS has booted an entry well, the counter comes off
+       the name. Boots through U-Boot are quicker now (log 105), so that
+       happened before the check's reboot, and the menu after it had no such
+       file. The check takes the name either way now.
+     - **Checked.**
+       - The Flipper OS installer, a dry run, still finds the UFS provisioned
+         as its scheme has it ("Reprovision UFS… ok"), with the target ready.
+       - linux_check passes (458 s), as do its U-Boot mode (386 s), its
+         MaskROM mode (16 s) and the smoke test (51 s).

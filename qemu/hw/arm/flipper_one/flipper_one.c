@@ -1924,7 +1924,7 @@ static void flipper_one_instance_init(Object *obj)
 {
     FlipperOneState *s = FLIPPER_ONE(obj);
 
-    s->battery.design_mah = 3000;
+    s->battery.design_mah = 3100;               /* (the device tree's) */
     s->ambient_dc = 250;                        /* 25 °C */
     s->battery.temp_dk = 2982;
     fo_battery_set_percent(&s->battery, 80);

@@ -1,0 +1,114 @@
+From: FlipperOneEmu
+Subject: [PATCH] hw/ufs: the device's version, its link's gear and its health
+
+A machine can say what UFS device it has, where QEMU's was always UFS
+4.1 on an HS-G4 link with no health to tell:
+
+- spec-version: the device descriptor's wSpecVersion (BCD; QEMU's
+  0x0410 unless told). The host's own version register is unchanged.
+- hs-gear: the link's highest HS gear (4 unless told), at both its
+  ends: PA_MAXRXHSGEAR, local and peer, which Linux and U-Boot take
+  the lower of.
+- pre-eol-info, life-time-est-a, life-time-est-b: the health
+  descriptor's bPreEOLInfo, bDeviceLifeTimeEstA and B (0, "not
+  given", unless told; 1 is a new device's: normal, 0-10% used).
+
+---
+--- a/hw/ufs/ufs.h	2026-11-27 10:16:46.954466132 -0500
++++ b/hw/ufs/ufs.h	2026-11-27 10:16:53.297252133 -0500
+@@ -99,6 +99,11 @@
+     uint32_t wb_max_size; /* WB Maximum allocation units */
+     uint32_t wb_min_size; /* WB Minimum allocation units */
+     uint8_t lanes; /* The link's data lanes, in each direction */
++    uint8_t hs_gear; /* The link's highest HS gear, at both ends */
++    uint16_t spec_version; /* wSpecVersion: the UFS version the device is */
++    uint8_t pre_eol_info; /* The health descriptor: bPreEOLInfo */
++    uint8_t life_time_est_a; /* ... bDeviceLifeTimeEstA */
++    uint8_t life_time_est_b; /* ... bDeviceLifeTimeEstB */
+     bool boot_enable; /* bBootEnable, as the device was provisioned */
+     uint8_t boot_lun_en; /* bBootLunEn when nvram has none yet */
+     BlockBackend *nvram; /* the device's own state: bBootLunEn */
+--- a/hw/ufs/ufs.c	2026-11-27 10:16:46.953165293 -0500
++++ b/hw/ufs/ufs.c	2026-11-27 10:17:12.142510094 -0500
+@@ -368,7 +368,7 @@
+ /*
+  * Return canned PA layer attribute values. The emulated link has no PHY,
+  * so these are purely declarative: the "lanes" property's lanes (one unless
+- * told) in HS-Gear 4, FAST_MODE.
++ * told) in the "hs-gear" property's HS gear (4 unless told), FAST_MODE.
+  */
+ static uint32_t ufs_uic_dme_get_value(UfsHc *u, uint16_t attr_id)
+ {
+@@ -379,6 +379,7 @@
+     case UFS_ATTR_PA_CONNECTEDRXDATALANES:
+         return u->params.lanes;
+     case UFS_ATTR_PA_MAXRXHSGEAR:
++        return u->params.hs_gear;
+     case UFS_ATTR_PA_MAXRXPWMGEAR:
+         return 4;
+     case UFS_ATTR_PA_PWRMODE:
+@@ -2112,13 +2113,20 @@
+         ufs_config_desc(u, req->req_upiu.qr.index, req->rsp_upiu.qr.data);
+         status = UFS_QUERY_RESULT_SUCCESS;
+         break;
+-    case UFS_QUERY_DESC_IDN_HEALTH:
+-        /* mocking of health descriptor is not supported */
+-        memset(&req->rsp_upiu.qr.data, 0, sizeof(DeviceHealthDescriptor));
+-        req->rsp_upiu.qr.data[0] = sizeof(DeviceHealthDescriptor);
+-        req->rsp_upiu.qr.data[1] = UFS_QUERY_DESC_IDN_HEALTH;
++    case UFS_QUERY_DESC_IDN_HEALTH: {
++        /* the device's wear, as the properties have it (0: not given) */
++        DeviceHealthDescriptor health = {
++            .length = sizeof(DeviceHealthDescriptor),
++            .descriptor_idn = UFS_QUERY_DESC_IDN_HEALTH,
++            .pre_eol_info = u->params.pre_eol_info,
++            .device_life_time_est_a = u->params.life_time_est_a,
++            .device_life_time_est_b = u->params.life_time_est_b,
++        };
++
++        memcpy(&req->rsp_upiu.qr.data, &health, sizeof(health));
+         status = UFS_QUERY_RESULT_SUCCESS;
+         break;
++    }
+     default:
+         length = 0;
+         trace_ufs_err_query_invalid_idn(req->req_upiu.qr.opcode, idn);
+@@ -2647,6 +2655,16 @@
+         return false;
+     }
+ 
++    if (u->params.hs_gear < 1 || u->params.hs_gear > 5) {
++        error_setg(errp, "hs-gear must be 1 to 5");
++        return false;
++    }
++
++    if (u->params.spec_version < 0x0200) {
++        error_setg(errp, "spec-version must be a UFS version (BCD), 0x0200 on");
++        return false;
++    }
++
+     return true;
+ }
+ 
+@@ -2782,7 +2800,7 @@
+     /* TODO: Revisit it when Power Management is implemented */
+     u->device_desc.init_power_mode = 0x01; /* Active Mode */
+     u->device_desc.high_priority_lun = 0x7F; /* Same Priority */
+-    u->device_desc.spec_version = cpu_to_be16(UFS_SPEC_VER);
++    u->device_desc.spec_version = cpu_to_be16(u->params.spec_version);
+     u->device_desc.manufacturer_name = 0x00;
+     u->device_desc.product_name = 0x01;
+     u->device_desc.serial_number = 0x02;
+@@ -2928,6 +2946,12 @@
+     DEFINE_PROP_UINT32("wb-max-size", UfsHc, params.wb_max_size, 0x400),
+     DEFINE_PROP_UINT32("wb-min-size", UfsHc, params.wb_min_size, 0x100),
+     DEFINE_PROP_UINT8("lanes", UfsHc, params.lanes, 1),
++    DEFINE_PROP_UINT8("hs-gear", UfsHc, params.hs_gear, 4),
++    DEFINE_PROP_UINT16("spec-version", UfsHc, params.spec_version,
++                       UFS_SPEC_VER),
++    DEFINE_PROP_UINT8("pre-eol-info", UfsHc, params.pre_eol_info, 0),
++    DEFINE_PROP_UINT8("life-time-est-a", UfsHc, params.life_time_est_a, 0),
++    DEFINE_PROP_UINT8("life-time-est-b", UfsHc, params.life_time_est_b, 0),
+     DEFINE_PROP_BOOL("boot-enable", UfsHc, params.boot_enable, false),
+     DEFINE_PROP_UINT8("boot-lun-en", UfsHc, params.boot_lun_en, 0),
+     DEFINE_PROP_DRIVE("nvram", UfsHc, params.nvram),
