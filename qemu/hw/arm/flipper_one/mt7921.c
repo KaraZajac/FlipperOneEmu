@@ -27,11 +27,15 @@
  *   ID 70), BR/EDR and LE, with what it claims in its features and its
  *   supported commands answered: the HCI core's initialisation, BlueZ's
  *   settings, inquiry (complete after its length, no device found), LE
- *   scanning and advertising, connections (pages time out). No radio:
- *   nothing connects; an LE scan finds a beacon near the Flipper, a
- *   non-connectable one ("FlipperOneEmu Beacon"). The values not
- *   fixed by the protocol (its subversion, the TX powers, the lists'
- *   sizes) are a typical controller's, not read from a device.
+ *   scanning and advertising, BR/EDR connections (pages time out). No
+ *   radio, but two LE devices near the Flipper, which its scans hear: a
+ *   beacon (non-connectable, "FlipperOneEmu Beacon") and a sensor
+ *   ("FlipperOneEmu Sensor"), which a connection reaches: its ACL data
+ *   over bulk 0x02 and 0x82, L2CAP, and an ATT server with its GATT
+ *   database (Generic Access, Battery, Heart Rate with its notifications
+ *   once the host subscribes, Device Information); pairing it refuses.
+ *   The values not fixed by the protocol (its subversion, the TX powers,
+ *   the lists' sizes) are a typical controller's, not read from a device.
  *
  * Its Wi-Fi is interface 3 (ff/ff/ff): bulk IN 0x84 (received frames and,
  * once WFDMA's HOST_CONFIG bit 6 says so, the MCU's events) and 0x85, bulk
@@ -134,6 +138,25 @@ struct MT7921State {
                                            advertisement, now and then */
     bool le_scan_dup;                   /* ... once a scan, the host
                                            filtering duplicates */
+    bool le_scan_active;                /* ... an active one: the sensor's
+                                           scan response too */
+    uint8_t le_evmask[8];               /* the host's LE event mask */
+    /* the sensor near it: a connectable LE peripheral, its GATT server */
+    bool le_accept_sensor;              /* in the host's accept list */
+    QEMUTimer *le_conn_timer;           /* a connection to it, being made */
+    uint16_t le_conn_params[3];         /* ... its interval, latency and
+                                           supervision timeout */
+    bool le_conn;                       /* connected (LE_HANDLE) */
+    uint16_t att_mtu;
+    uint8_t cccd[3];                    /* its CCCDs: Service Changed,
+                                           Battery Level, Heart Rate */
+    QEMUTimer *hr_timer;                /* its heart rate notifications */
+    uint8_t hr_beat;
+    GQueue aclq;                        /* ACL packets to the host (0x82) */
+    USBEndpoint *acl_in;
+    uint8_t l2rx[512];                  /* an L2CAP PDU from the host, put
+                                           together */
+    int l2rx_len;
     /* the chip's registers: std and uhw, the Bluetooth's and Wi-Fi's */
     GHashTable *regs;                   /* address → value (else 0) */
     /* its Wi-Fi */
@@ -391,6 +414,21 @@ static const uint8_t supported_cmds[][2] = {
     { 38, 7 },                                  /* LE read TX power */
 };
 
+#define LE_HANDLE   0x0040              /* the sensor's connection */
+
+/* the sensor's connection gone (or never made): its timers, its packets */
+static void le_conn_drop(MT7921State *s)
+{
+    GByteArray *a;
+
+    s->le_conn = false;
+    timer_del(s->le_conn_timer);
+    timer_del(s->hr_timer);
+    while ((a = g_queue_pop_head(&s->aclq))) {
+        g_byte_array_free(a, true);
+    }
+}
+
 static void controller_reset(MT7921State *s)
 {
     timer_del(s->inquiry);
@@ -398,6 +436,11 @@ static void controller_reset(MT7921State *s)
     s->page_op = 0;
     s->le_connecting = false;
     timer_del(s->beacon_ble);
+    le_conn_drop(s);
+    s->le_accept_sensor = false;
+    s->le_scan_active = false;
+    memset(s->le_evmask, 0, sizeof(s->le_evmask));
+    s->le_evmask[0] = 0x1f;                     /* (its default) */
     s->scan_enable = 0;
     s->inquiry_mode = 0;
     s->page_scan_type = 0;
@@ -415,31 +458,501 @@ static void controller_reset(MT7921State *s)
     memset(s->name, 0, sizeof(s->name));
 }
 
-/* the beacon near the Flipper: an LE Advertising Report (non-connectable,
- * a random static address; its flags, general discoverable, and its name;
- * -60 dBm), every second, or once a scan when the host filters duplicates
- * (BlueZ's passive scan, always on, then sees it once) */
+/* ------------------------------------------ the LE devices near it */
+
+/* (their random static addresses: C0:FE:46:4F:42:01 and :02) */
+static const uint8_t beacon_addr[6] = { 0x01, 0x42, 0x4f, 0x46, 0xfe, 0xc0 };
+static const uint8_t sensor_addr[6] = { 0x02, 0x42, 0x4f, 0x46, 0xfe, 0xc0 };
+
+/* an LE Advertising Report: one, of @type (ADV_IND 0, ADV_NONCONN_IND 3,
+ * SCAN_RSP 4), from a random address */
+static void adv_report(MT7921State *s, uint8_t type, const uint8_t *addr,
+                       const uint8_t *data, int n, int8_t rssi)
+{
+    uint8_t e[48] = { 0x02, 1, type, 0x01 };
+
+    memcpy(e + 4, addr, 6);
+    e[10] = n;
+    memcpy(e + 11, data, n);
+    e[11 + n] = rssi;
+    ev_put(s, 0x3e, e, 12 + n);
+}
+
+/* advertising data: its flags (general discoverable, no BR/EDR), its
+ * services (16-bit UUIDs), its complete name */
+static int adv_data(uint8_t *d, const uint8_t *uuids, int nu,
+                    const char *name)
+{
+    int n = 0, l = strlen(name);
+
+    d[n++] = 2, d[n++] = 0x01, d[n++] = 0x06;
+    if (nu) {
+        d[n++] = 1 + nu, d[n++] = 0x03;
+        memcpy(d + n, uuids, nu);
+        n += nu;
+    }
+    d[n++] = 1 + l, d[n++] = 0x09;
+    memcpy(d + n, name, l);
+    return n + l;
+}
+
+/*
+ * What an LE scan hears, every second, or once a scan when the host filters
+ * duplicates (BlueZ's passive scan, always on, then hears them once):
+ * - the beacon: non-connectable, its flags and name, at -60 dBm;
+ * - the sensor while it is not connected: connectable, its flags, its
+ *   services (Heart Rate, Battery) and name, at -55 dBm, and to an active
+ *   scan its scan response (its TX power).
+ */
 static void beacon_ble(void *opaque)
 {
     MT7921State *s = opaque;
-    static const char name[] = "FlipperOneEmu Beacon";
-    uint8_t e[64] = { 0x02, 1, 0x03, 0x01,      /* LE Advertising Report:
-                                                   one, ADV_NONCONN_IND,
-                                                   random */
-                      0x01, 0x42, 0x4f, 0x46, 0xfe, 0xc0 };
-    int n = 11;
+    static const uint8_t svcs[] = { 0x0d, 0x18, 0x0f, 0x18 };
+    static const uint8_t txp[] = { 2, 0x0a, 0 };
+    uint8_t d[31];
 
-    e[n++] = 2, e[n++] = 0x01, e[n++] = 0x06;   /* flags: general
-                                                   discoverable, no BR/EDR */
-    e[n++] = sizeof(name), e[n++] = 0x09;       /* its complete name */
-    memcpy(e + n, name, sizeof(name) - 1);
-    n += sizeof(name) - 1;
-    e[10] = n - 11;                             /* (the data's length) */
-    e[n++] = (uint8_t)-60;
-    ev_put(s, 0x3e, e, n);
+    adv_report(s, 0x03, beacon_addr, d,
+               adv_data(d, NULL, 0, "FlipperOneEmu Beacon"), -60);
+    if (!s->le_conn && !timer_pending(s->le_conn_timer)) {
+        adv_report(s, 0x00, sensor_addr, d,
+                   adv_data(d, svcs, sizeof(svcs), "FlipperOneEmu Sensor"),
+                   -55);
+        if (s->le_scan_active) {
+            adv_report(s, 0x04, sensor_addr, txp, sizeof(txp), -55);
+        }
+    }
     if (!s->le_scan_dup) {
         timer_mod(s->beacon_ble, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                   NANOSECONDS_PER_SECOND);
+    }
+}
+
+/* an L2CAP PDU to the host on the sensor's connection: one ACL packet
+ * (bulk 0x82), as the LE buffers take it (251 bytes) */
+static void l2cap_send(MT7921State *s, uint16_t cid, const uint8_t *q, int n)
+{
+    GByteArray *a = g_byte_array_sized_new(8 + n);
+    uint8_t h[8];
+
+    stw_le_p(h, LE_HANDLE | 0x2000);            /* (PB: a start, flushable) */
+    stw_le_p(h + 2, 4 + n);
+    stw_le_p(h + 4, n);
+    stw_le_p(h + 6, cid);
+    g_byte_array_append(a, h, 8);
+    g_byte_array_append(a, q, n);
+    g_queue_push_tail(&s->aclq, a);
+    usb_wakeup(s->acl_in, 0);
+}
+
+/* the sensor's GATT database, handles from 1 (16-bit UUIDs only) */
+enum { GATT_R = 1, GATT_CCCD = 2, GATT_DYN = 4 };
+typedef struct GattAttr {
+    uint16_t type;
+    uint8_t flags, len;
+    const char *val;
+} GattAttr;
+
+static const GattAttr gatt_db[] = {
+    { 0x2800, GATT_R, 2, "\x00\x18" },          /* 1: Generic Access */
+    { 0x2803, GATT_R, 5, "\x02\x03\x00\x00\x2a" },  /* Device Name: read */
+    { 0x2a00, GATT_R, 20, "FlipperOneEmu Sensor" },
+    { 0x2803, GATT_R, 5, "\x02\x05\x00\x01\x2a" },  /* Appearance: read */
+    { 0x2a01, GATT_R, 2, "\x41\x03" },          /* (a heart rate belt) */
+    { 0x2800, GATT_R, 2, "\x01\x18" },          /* 6: Generic Attribute */
+    { 0x2803, GATT_R, 5, "\x20\x08\x00\x05\x2a" },  /* Service Changed:
+                                                       indicate */
+    { 0x2a05, 0, 4, "\x01\x00\xff\xff" },
+    { 0x2902, GATT_R | GATT_CCCD, 2, NULL },
+    { 0x2800, GATT_R, 2, "\x0f\x18" },          /* 10: Battery */
+    { 0x2803, GATT_R, 5, "\x12\x0c\x00\x19\x2a" },  /* Battery Level: read,
+                                                       notify */
+    { 0x2a19, GATT_R | GATT_DYN, 1, NULL },
+    { 0x2902, GATT_R | GATT_CCCD, 2, NULL },
+    { 0x2800, GATT_R, 2, "\x0d\x18" },          /* 14: Heart Rate */
+    { 0x2803, GATT_R, 5, "\x10\x10\x00\x37\x2a" },  /* Heart Rate
+                                                       Measurement: notify */
+    { 0x2a37, GATT_DYN, 2, NULL },
+    { 0x2902, GATT_R | GATT_CCCD, 2, NULL },
+    { 0x2803, GATT_R, 5, "\x02\x13\x00\x38\x2a" },  /* Body Sensor
+                                                       Location: read */
+    { 0x2a38, GATT_R, 1, "\x01" },              /* (the chest) */
+    { 0x2800, GATT_R, 2, "\x0a\x18" },          /* 20: Device Information */
+    { 0x2803, GATT_R, 5, "\x02\x16\x00\x29\x2a" },  /* Manufacturer Name:
+                                                       read */
+    { 0x2a29, GATT_R, 13, "FlipperOneEmu" },
+    { 0x2803, GATT_R, 5, "\x02\x18\x00\x24\x2a" },  /* Model Number: read */
+    { 0x2a24, GATT_R, 6, "Sensor" },
+};
+#define GATT_N ((int)ARRAY_SIZE(gatt_db))
+
+/* a CCCD's index in the state: Service Changed's, Battery Level's, Heart
+ * Rate Measurement's */
+static int gatt_cccd(int h)
+{
+    return h == 9 ? 0 : h == 13 ? 1 : h == 17 ? 2 : -1;
+}
+
+/* attribute @h's value into @v: its length */
+static int gatt_value(MT7921State *s, int h, uint8_t *v)
+{
+    const GattAttr *a = &gatt_db[h - 1];
+
+    if (a->flags & GATT_CCCD) {
+        v[0] = s->cccd[gatt_cccd(h)];
+        v[1] = 0;
+        return 2;
+    }
+    if (h == 12) {
+        v[0] = 87;                              /* (its battery: 87 %) */
+        return 1;
+    }
+    if (h == 16) {
+        v[0] = 0;                               /* (flags: 8-bit rate) */
+        v[1] = 68 + s->hr_beat % 9;             /* (beats a minute) */
+        return 2;
+    }
+    memcpy(v, a->val, a->len);
+    return a->len;
+}
+
+/* the last handle of the service at @h: before the next service's */
+static int gatt_group_end(int h)
+{
+    while (h < GATT_N && gatt_db[h].type != 0x2800) {
+        h++;
+    }
+    return h;
+}
+
+static void att_error(MT7921State *s, uint8_t req, uint16_t h, uint8_t err)
+{
+    uint8_t r[5] = { 0x01, req };
+
+    stw_le_p(r + 2, h);
+    r[4] = err;
+    l2cap_send(s, 4, r, sizeof(r));
+}
+
+/* the sensor's ATT server: the host's GATT client's requests (Core 5.2,
+ * Vol 3 Part F): its MTU, the discoveries, reads, its CCCDs written */
+static void att_rx(MT7921State *s, const uint8_t *q, int n)
+{
+    static const uint8_t base[12] = {       /* (16-bit UUIDs' base, the */
+        0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, /* first twelve bytes) */
+        0x00, 0x80, 0x00, 0x10, 0x00, 0x00,
+    };
+    uint8_t r[256], v[32];
+    int mtu = s->att_mtu, m, l = 0, h, vl;
+    uint16_t a = n >= 3 ? lduw_le_p(q + 1) : 0;
+    uint16_t b = n >= 5 ? lduw_le_p(q + 3) : 0;
+    uint16_t type = n >= 7 ? lduw_le_p(q + 5) : 0;
+
+    if (n < 1) {
+        return;
+    }
+    switch (q[0]) {
+    case 0x02:                                  /* Exchange MTU */
+        if (n < 3) {
+            break;
+        }
+        s->att_mtu = MAX(23, MIN(a, 247));
+        r[0] = 0x03;
+        stw_le_p(r + 1, 247);
+        l2cap_send(s, 4, r, 3);
+        return;
+    case 0x04:                                  /* Find Information */
+        if (n < 5 || !a || a > b) {
+            att_error(s, q[0], a, 0x01);        /* Invalid Handle */
+            return;
+        }
+        r[0] = 0x05;
+        r[1] = 1;                               /* (16-bit UUIDs) */
+        for (h = a, m = 2; h <= MIN(b, GATT_N) && m + 4 <= mtu;
+             h++, m += 4) {
+            stw_le_p(r + m, h);
+            stw_le_p(r + m + 2, gatt_db[h - 1].type);
+        }
+        if (m == 2) {
+            att_error(s, q[0], a, 0x0a);        /* Attribute Not Found */
+            return;
+        }
+        l2cap_send(s, 4, r, m);
+        return;
+    case 0x06:                                  /* Find By Type Value */
+        if (n < 7 || !a || a > b) {
+            att_error(s, q[0], a, 0x01);
+            return;
+        }
+        r[0] = 0x07;
+        for (h = a, m = 1; h <= MIN(b, GATT_N) && m + 4 <= mtu; h++) {
+            if (type == 0x2800 && gatt_db[h - 1].type == 0x2800 &&
+                n == 9 && !memcmp(q + 7, gatt_db[h - 1].val, 2)) {
+                stw_le_p(r + m, h);
+                stw_le_p(r + m + 2, gatt_group_end(h));
+                m += 4;
+            }
+        }
+        if (m == 1) {
+            att_error(s, q[0], a, 0x0a);
+            return;
+        }
+        l2cap_send(s, 4, r, m);
+        return;
+    case 0x08:                                  /* Read By Type */
+    case 0x10:                                  /* Read By Group Type */
+        if ((n != 7 && n != 21) || !a || a > b) {
+            att_error(s, q[0], a, 0x01);
+            return;
+        }
+        if (n == 21) {                          /* (128 bits: ours, or none) */
+            type = memcmp(q + 5, base, 12) || lduw_le_p(q + 19) ? 0 :
+                   lduw_le_p(q + 17);
+        }
+        if (q[0] == 0x10 && type != 0x2800 && type != 0x2801) {
+            att_error(s, q[0], a, 0x10);        /* Unsupported Group Type */
+            return;
+        }
+        r[0] = q[0] + 1;
+        for (h = a, m = 2; h <= MIN(b, GATT_N); h++) {
+            int il;
+
+            if (gatt_db[h - 1].type != type) {
+                continue;
+            }
+            if (!(gatt_db[h - 1].flags & GATT_R)) {
+                if (!l) {
+                    att_error(s, q[0], h, 0x02);    /* Read Not Permitted */
+                    return;
+                }
+                break;
+            }
+            vl = gatt_value(s, h, v);
+            il = q[0] == 0x10 ? 4 + vl : 2 + MIN(vl, mtu - 4);
+            if ((l && il != l) || m + il > mtu) {
+                break;
+            }
+            l = il;
+            stw_le_p(r + m, h);
+            if (q[0] == 0x10) {
+                stw_le_p(r + m + 2, gatt_group_end(h));
+                memcpy(r + m + 4, v, vl);
+            } else {
+                memcpy(r + m + 2, v, il - 2);
+            }
+            m += il;
+        }
+        if (!l) {
+            att_error(s, q[0], a, 0x0a);
+            return;
+        }
+        r[1] = l;
+        l2cap_send(s, 4, r, m);
+        return;
+    case 0x0a:                                  /* Read */
+    case 0x0c:                                  /* Read Blob */
+        if (n < (q[0] == 0x0a ? 3 : 5) || !a || a > GATT_N) {
+            att_error(s, q[0], a, 0x01);
+            return;
+        }
+        if (!(gatt_db[a - 1].flags & GATT_R)) {
+            att_error(s, q[0], a, 0x02);
+            return;
+        }
+        vl = gatt_value(s, a, v);
+        m = q[0] == 0x0c ? b : 0;               /* (the offset) */
+        if (m > vl) {
+            att_error(s, q[0], a, 0x07);        /* Invalid Offset */
+            return;
+        }
+        r[0] = q[0] + 1;
+        l = MIN(vl - m, mtu - 1);
+        memcpy(r + 1, v + m, l);
+        l2cap_send(s, 4, r, 1 + l);
+        return;
+    case 0x12:                                  /* Write Request */
+    case 0x52:                                  /* Write Command */
+        if (n == 5 && a && a <= GATT_N && gatt_cccd(a) >= 0) {
+            s->cccd[gatt_cccd(a)] = q[3];
+            if (a == 17 && (q[3] & 1)) {        /* heart rate, each second */
+                timer_mod(s->hr_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                          NANOSECONDS_PER_SECOND);
+            } else if (a == 17) {
+                timer_del(s->hr_timer);
+            }
+            if (q[0] == 0x12) {
+                r[0] = 0x13;
+                l2cap_send(s, 4, r, 1);
+            }
+        } else if (q[0] == 0x12) {
+            att_error(s, q[0], a, a && a <= GATT_N ? 0x03 : 0x01);
+        }                                       /* (Write Not Permitted) */
+        return;
+    case 0x1e:                                  /* Handle Value
+                                                   Confirmation */
+        return;
+    }
+    if (!(q[0] & 0x40)) {                       /* (a request: commands are
+                                                   dropped) */
+        att_error(s, q[0], 0, 0x06);            /* Request Not Supported */
+    }
+}
+
+/* the sensor's heart rate, notified each second while subscribed */
+static void hr_tick(void *opaque)
+{
+    MT7921State *s = opaque;
+    uint8_t r[5] = { 0x1b, 16, 0 };             /* Handle Value Notification */
+
+    if (!s->le_conn || !(s->cccd[2] & 1)) {
+        return;
+    }
+    s->hr_beat++;
+    gatt_value(s, 16, r + 3);
+    l2cap_send(s, 4, r, sizeof(r));
+    timer_mod(s->hr_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+              NANOSECONDS_PER_SECOND);
+}
+
+/* an L2CAP PDU from the host on the sensor's connection: ATT's; SMP's,
+ * whose pairing it refuses; the LE signalling channel's, whose requests
+ * it rejects (it has no credit-based channels) */
+static void l2cap_rx(MT7921State *s, uint16_t cid, const uint8_t *q, int n)
+{
+    uint8_t r[6];
+
+    if (cid == 4) {
+        att_rx(s, q, n);
+    } else if (cid == 6 && n >= 1 && q[0] == 0x01) {    /* Pairing Request */
+        r[0] = 0x05;                            /* Pairing Failed: */
+        r[1] = 0x05;                            /* Pairing Not Supported */
+        l2cap_send(s, 6, r, 2);
+    } else if (cid == 5 && n >= 4 &&
+               (q[0] == 0x06 || q[0] == 0x0a || q[0] == 0x12 ||
+                q[0] == 0x14 || q[0] == 0x17)) {
+        r[0] = 0x01;                            /* Command Reject: */
+        r[1] = q[1];
+        stw_le_p(r + 2, 2);
+        stw_le_p(r + 4, 0);                     /* not understood */
+        l2cap_send(s, 5, r, 6);
+    }
+}
+
+/* an ACL packet from the host (bulk 0x02): its buffer back at once (Number
+ * Of Completed Packets), and on the sensor's connection its data an L2CAP
+ * PDU's, put together */
+static void acl_rx(MT7921State *s, const uint8_t *q, int n)
+{
+    uint8_t e[5] = { 1 };
+    uint16_t hdr, len;
+
+    if (n < 4) {
+        return;
+    }
+    hdr = lduw_le_p(q);
+    len = MIN(lduw_le_p(q + 2), n - 4);
+    stw_le_p(e + 1, hdr & 0xfff);
+    stw_le_p(e + 3, 1);
+    ev_put(s, 0x13, e, sizeof(e));
+    if ((hdr & 0xfff) != LE_HANDLE || !s->le_conn) {
+        return;
+    }
+    if ((hdr >> 12 & 3) != 1) {                 /* (not a continuation) */
+        s->l2rx_len = 0;
+    }
+    if (s->l2rx_len + len > sizeof(s->l2rx)) {
+        s->l2rx_len = 0;
+        return;
+    }
+    memcpy(s->l2rx + s->l2rx_len, q + 4, len);
+    s->l2rx_len += len;
+    if (s->l2rx_len >= 4 && s->l2rx_len >= 4 + lduw_le_p(s->l2rx)) {
+        l2cap_rx(s, lduw_le_p(s->l2rx + 2), s->l2rx + 4,
+                 lduw_le_p(s->l2rx));
+        s->l2rx_len = 0;
+    }
+}
+
+/*
+ * LE Connection Complete, or the Enhanced one when the host's LE event mask
+ * asks for it (bit 9: Linux does when the controller has LL privacy, and
+ * waits for that one alone): @status, the sensor's connection (the
+ * controller central, the parameters asked for), or a failed attempt's.
+ */
+static void le_conn_complete(MT7921State *s, uint8_t status)
+{
+    bool enh = s->le_evmask[1] & 0x02;
+    uint8_t e[31] = { enh ? 0x0a : 0x01, status };
+    int o = enh ? 12 : 0;                       /* (two RPAs, none) */
+
+    if (!status) {
+        stw_le_p(e + 2, LE_HANDLE);
+        e[4] = 0x00;                            /* (central) */
+        e[5] = 0x01;                            /* (a random address) */
+        memcpy(e + 6, sensor_addr, 6);
+        stw_le_p(e + 12 + o, s->le_conn_params[0]);
+        stw_le_p(e + 14 + o, s->le_conn_params[1]);
+        stw_le_p(e + 16 + o, s->le_conn_params[2]);
+    }
+    ev_put(s, 0x3e, e, 19 + o);
+}
+
+/* the sensor's connection made */
+static void le_conn_done(void *opaque)
+{
+    MT7921State *s = opaque;
+
+    s->le_connecting = false;
+    s->le_conn = true;
+    s->att_mtu = 23;
+    s->l2rx_len = 0;
+    memset(s->cccd, 0, sizeof(s->cccd));
+    le_conn_complete(s, 0);
+}
+
+/* a command on the sensor's connection, its Command Status given: the
+ * event that ends it */
+static void le_conn_cmd(MT7921State *s, uint16_t op, const uint8_t *p,
+                        int plen)
+{
+    uint8_t e[12] = { 0 };
+
+    stw_le_p(e + 1, LE_HANDLE);
+    switch (op) {
+    case 0x0406:                                /* Disconnection Complete */
+        e[3] = 0x16;                            /* (by the local host) */
+        le_conn_drop(s);
+        ev_put(s, 0x05, e, 4);
+        break;
+    case 0x041d:                                /* Read Remote Version
+                                                   Information Complete */
+        e[3] = 0x0b;                            /* (5.2) */
+        stw_le_p(e + 4, 0xffff);                /* (no company's) */
+        stw_le_p(e + 6, 0x0001);
+        ev_put(s, 0x0c, e, 8);
+        break;
+    case 0x2013:                                /* LE Connection Update
+                                                   Complete */
+        if (plen >= 10) {
+            s->le_conn_params[0] = lduw_le_p(p + 4);
+            s->le_conn_params[1] = lduw_le_p(p + 6);
+            s->le_conn_params[2] = lduw_le_p(p + 8);
+        }
+        e[0] = 0x03;
+        e[1] = 0;
+        stw_le_p(e + 2, LE_HANDLE);
+        stw_le_p(e + 4, s->le_conn_params[0]);
+        stw_le_p(e + 6, s->le_conn_params[1]);
+        stw_le_p(e + 8, s->le_conn_params[2]);
+        ev_put(s, 0x3e, e, 10);
+        break;
+    case 0x2016:                                /* LE Read Remote Features
+                                                   Complete: none (no
+                                                   encryption, no pairing) */
+        e[0] = 0x04;
+        e[1] = 0;
+        stw_le_p(e + 2, LE_HANDLE);
+        ev_put(s, 0x3e, e, 12);
+        break;
     }
 }
 
@@ -549,7 +1062,14 @@ static void hci_command(MT7921State *s, const uint8_t *pkt, int len)
     case 0x041c:                                /* ... Extended Features */
     case 0x2013:                                /* LE Connection Update */
     case 0x2016:                                /* LE Read Remote Features */
-        ev_cs(s, op, 0x02);                     /* (no connection) */
+        if (plen < 2 || (lduw_le_p(p) & 0xfff) != LE_HANDLE ||
+            !s->le_conn || op == 0x041b || op == 0x041c) {
+            ev_cs(s, op, 0x02);                 /* (no connection: but the
+                                                   sensor's, LE) */
+            break;
+        }
+        ev_cs(s, op, 0);
+        le_conn_cmd(s, op, p, plen);
         break;
 
     /* ---- link policy */
@@ -826,8 +1346,18 @@ static void hci_command(MT7921State *s, const uint8_t *pkt, int len)
             ev_cs(s, op, 0x0c);
             break;
         }
-        s->le_connecting = true;                /* (until cancelled) */
+        s->le_connecting = true;                /* (until made, or
+                                                   cancelled) */
         ev_cs(s, op, 0);
+        /* the sensor: asked for, or in the accept list asked to use */
+        if (plen >= 21 && !s->le_conn &&
+            (p[4] ? s->le_accept_sensor : !memcmp(p + 6, sensor_addr, 6))) {
+            s->le_conn_params[0] = lduw_le_p(p + 15);   /* (the longest) */
+            s->le_conn_params[1] = lduw_le_p(p + 17);
+            s->le_conn_params[2] = lduw_le_p(p + 19);
+            timer_mod(s->le_conn_timer,
+                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 30 * SCALE_MS);
+        }
         break;
     case 0x200e:                                /* LE Create Connection
                                                    Cancel */
@@ -836,12 +1366,9 @@ static void hci_command(MT7921State *s, const uint8_t *pkt, int len)
             break;
         }
         s->le_connecting = false;
+        timer_del(s->le_conn_timer);
         ev_cc_status(s, op, 0);
-        {
-            uint8_t e[19] = { 0x01, 0x02 };     /* LE Connection Complete:
-                                                   Unknown Connection ID */
-            ev_put(s, 0x3e, e, sizeof(e));
-        }
+        le_conn_complete(s, 0x02);              /* (Unknown Connection ID) */
         break;
     case 0x200f:                                /* LE Read Filter Accept List
                                                    Size */
@@ -891,18 +1418,34 @@ static void hci_command(MT7921State *s, const uint8_t *pkt, int len)
         }
         ev_cc_status(s, op, 0);
         break;
+    case 0x200b:                                /* LE Set Scan Parameters */
+        s->le_scan_active = plen && p[0] == 0x01;
+        ev_cc_status(s, op, 0);
+        break;
+    case 0x2010:                                /* LE Clear Filter Accept
+                                                   List */
+        s->le_accept_sensor = false;
+        ev_cc_status(s, op, 0);
+        break;
+    case 0x2011:                                /* LE Add Device To ... */
+    case 0x2012:                                /* LE Remove Device From ... */
+        if (plen >= 7 && !memcmp(p + 1, sensor_addr, 6)) {
+            s->le_accept_sensor = op == 0x2011;
+        }
+        ev_cc_status(s, op, 0);
+        break;
     case 0x2001:                                /* LE Set Event Mask */
+        if (plen >= 8) {
+            memcpy(s->le_evmask, p, 8);
+        }
+        ev_cc_status(s, op, 0);
+        break;
     case 0x2005:                                /* LE Set Random Address */
     case 0x2006:                                /* LE Set Advertising
                                                    Parameters */
     case 0x2008:                                /* LE Set Advertising Data */
     case 0x2009:                                /* LE Set Scan Response Data */
     case 0x200a:                                /* LE Set Advertising Enable */
-    case 0x200b:                                /* LE Set Scan Parameters */
-    case 0x2010:                                /* LE Clear Filter Accept
-                                                   List */
-    case 0x2011:                                /* LE Add Device To ... */
-    case 0x2012:                                /* LE Remove Device From ... */
     case 0x2024:                                /* LE Write Suggested Default
                                                    Data Length */
     case 0x2027:                                /* LE Add Device To
@@ -1922,6 +2465,16 @@ static void mt7921_handle_data(USBDevice *dev, USBPacket *p)
     MT7921State *s = MT7921(dev);
     uint32_t n;
 
+    /*
+     * An IN transfer with no room: done, empty, nothing taken from a queue.
+     * The host's xHCI driver turns a cancelled transfer's TRBs into No-Ops,
+     * and QEMU's xHCI hands such a transfer on as an empty packet: NAKed, it
+     * would stay first on its endpoint, and take the next packet queued
+     * there into its no room (an ATT response, a received frame, lost).
+     */
+    if (p->pid == USB_TOKEN_IN && !p->iov.size) {
+        return;
+    }
     if (p->pid == USB_TOKEN_IN && p->ep->nr == 1) {     /* HCI events */
         if (!s->evq->len) {
             p->status = USB_RET_NAK;
@@ -1934,6 +2487,31 @@ static void mt7921_handle_data(USBDevice *dev, USBPacket *p)
         usb_packet_copy(p, s->evq->data, n);
         g_byte_array_remove_range(s->evq, 0, n);
         s->ev_left -= n;
+        return;
+    }
+    if (p->pid == USB_TOKEN_IN && p->ep->nr == 2) {     /* ACL to the host */
+        GByteArray *a = g_queue_pop_head(&s->aclq);
+
+        if (!a) {
+            p->status = USB_RET_NAK;
+            return;
+        }
+        n = MIN(a->len, p->iov.size);
+        usb_packet_copy(p, a->data, n);
+        if (n < a->len) {                       /* (the rest next time:
+                                                   btusb puts it together) */
+            g_byte_array_remove_range(a, 0, n);
+            g_queue_push_head(&s->aclq, a);
+        } else {
+            g_byte_array_free(a, true);
+        }
+        return;
+    }
+    if (p->pid == USB_TOKEN_OUT && p->ep->nr == 2) {    /* ACL from it */
+        g_autofree uint8_t *b = g_malloc(p->iov.size);
+
+        usb_packet_copy(p, b, p->iov.size);
+        acl_rx(s, b, p->iov.size);
         return;
     }
     if (p->pid == USB_TOKEN_IN && (p->ep->nr == 4 || p->ep->nr == 5)) {
@@ -1962,13 +2540,13 @@ static void mt7921_handle_data(USBDevice *dev, USBPacket *p)
         wifi_tx(s, b, p->iov.size);
         return;
     }
-    if (p->pid == USB_TOKEN_OUT) {              /* ACL, ISO, the Wi-Fi's
+    if (p->pid == USB_TOKEN_OUT) {              /* ISO, the Wi-Fi's
                                                    firmware data (0x04 while
                                                    FW_DL_EN): taken */
         p->actual_length = p->iov.size;
         return;
     }
-    p->status = USB_RET_NAK;                    /* (no ACL, SCO or ISO
+    p->status = USB_RET_NAK;                    /* (no SCO or ISO
                                                    comes) */
 }
 
@@ -2040,10 +2618,14 @@ static void mt7921_realize(USBDevice *dev, Error **errp)
     usb_desc_create_serial(dev);
     usb_desc_init(dev);
     s->intr = usb_ep_get(dev, USB_TOKEN_IN, 1);
+    s->acl_in = usb_ep_get(dev, USB_TOKEN_IN, 2);
     s->evq = g_byte_array_new();
     s->inquiry = timer_new_ns(QEMU_CLOCK_VIRTUAL, inquiry_done, s);
     s->page = timer_new_ns(QEMU_CLOCK_VIRTUAL, page_done, s);
     s->beacon_ble = timer_new_ns(QEMU_CLOCK_VIRTUAL, beacon_ble, s);
+    s->le_conn_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, le_conn_done, s);
+    s->hr_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, hr_tick, s);
+    g_queue_init(&s->aclq);
     s->scan = timer_new_ns(QEMU_CLOCK_VIRTUAL, scan_done, s);
     s->beacon = timer_new_ns(QEMU_CLOCK_VIRTUAL, ap_beacon, s);
     s->ap_reply = timer_new_ns(QEMU_CLOCK_VIRTUAL, ap_reply_now, s);

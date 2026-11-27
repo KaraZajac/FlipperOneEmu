@@ -2768,3 +2768,58 @@ register headers.
          failed: the launcher's new option had split an if/elif, so
          `--linux --uboot` gave U-Boot's drives twice.
        - The MaskROM mode and the smoke test pass.
+
+107. **A sensor to connect to over Bluetooth LE; an empty transfer that lost
+     data.**
+     - **The sensor.** Beside the beacon, the MT7921's controller now hears a
+       sensor near the Flipper: "FlipperOneEmu Sensor", C0:FE:46:4F:42:02.
+       - It advertises as connectable (ADV_IND), with its flags, its Heart
+         Rate and Battery services and its name. An active scan also gets a
+         scan response from it.
+       - LE Create Connection reaches it, by its address or from the accept
+         list, and the controller becomes central. It answers the commands
+         on a connection: Disconnect, Read Remote Version, LE Connection
+         Update, LE Read Remote Features.
+     - **ACL, L2CAP, ATT.**
+       - ACL data goes both ways, over bulk 0x02 and 0x82. Each of the
+         host's packets gets its Number of Completed Packets.
+       - L2CAP PDUs are put together across ACL packets. Pairing is refused
+         (SMP's "Pairing Not Supported"), and signalling requests are
+         rejected.
+       - An ATT server holds a GATT database:
+         - Generic Access: name, appearance;
+         - Generic Attribute: Service Changed;
+         - Battery: 87 %, with notifications;
+         - Heart Rate: a measurement each second once subscribed, and the
+           body sensor location;
+         - Device Information: maker and model.
+     - **Linux waits for the enhanced event.** With LL privacy in the
+       controller's features, Linux's LE Create Connection waits for LE
+       Enhanced Connection Complete alone. It handled the legacy event
+       ("Device Connected"), but its command waited out 20 s and cancelled.
+       The controller now follows the host's LE event mask.
+     - **An empty transfer took the first answer.** The first connection
+       after a boot often never resolved its services. The host's MTU
+       request reached the sensor, but no answer came back, and BlueZ gave
+       up after ATT's 30 s. Debug lines showed the answer copied into an IN
+       transfer of no length:
+       - When Linux cancels a URB, its xHCI driver turns the transfer's
+         TRBs into No-Ops.
+       - QEMU's xHCI hands such a transfer to the device as an empty
+         packet.
+       - NAKed, it stayed first on its endpoint, and took the next packet
+         queued there.
+
+       Now an empty IN transfer completes empty, with nothing taken from a
+       queue. The Wi-Fi's IN endpoints had the same flaw. An ACL packet too
+       large for its transfer keeps its remainder for the next one.
+     - **Checked.**
+       - Six connections over two boots, each first one after a boot
+         included, resolved their services in 1.3-3.5 s.
+       - BlueZ shows the five services and the battery's 87 %. Heart rate
+         notifications come each second (69, 70, 71).
+       - linux_check's scan finds the beacon and the sensor. It connects to
+         the sensor, finds its five services, reads its battery, and
+         disconnects.
+       - linux_check passes (502 s), as do its U-Boot mode (401 s), its
+         MaskROM mode and the smoke test.

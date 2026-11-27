@@ -176,8 +176,9 @@ screen and its CLI.
       95); the MT7921's Bluetooth (mt7921.c): on USB1 while its rfkill's GPIO
       powers it, its real firmware through MediaTek's WMT, BlueZ's controller
       (2026-11-26, log 99), an LE beacon near it that its scans find
-      (2026-11-26, log 104); its Wi-Fi (M5's last item); the board's hubs;
-      Bluetooth peers that connect
+      (2026-11-26, log 104), and a sensor that BlueZ connects to: ACL, L2CAP,
+      its GATT services, notifications (2026-11-26, log 107); its Wi-Fi (M5's
+      last item); the board's hubs; BR/EDR peers, pairing
 - ◐ Audio: the SAIs (0, 2, 6) and the NAU8822: Flipper OS's sound card plays, out of
       QEMU's audio (`run --audio`) (2026-11-25); the internal and the headset's
       microphones, from a WAV file (`run --mic`) (2026-11-25); this PC's own
