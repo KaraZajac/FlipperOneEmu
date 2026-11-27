@@ -3165,3 +3165,52 @@ register headers.
        crossings): 440 ± 5 Hz for more than 2.5 s. It then disconnects and
        removes the speaker. linux_check passes (520 s), as do its U-Boot
        mode (416 s), its MaskROM mode (16 s) and the smoke test (46 s).
+
+116. **Wi-Fi on 5 GHz: an 802.11ax network on 80 MHz.** The access point's
+     two networks were both on 2.4 GHz, 802.11n, although the MT7921's
+     capabilities already told the driver of 5 GHz, VHT and HE (two streams,
+     80 MHz).
+     - **FlipperOneEmu-5G.** It is open, on channel 36 (`ap-channel-5g`: 36
+       to 48 or 149 to 161, 80 MHz without DFS). Its BSSID is the one after
+       the WPA2 network's.
+       - Its beacon is as hostapd's on 5 GHz:
+         - OFDM rates only (6, 12 and 24 basic), and no DS parameters or ERP;
+         - HT capabilities with 40 MHz, and its HT operation (the secondary
+           channel the other of its pair);
+         - VHT capabilities and operation (80 MHz, centre channel 42);
+         - HE capabilities (40 and 80 MHz on 5 GHz, LDPC, HE-MCS 0-11 on two
+           streams) and operation (BSS colour 1, HE-MCS 0-7 basic);
+         - WMM.
+       - Its association response has the same elements, as mac80211 wants.
+       - Its data comes at HE-MCS 11 on two streams, 80 MHz, the 0.8 µs guard
+         interval (P-RXV: mode 8, frame mode 2, LDPC). The TX statuses of the
+         station's data say the same (TXS0's bandwidth: 80 MHz).
+     - **Each network on its own channel.**
+       - A frame of the AP's carries its network's channel in its RXD, taken
+         from its addr2.
+       - A scan finds the networks whose channel (band and number) it takes
+         in.
+       - A TX status's rate follows the network its frame is for.
+       - Realize now checks `ap-channel` too (1 to 13).
+     - **What Flipper OS makes of it.**
+       - Its regulatory domain is the world's (country 00). 5180 MHz is
+         allowed with HT40+ and VHT80, and its No IR goes once the beacon is
+         heard.
+       - `iw dev scan` finds three BSSs, FlipperOneEmu-5G at 5180 MHz.
+       - `nmcli dev wifi connect FlipperOneEmu-5G` authenticates and
+         associates (capability 0x1), and DHCP gives an address. The gateway
+         answers.
+       - `iw dev link`: freq 5180.0, "rx bitrate: 1200.9 MBit/s 80MHz HE-MCS
+         11 HE-NSS 2 HE-GI 0 HE-DCM 0", and the same for tx. mac80211
+         downgraded nothing.
+     - **Seen on the way.** dw_mmc's watchdog warned "Interrupt latency" three
+       times around the login, at 78 s. A command's interrupt was latched but
+       not yet handled when the 10 ms of its watch ran out, and each command
+       completed. This is the emulator's interrupt latency under load, for
+       the speed work.
+     - **Checked.** linux_check's scan now wants three networks, two on
+       2.4 GHz and one on 5 GHz. After the open and WPA2 networks it joins
+       FlipperOneEmu-5G: an address, the gateway answering, freq 5180, and
+       HE-MCS 11 at 80 MHz both ways. linux_check passes (481 s), as do its
+       U-Boot mode (403 s), its MaskROM mode (16 s) and the smoke test
+       (50 s).

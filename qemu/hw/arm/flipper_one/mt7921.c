@@ -77,6 +77,13 @@
  * is granted at once. Data is bridged: the station's to the uplink as
  * Ethernet frames, the uplink's to the station as 802.11 ones.
  *
+ * A third network is on 5 GHz ("ap-channel-5g", 36), open, its SSID the
+ * first's with "-5G", its BSSID the one after the second's: 802.11ax on
+ * 80 MHz (HT 40 MHz, VHT and HE elements; OFDM rates only), its data at
+ * HE-MCS 11 on two streams (1201 Mbit/s), the TX statuses of the
+ * station's too. A scan finds each network whose channel it takes in, and
+ * each frame of the AP's comes on its network's channel.
+ *
  * With a passphrase ("ap-psk") a second network is beside it, WPA2-PSK
  * (CCMP), its SSID the first's with "-WPA2", its BSSID the next one: its
  * beacon has an RSN element, and after the association its AP runs the
@@ -200,11 +207,16 @@ struct MT7921State {
     NICState *nic;
     char *ap_ssid;                      /* "ap-ssid" */
     uint8_t ap_chan;                    /* "ap-channel" */
+    uint8_t ap_chan5;                   /* "ap-channel-5g" */
     uint8_t bssid[6];
+    char *ssid5;                        /* the 5 GHz network's */
+    uint8_t bssid5[6];
+    uint8_t scan_nets;                  /* the networks on the channels a
+                                           scan takes in (a mask) */
     uint8_t sta[6];                     /* the station, as its frames say */
     int sta_state;                      /* AP_NONE, AP_AUTH, AP_ASSOC */
     int sta_bss;                        /* ... on which network: 0 open,
-                                           1 WPA2 */
+                                           1 WPA2, 2 5 GHz */
     /* the WPA2 network: its passphrase ("ap-psk"), the handshake's state */
     char *ap_psk;
     char *ssid2;
@@ -2463,22 +2475,39 @@ static bool ap_on(MT7921State *s)
     return s->nic && qemu_get_queue(s->nic)->peer;
 }
 
-/* its networks: 0, open; 1, WPA2 (with a passphrase) */
-static int ap_nets(MT7921State *s)
+/* its networks: 0, open (2.4 GHz, 802.11n); 1, WPA2 beside it (with a
+ * passphrase); 2, open on 5 GHz (802.11ax) */
+#define AP_NETS         3
+#define AP_WPA2         1
+#define AP_5G           2
+
+static bool ap_net_on(MT7921State *s, int i)
 {
-    return s->ap_psk && *s->ap_psk ? 2 : 1;
+    return i != AP_WPA2 || (s->ap_psk && *s->ap_psk);
 }
 
 static const uint8_t *ap_bssid(MT7921State *s, int i)
 {
-    return i ? s->bssid2 : s->bssid;
+    return i == AP_5G ? s->bssid5 : i == AP_WPA2 ? s->bssid2 : s->bssid;
 }
 
-/* the network a frame is addressed to (addr1), or -1 */
+static uint8_t ap_chan_of(MT7921State *s, int i)
+{
+    return i == AP_5G ? s->ap_chan5 : s->ap_chan;
+}
+
+/* its capability: ESS; on 2.4 GHz short preamble and slot; privacy */
+static uint16_t ap_capab(int i)
+{
+    return i == AP_5G ? 0x0001 : i == AP_WPA2 ? 0x0431 : 0x0421;
+}
+
+/* the network whose BSSID @a is (a frame's addr1, or the AP's addr2), or
+ * -1 */
 static int ap_net_of(MT7921State *s, const uint8_t *a)
 {
-    for (int i = 0; i < ap_nets(s); i++) {
-        if (!memcmp(a, ap_bssid(s, i), 6)) {
+    for (int i = 0; i < AP_NETS; i++) {
+        if (ap_net_on(s, i) && !memcmp(a, ap_bssid(s, i), 6)) {
             return i;
         }
     }
@@ -2489,7 +2518,8 @@ static int ap_net_of(MT7921State *s, const uint8_t *a)
  * on the WPA2 network its handshake done */
 static bool ap_port_open(MT7921State *s)
 {
-    return s->sta_state == AP_ASSOC && (s->sta_bss == 0 || s->sta_secure);
+    return s->sta_state == AP_ASSOC &&
+           (s->sta_bss != AP_WPA2 || s->sta_secure);
 }
 
 /* ------------------------------------------------- WPA2's cryptography */
@@ -2581,21 +2611,28 @@ static void aes_wrap(const uint8_t *kek, const uint8_t *in, int n,
 #define RXV_HT_MCS15    (0x02000000 | 1 << 15 | 1 << 7 | 15)
 #define TXS_OFDM6       0x004b
 #define TXS_HT_MCS15    (1 << 10 | 2 << 6 | 15)
+/* ... and on 5 GHz HE-MCS 11 (mode 8, SU: two streams, 80 MHz (frame mode
+ * 2; TXS0's BW 2), LDPC, the 0.8 us guard interval: 1201 Mbit/s) */
+#define RXV_HE_MCS11    (0x08000000 | 2 << 12 | 1 << 11 | 1 << 7 | 11)
+#define TXS_HE_MCS11    (2u << 29 | 1 << 10 | 8 << 6 | 11)
 
 /* a frame as the chip receives it, on 0x84: its RXD (type 2, group 3: the
- * rate, and RCPI 0x82 on two chains: -42 dBm), the AP's channel,
- * @addr_type (1: unicast to the station, 2: multicast, 3: broadcast). Data
- * to the station comes at HT MCS 15, the rest at 6 Mbit/s */
+ * rate, and RCPI 0x82 on two chains: -42 dBm), the channel of its
+ * network (its addr2's), @addr_type (1: unicast to the station, 2:
+ * multicast, 3: broadcast). Data to the station comes at HT MCS 15 (HE-MCS
+ * 11 on 5 GHz), the rest at 6 Mbit/s */
 static void ap_rx_sec(MT7921State *s, const uint8_t *f, int n, int addr_type,
                       bool decrypted)
 {
     uint8_t h[32] = { 0 };
     bool data = n >= 2 && (f[0] & 0x0c) == 0x08;
+    int net = n >= 16 ? MAX(ap_net_of(s, f + 10), 0) : 0;
 
     stl_le_p(h, 0x10000000 | (32 + n));
     stl_le_p(h + 4, BIT(13) | (decrypted ? 4 << 16 : 0));  /* (CCMP) */
-    stl_le_p(h + 12, s->ap_chan << 8 | addr_type << 16);
-    stl_le_p(h + 24, data && addr_type == 1 ? RXV_HT_MCS15 : RXV_OFDM6);
+    stl_le_p(h + 12, ap_chan_of(s, net) << 8 | addr_type << 16);
+    stl_le_p(h + 24, !data || addr_type != 1 ? RXV_OFDM6 :
+                     net == AP_5G ? RXV_HE_MCS11 : RXV_HT_MCS15);
     stl_le_p(h + 28, 0x8282);
     wifi_in(s, 0, h, 32, f, n);
 }
@@ -2621,6 +2658,9 @@ static int ap_hdr(MT7921State *s, uint8_t *f, uint16_t fc, const uint8_t *a1,
 static const uint8_t ap_rates[] = { 1, 8, 0x82, 0x84, 0x8b, 0x96,
                                     0x0c, 0x12, 0x18, 0x24 };
 static const uint8_t ap_xrates[] = { 50, 4, 0x30, 0x48, 0x60, 0x6c };
+/* ... on 5 GHz: 6, 12, 24 (basic), 9, 18, 36, 48, 54 */
+static const uint8_t ap_rates5[] = { 1, 8, 0x8c, 0x12, 0x98, 0x24, 0xb0, 0x48,
+                                     0x60, 0x6c };
 static const uint8_t bcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
 
 /* WPA2's RSN element: CCMP for groups and pairs, PSK */
@@ -2643,66 +2683,124 @@ static const uint8_t wmm_ie[] = { 221, 24, 0x00, 0x50, 0xf2, 2, 1, 1, 0, 0,
                                   0x42, 0x43, 0x5e, 0x00,
                                   0x62, 0x32, 0x2f, 0x00 };
 
-/* HT capabilities, HT operation (the AP's channel, 20 MHz, no
- * protection) and WMM: what an 802.11n AP adds, at @f */
-static int ap_ht_ies(MT7921State *s, uint8_t *f)
+/* VHT capabilities: MPDUs to 11454 bytes, RX LDPC, short GI at 80 MHz,
+ * TX STBC and one stream of RX STBC, A-MPDUs to 1 MiB, its antenna
+ * patterns fixed; VHT-MCS 0-9 on two streams both ways (780 Mbit/s with
+ * the long guard interval) */
+static const uint8_t vht_cap_ie[] = { 191, 12, 0xb2, 0x01, 0x80, 0x33,
+                                      0xfa, 0xff, 0x0c, 0x03,
+                                      0xfa, 0xff, 0x0c, 0x03 };
+
+/* HE capabilities: its MAC's none; its PHY's 40 and 80 MHz on 5 GHz and
+ * LDPC; HE-MCS 0-11 on two streams both ways, to 80 MHz */
+static const uint8_t he_cap_ie[] = { 255, 22, 35,
+                                     0, 0, 0, 0, 0, 0,
+                                     0x04, 0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                                     0xfa, 0xff, 0xfa, 0xff };
+
+/* HE operation: a default PE of 16 us, no TXOP RTS threshold; BSS colour
+ * 1; HE-MCS 0-7 on one stream basic */
+static const uint8_t he_op_ie[] = { 255, 7, 36, 0xf4, 0x3f, 0x00, 0x01,
+                                    0xfc, 0xff };
+
+/* HT capabilities, HT operation (the network's channel, no protection)
+ * and WMM: what an 802.11n AP adds, at @f; on 5 GHz 40 MHz (the
+ * secondary channel the other of its pair), and VHT's and HE's elements
+ * (80 MHz: its centre channel, 42 or 155) */
+static int ap_ht_ies(MT7921State *s, int net, uint8_t *f)
 {
+    uint8_t ch = ap_chan_of(s, net);
     int n = 0;
 
     memcpy(f, ht_cap_ie, sizeof(ht_cap_ie));
+    if (net == AP_5G) {
+        stw_le_p(f + 2, 0x01ef);                /* (20/40 MHz, short GI at
+                                                   both) */
+    }
     n += sizeof(ht_cap_ie);
     f[n++] = 61;
     f[n++] = 22;
-    f[n++] = s->ap_chan;
+    f[n++] = ch;
     memset(f + n, 0, 21);
+    if (net == AP_5G) {                         /* its secondary above
+                                                   (below), any width */
+        f[n] = (ch - (ch >= 149 ? 149 : 36)) / 4 % 2 ? 0x07 : 0x05;
+    }
     n += 21;
+    if (net == AP_5G) {
+        memcpy(f + n, vht_cap_ie, sizeof(vht_cap_ie));
+        n += sizeof(vht_cap_ie);
+        f[n++] = 192;                           /* VHT operation: 80 MHz */
+        f[n++] = 5;
+        f[n++] = 1;
+        f[n++] = ch >= 149 ? 155 : 42;
+        f[n++] = 0;
+        f[n++] = 0xfc;                          /* (VHT-MCS 0-7, one
+                                                   stream, basic) */
+        f[n++] = 0xff;
+        memcpy(f + n, he_cap_ie, sizeof(he_cap_ie));
+        n += sizeof(he_cap_ie);
+        memcpy(f + n, he_op_ie, sizeof(he_op_ie));
+        n += sizeof(he_op_ie);
+    }
     memcpy(f + n, wmm_ie, sizeof(wmm_ie));
     return n + sizeof(wmm_ie);
 }
 
+/* a network's beacon (on 5 GHz without 2.4 GHz's DS parameters, ERP and
+ * CCK rates, as hostapd's) */
 static void ap_beacon_of(MT7921State *s, int net)
 {
-    const char *ssid = net ? s->ssid2 : s->ap_ssid;
-    uint8_t f[256];
+    const char *ssid = net == AP_5G ? s->ssid5 : net ? s->ssid2 : s->ap_ssid;
+    bool five = net == AP_5G;
+    uint8_t f[320];
     int n, l = MIN(strlen(ssid), 32);
 
     n = ap_hdr(s, f, 0x0080, bcast, ap_bssid(s, net), ap_bssid(s, net));
     stq_le_p(f + n, qemu_clock_get_us(QEMU_CLOCK_VIRTUAL));
     stw_le_p(f + n + 8, 100);                   /* every 100 TU */
-    stw_le_p(f + n + 10, net ? 0x0431 : 0x0421);    /* ESS, (privacy,) short
-                                                       preamble and slot */
+    stw_le_p(f + n + 10, ap_capab(net));
     n += 12;
     f[n++] = 0;                                 /* its SSID */
     f[n++] = l;
     memcpy(f + n, ssid, l);
     n += l;
-    memcpy(f + n, ap_rates, sizeof(ap_rates));
+    memcpy(f + n, five ? ap_rates5 : ap_rates, sizeof(ap_rates));
     n += sizeof(ap_rates);
-    f[n++] = 3;                                 /* its channel */
-    f[n++] = 1;
-    f[n++] = s->ap_chan;
+    if (!five) {
+        f[n++] = 3;                             /* its channel */
+        f[n++] = 1;
+        f[n++] = s->ap_chan;
+    }
     f[n++] = 5;                                 /* TIM: none buffered */
     f[n++] = 4;
     f[n++] = 0, f[n++] = 1, f[n++] = 0, f[n++] = 0;
-    f[n++] = 42;                                /* ERP: nothing to protect */
-    f[n++] = 1;
-    f[n++] = 0;
-    if (net) {
+    if (!five) {
+        f[n++] = 42;                            /* ERP: nothing to protect */
+        f[n++] = 1;
+        f[n++] = 0;
+    }
+    if (net == AP_WPA2) {
         memcpy(f + n, rsn_ie, sizeof(rsn_ie));
         n += sizeof(rsn_ie);
     }
-    memcpy(f + n, ap_xrates, sizeof(ap_xrates));
-    n += sizeof(ap_xrates);
-    n += ap_ht_ies(s, f + n);
+    if (!five) {
+        memcpy(f + n, ap_xrates, sizeof(ap_xrates));
+        n += sizeof(ap_xrates);
+    }
+    n += ap_ht_ies(s, net, f + n);
     ap_rx(s, f, n, 3);
 }
 
+/* the beacons a scan finds: of the networks on its channels */
 static void ap_beacon(void *opaque)
 {
     MT7921State *s = opaque;
 
-    for (int i = 0; i < ap_nets(s); i++) {
-        ap_beacon_of(s, i);
+    for (int i = 0; i < AP_NETS; i++) {
+        if (s->scan_nets & BIT(i)) {
+            ap_beacon_of(s, i);
+        }
     }
 }
 
@@ -2838,7 +2936,7 @@ static void ap_uplink(MT7921State *s, const uint8_t *eth, int n)
 static void ap_frame(MT7921State *s, const uint8_t *f, int n)
 {
     static const uint8_t snap[6] = { 0xaa, 0xaa, 0x03, 0, 0, 0 };
-    uint8_t r[192], eth[2400];
+    uint8_t r[256], eth[2400];
     uint16_t fc;
     int h, m, net;
 
@@ -2871,17 +2969,19 @@ static void ap_frame(MT7921State *s, const uint8_t *f, int n)
         s->sta_secure = false;
         m = ap_hdr(s, r, (fc & 0xfc) + 0x10, s->sta, ap_bssid(s, net),
                    ap_bssid(s, net));
-        stw_le_p(r + m, net ? 0x0431 : 0x0421); /* its capability */
+        stw_le_p(r + m, ap_capab(net));         /* its capability */
         stw_le_p(r + m + 2, 0);                 /* success */
         stw_le_p(r + m + 4, 0xc001);            /* AID 1 */
         m += 6;
-        memcpy(r + m, ap_rates, sizeof(ap_rates));
+        memcpy(r + m, net == AP_5G ? ap_rates5 : ap_rates, sizeof(ap_rates));
         m += sizeof(ap_rates);
-        memcpy(r + m, ap_xrates, sizeof(ap_xrates));
-        m += sizeof(ap_xrates);
-        m += ap_ht_ies(s, r + m);
+        if (net != AP_5G) {
+            memcpy(r + m, ap_xrates, sizeof(ap_xrates));
+            m += sizeof(ap_xrates);
+        }
+        m += ap_ht_ies(s, net, r + m);
         ap_reply(s, r, m);
-        if (net) {                              /* then the handshake */
+        if (net == AP_WPA2) {                   /* then the handshake */
             timer_mod(s->eapol, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                       80 * SCALE_MS);
         }
@@ -2960,12 +3060,13 @@ static ssize_t ap_receive(NetClientState *nc, const uint8_t *buf, size_t size)
         (!group && memcmp(buf, s->sta, 6))) {
         return size;
     }
-    n = ap_hdr(s, f, s->sta_bss ? 0x4208 : 0x0208, buf,     /* data, FromDS, */
-               ap_bssid(s, s->sta_bss), buf + 6);   /* (protected) */
+    n = ap_hdr(s, f, s->sta_bss == AP_WPA2 ? 0x4208 : 0x0208, buf, /* data, */
+               ap_bssid(s, s->sta_bss), buf + 6);   /* FromDS, (protected) */
     memcpy(f + n, snap, 6);
     memcpy(f + n + 6, buf + 12, size - 12);
     ap_rx_sec(s, f, n + 6 + size - 12,
-              !group ? 1 : memcmp(buf, bcast, 6) ? 2 : 3, s->sta_bss);
+              !group ? 1 : memcmp(buf, bcast, 6) ? 2 : 3,
+              s->sta_bss == AP_WPA2);
     return size;
 }
 
@@ -3010,11 +3111,14 @@ static void wifi_tx(MT7921State *s, const uint8_t *b, int len)
         return;
     }
     if ((txd5 & BIT(10)) && (txd5 & 0xff) >= 3) {
-        /* (data, 802.3 or 802.11, at HT MCS 15; management at 6 Mbit/s) */
-        bool data = ((txd1 >> 16) & 3) == 0 || (b[68] & 0x0c) == 0x08;
+        /* (data, 802.3 or 802.11, at HT MCS 15, on 5 GHz HE-MCS 11;
+         * management at 6 Mbit/s) */
+        bool eth = ((txd1 >> 16) & 3) == 0;
+        bool data = eth || (b[68] & 0x0c) == 0x08;
+        int net = eth ? s->sta_bss : ap_net_of(s, b + 68 + 4);
 
-        wifi_txs(s, txd1 & 0x3ff, txd5 & 0xff,
-                 data ? TXS_HT_MCS15 : TXS_OFDM6);
+        wifi_txs(s, txd1 & 0x3ff, txd5 & 0xff, !data ? TXS_OFDM6 :
+                 net == AP_5G ? TXS_HE_MCS11 : TXS_HT_MCS15);
     }
     if (((txd1 >> 16) & 3) == 0) {             /* 802.3: as it is */
         ap_uplink(s, b + 68, n);
@@ -3023,11 +3127,13 @@ static void wifi_tx(MT7921State *s, const uint8_t *b, int len)
     }
 }
 
-/* does the scan (START_HW_SCAN's request) look on the AP's channel? (@158
- * channel_type 0: all of them; else @159 channels_num, @160 {band,
- * channel}, and past 32 @826 ext_channels_num, @830 the rest) */
-static bool scan_has_chan(MT7921State *s, const uint8_t *pl, int n)
+/* does the scan (START_HW_SCAN's request) look on channel @ch? (@158
+ * channel_type 0: all of them; else @159 channels_num, @160 {band (1 2.4
+ * GHz, 2 5 GHz), channel}, and past 32 @826 ext_channels_num, @830 the
+ * rest) */
+static bool scan_has_chan(const uint8_t *pl, int n, uint8_t ch)
 {
+    uint8_t band = ch > 14 ? 2 : 1;
     int num, ext;
 
     if (n < 160 || pl[158] == 0) {
@@ -3035,13 +3141,13 @@ static bool scan_has_chan(MT7921State *s, const uint8_t *pl, int n)
     }
     num = MIN(pl[159], 32);
     for (int i = 0; i < num && 161 + 2 * i < n; i++) {
-        if (pl[160 + 2 * i] == 1 && pl[161 + 2 * i] == s->ap_chan) {
+        if (pl[160 + 2 * i] == band && pl[161 + 2 * i] == ch) {
             return true;
         }
     }
     ext = n > 826 ? pl[826] : 0;
     for (int i = 0; i < ext && 831 + 2 * i < n; i++) {
-        if (pl[830 + 2 * i] == 1 && pl[831 + 2 * i] == s->ap_chan) {
+        if (pl[830 + 2 * i] == band && pl[831 + 2 * i] == ch) {
             return true;
         }
     }
@@ -3118,8 +3224,15 @@ static void wifi_ce(MT7921State *s, uint8_t cid, bool set, uint8_t seq,
             wifi_event(s, 0x01, seq, 0, r, 8);
         }
         break;
-    case 0x03:                                  /* START_HW_SCAN: the AP's */
-        if (ap_on(s) && scan_has_chan(s, pl, n)) {      /* beacon in it */
+    case 0x03:                                  /* START_HW_SCAN: the */
+        s->scan_nets = 0;                       /* beacons in it of the */
+        for (int i = 0; i < AP_NETS; i++) {     /* networks on its channels */
+            if (ap_on(s) && ap_net_on(s, i) &&
+                scan_has_chan(pl, n, ap_chan_of(s, i))) {
+                s->scan_nets |= BIT(i);
+            }
+        }
+        if (s->scan_nets) {
             timer_mod(s->beacon, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                       SCAN_NS / 4);
         }
@@ -3497,11 +3610,25 @@ static void mt7921_realize(USBDevice *dev, Error **errp)
         s->ap_ssid = g_strdup("FlipperOneEmu");
     }
     /* the WPA2 network beside it: its SSID, BSSID, PMK, GTK */
+    if (s->ap_chan < 1 || s->ap_chan > 13) {
+        error_setg(errp, "mt7921: ap-channel: 1 to 13");
+        return;
+    }
+    if (s->ap_chan5 % 4 != (s->ap_chan5 >= 149) ||
+        !((s->ap_chan5 >= 36 && s->ap_chan5 <= 48) ||
+          (s->ap_chan5 >= 149 && s->ap_chan5 <= 161))) {
+        error_setg(errp, "mt7921: ap-channel-5g: 36, 40, 44, 48, 149, 153, "
+                   "157 or 161 (80 MHz without DFS)");
+        return;
+    }
     s->ssid2 = g_strdup_printf("%s-WPA2", s->ap_ssid);
     memcpy(s->bssid2, s->bssid, 6);
     s->bssid2[5]++;
+    s->ssid5 = g_strdup_printf("%s-5G", s->ap_ssid);
+    memcpy(s->bssid5, s->bssid, 6);
+    s->bssid5[5] += 2;
     s->eapol = timer_new_ns(QEMU_CLOCK_VIRTUAL, eapol_msg1, s);
-    if (ap_nets(s) > 1) {
+    if (ap_net_on(s, AP_WPA2)) {
         pbkdf2_sha1(s->ap_psk, s->ssid2, 4096, s->pmk, 32);
         qemu_guest_getrandom_nofail(s->gtk, 16);
     }
@@ -3514,6 +3641,7 @@ static const Property mt7921_props[] = {
     DEFINE_PROP_STRING("wifi-mac", MT7921State, wifi_mac_prop),
     DEFINE_PROP_STRING("ap-ssid", MT7921State, ap_ssid),
     DEFINE_PROP_UINT8("ap-channel", MT7921State, ap_chan, 6),
+    DEFINE_PROP_UINT8("ap-channel-5g", MT7921State, ap_chan5, 36),
     DEFINE_PROP_STRING("ap-psk", MT7921State, ap_psk),
     /* the speaker's stream, raw SBC as it comes (ffmpeg -f sbc -i FILE) */
     DEFINE_PROP_STRING("speaker", MT7921State, speaker_path),

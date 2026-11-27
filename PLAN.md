@@ -230,7 +230,9 @@ screen and its CLI.
       bridged to this PC's network through passt (2026-11-26, log 102); a WPA2-PSK
       network beside it, the 4-way handshake its AP's (2026-11-26, log 103); the
       AP 802.11n: HT with WMM, its data at MCS 15 (144.4 Mbit/s), Block Ack
-      sessions accepted (2026-11-27, log 110); WPA3 (SAE), 5 GHz, 802.11ax
+      sessions accepted (2026-11-27, log 110); a third network, on 5 GHz
+      (channel 36, 80 MHz), open, 802.11ax: VHT and HE, its data at HE-MCS 11
+      both ways (1200.9 Mbit/s) (2026-11-27, log 116); WPA3 (SAE)
 
 ## Not planned
 - The RK3576's mask ROM and DDR training blob (closed), SPL and TF-A's BL31: the machine

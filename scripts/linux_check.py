@@ -38,7 +38,7 @@ Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
   and finds nothing, or with passt (`run --wifi`) the access point near it,
   whose open network NetworkManager joins (an address by DHCP, a gateway that
   answers, its data at 802.11n's MCS 15), then its WPA2 one (the 4-way
-  handshake);
+  handshake) and its 5 GHz one (802.11ax: 80 MHz, HE-MCS 11 both ways);
   with its rfkill blocked the chip leaves USB, unblocked it comes back cold;
   each Ethernet port
   has its RTL8211F, and with passt installed port 1 is on this PC's network
@@ -679,8 +679,9 @@ def checks(check, d, out, first_boot, off, net):
     else:
         # --wifi: an access point near it (an open network), its uplink
         # through passt
-        check("... a scan finds the access point near it, its two networks "
-              "(run --wifi)", wifi[-1:] == ["scan 0 2"], str(wifi))
+        check("... a scan finds the access point near it, its three "
+              "networks (two on 2.4 GHz, one on 5 GHz) (run --wifi)",
+              wifi[-1:] == ["scan 0 3"], str(wifi))
         led = panel.leds[1:2]                   # (the Wi-Fi LED, off)
         join = con.run("W=$(ls /sys/class/ieee80211/phy0/device/net/ | head "
                        "-1); sudo timeout 90 nmcli dev wifi connect "
@@ -712,6 +713,21 @@ def checks(check, d, out, first_boot, off, net):
         check("... and its WPA2 one (FlipperOneEmu-WPA2: the 4-way "
               "handshake), the gateway answering through it",
               wpa == ["0", "ping 0", "SSID: FlipperOneEmu-WPA2"], str(wpa))
+        five = con.run("W=$(ls /sys/class/ieee80211/phy0/device/net/ | head "
+                       "-1); sudo timeout 90 nmcli dev wifi connect "
+                       "FlipperOneEmu-5G ifname $W >/dev/null 2>&1; echo $?; "
+                       "sleep 3; G=$(ip route | awk '/^default/ && /wl/ "
+                       "{print $3; exit}'); ping -c 2 -W 2 -I $W $G "
+                       ">/dev/null 2>&1; echo ping $?; sudo iw dev $W link | "
+                       "grep -E 'SSID|freq|bitrate' | xargs", 150) or []
+        he = "1200.9 MBit/s 80MHz HE-MCS 11 HE-NSS 2 HE-GI 0 HE-DCM 0"
+        check("... and its 5 GHz one (FlipperOneEmu-5G, 802.11ax: 80 MHz, "
+              "HE-MCS 11 both ways, 1200.9 Mbit/s), the gateway answering "
+              "through it",
+              len(five) == 3 and five[:2] == ["0", "ping 0"] and
+              "SSID: FlipperOneEmu-5G" in five[2] and
+              "freq: 5180" in five[2] and f"rx bitrate: {he}" in five[2] and
+              f"tx bitrate: {he}" in five[2], str(five))
     cycle = con.run("sudo rfkill block wlan; sleep 3; "
                     "lsusb -d 0e8d:7961 | wc -l; ls /sys/class/bluetooth | "
                     "wc -l; sudo rfkill unblock wlan; "
