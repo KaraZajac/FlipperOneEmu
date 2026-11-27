@@ -64,17 +64,17 @@ controller, whose scans find an LE beacon near it. With `--wifi` an access point
 near it, on this PC's network (through passt): an open network and a WPA2 one, which
 the Wi-Fi finds and joins, from FlipCTL too; nothing else is ever found (no radio). It
 also boots as the device does, through U-Boot from the card (its boot menu on the
-Flipper's screen; with KASLR, and so KPTI, about three minutes here), and Flipper OS
-installs onto it as the docs do it: in its MaskROM, rockusb's download-boot of the
-installer's loader (`scripts/fo_rockusb.py`, over USB/IP); the installer provisions the
-UFS, installs Flipper OS and updates the MCU's firmware over I2C, and the boot ROM then
-boots the UFS. Flipper OS updates the MCU's firmware as on the device, and Rockusb's
-Loader mode (a Rockchip loader's usbplug, or U-Boot's rockusb) reads and writes the UFS
-or the card from the PC. The RK3576's DisplayPort (over the USB-C port) and more come
-next. [RESEARCH.md](RESEARCH.md) is the survey this starts from: the device, what
-Flipper Devices publishes, and what emulating it takes. [PLAN.md](PLAN.md) is the order
-of work; the MCU comes first. [docs/BRINGUP_LOG.md](docs/BRINGUP_LOG.md) is what was
-found on the way.
+Flipper's screen; with KASLR, and so KPTI, about two and a half minutes here), and
+Flipper OS installs onto it as the docs do it: in its MaskROM, rockusb's download-boot
+of the installer's loader (`scripts/fo_rockusb.py`, over USB/IP); the installer
+provisions the UFS, installs Flipper OS and updates the MCU's firmware over I2C, and
+the boot ROM then boots the UFS. Flipper OS updates the MCU's firmware as on the
+device, and Rockusb's Loader mode (a Rockchip loader's usbplug, or U-Boot's rockusb)
+reads and writes the UFS or the card from the PC. The RK3576's DisplayPort (over the
+USB-C port) and more come next. [RESEARCH.md](RESEARCH.md) is the survey this starts
+from: the device, what Flipper Devices publishes, and what emulating it takes.
+[PLAN.md](PLAN.md) is the order of work; the MCU comes first.
+[docs/BRINGUP_LOG.md](docs/BRINGUP_LOG.md) is what was found on the way.
 
 ## Trying it
 
@@ -166,8 +166,8 @@ scripts/fetch_os.py                  # a Flipper OS build: its kernel, initrd an
                                      # pad's up, down and OK pick a profile and kernel; hold
                                      # a key a moment, U-Boot is slow here), the entry's own
                                      # options (KASLR too, as on the device, and with it
-                                     # KPTI, which costs QEMU a TLB flush at every entry to
-                                     # the kernel: it boots half again as slowly here);
+                                     # KPTI, whose flips at each entry to the kernel keep
+                                     # QEMU's TLB since patch 0024);
                                      # `s` on the console at power-on stops it at
                                      # U-Boot's shell, where `rockusb 0 mmc 0` makes USB0 a
                                      # Rockusb device, the card behind it (with --usbip 3240:
@@ -273,6 +273,7 @@ yet.
 | 0021 | accel/tcg/cputlb: reset dirty only in the mmu_idx in use (every vCPU's sixteen, each time a page of RAM got its first TB) |
 | 0022 | hw/intc/arm_gic: one pass over the interrupts for every CPU (a GIC update looked at every interrupt once per CPU) |
 | 0023 | hw/ufs: a reference clock gating wait time (bRefClkGatingWaitTime read 0, which Linux complained of) |
+| 0024 | target/arm: Linux's KPTI flips of TTBR1_EL1 keep the TLB (under U-Boot's KASLR each system call and interrupt from EL0 flushed it twice) |
 
 ## Layout
 

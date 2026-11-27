@@ -2655,3 +2655,50 @@ register headers.
        - linux_check's reboot and power-off steps vary from run to run
          (27-45 s and 16-42 s across the last seven runs), with or without
          the beacon.
+
+105. **KPTI's flips keep the TLB: a system call ten times quicker under
+     U-Boot's KASLR.**
+     - **The cost.** As log 96 found, KASLR forces KPTI on these cores, and
+       U-Boot gives the kernel a seed for it, as on the device. KPTI flips
+       TTBR1_EL1 at every entry to the kernel from EL0 and at every return:
+       the kernel's tables with an mm's even ASID, the trampoline's with the
+       odd one. QEMU's TLB has no ASIDs, so each change of the ASID flushed
+       it whole, and the TB jump cache with it. That is twice for every
+       system call and every interrupt from EL0. Through U-Boot, `dd bs=1`
+       of 100 000 bytes (200 000 system calls) took 17-28 s: some 100 µs a
+       call.
+     - **Why a flip needs no flush.** Both ASIDs of a flip belong to the
+       same mm:
+       - TTBR0's mappings are the same under either.
+       - The trampoline is mapped alike in the kernel's tables and its own.
+       - Linux invalidates every change of a mapping with a TLBI, which QEMU
+         applies for every ASID.
+       - The kernel's mappings left in the TLB while EL0 runs are of no use
+         to EL0, which may not access them.
+     - **Patch 0024** (target/arm) adds a CPU property, `x-kpti-asid-pairs`,
+       which the RK3576's cores set. With it, a write to TTBR1_EL1 keeps the
+       TLB if it changes the ASID's bit 0 alone and the tables' address with
+       it.
+       - Without KPTI, an ASID and the next one may be two mms: Linux
+         allocates ASIDs in pairs only with KPTI. But a switch between them
+         leaves TTBR1's tables in place, so it still flushes.
+       - So does every other change of the ASID: a context switch, EFI's
+         runtime services.
+     - **Measured** through U-Boot (KASLR and KPTI on, eight cores), the
+       same probe before and after, and a direct boot (no KASLR, no KPTI)
+       for reference:
+
+       | | before | after | direct |
+       |---|---|---|---|
+       | `dd`, 200 000 system calls | 17.0-28.2 s | 1.5-2.1 s | 2.3-4.2 s |
+       | launch to the login | 181, 197 s | 140 s | 105 s |
+       | 300 fork-and-execs | 36-56 s | 32 s | 22 s |
+
+       An exec is a new mm, so a new ASID and still a flush; and U-Boot
+       comes before the kernel. Neither run had a fault in the kernel's
+       log. Eight jobs copying and hashing 2 MB files never mismatched, and
+       `xargs -P 8`'s results matched a sequential run's.
+     - **Checked.** linux_check's U-Boot mode passes in 419 s (460 and
+       516 s in the last two runs), its kernel reaching the login in 102 s
+       (117, 138). The default mode (507 s), the MaskROM mode and the smoke
+       test pass.

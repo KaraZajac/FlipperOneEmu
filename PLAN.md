@@ -200,8 +200,9 @@ screen and its CLI.
       reset in the mmu_idx in use, the GIC's update in one pass (patches
       0020-0022: idle 67-82 %, linux_check 421 s) (2026-11-26, log 93); the
       other CPUs' TLB flushes under the BQL, MMIO's; KPTI (KASLR forces it under
-      U-Boot, as on the device): QEMU flushes its whole TLB at every switch of
-      ASID, a boot half again as long (log 96): an ASID-aware TLB
+      U-Boot, as on the device): QEMU flushed its whole TLB at each of its flips
+      of TTBR1, which keep it now (patch 0024: a system call ten times quicker,
+      as quick as without KPTI; the login 15-40 s sooner) (2026-11-26, log 105)
 - ◐ Wi-Fi (the MT7921 on USB, its Bluetooth there too, log 99): mt7921u on its
       interface 3, its real firmware through the emulated MCU, the interface
       NetworkManager's and FlipCTL's, scans that complete (2026-11-26, log 101); an

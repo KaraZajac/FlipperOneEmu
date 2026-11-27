@@ -1,0 +1,89 @@
+From: FlipperOneEmu
+Subject: [PATCH] target/arm: Linux's KPTI flips of TTBR1_EL1 keep the TLB
+
+With KASLR, Linux forces KPTI on cores without E0PD, as the RK3576's
+Cortex-A72s and A53s are, and U-Boot gives the kernel a seed for it, as
+on the device. KPTI flips TTBR1_EL1 at every entry to the kernel from
+EL0 and every return to EL0: the kernel's tables with an mm's even
+ASID, the trampoline's with the odd one. QEMU's TLB has no ASIDs, so
+each change of the ASID flushed it whole, and the TB jump cache with
+it, twice for every system call and interrupt from EL0: Flipper OS took
+167-174 s to its login with KASLR, 91-111 s without.
+
+Both ASIDs of a flip are the same mm: TTBR0's mappings are the same
+under either, the trampoline is mapped alike in both tables, and Linux
+invalidates each change of a mapping with its TLBI, which QEMU applies
+for every ASID. So with the CPU's new x-kpti-asid-pairs, a write to
+TTBR1_EL1 that changes the ASID's bit 0 alone, and the tables' address
+with it, keeps the TLB. Without KPTI an ASID and the next may be two
+mms, but switching between them leaves TTBR1's tables where they are,
+so that still flushes, as does every other change of the ASID.
+
+---
+--- a/target/arm/cpu.h	2026-11-26 18:17:00.274874428 -0500
++++ b/target/arm/cpu.h	2026-11-26 18:17:44.447079561 -0500
+@@ -1133,6 +1133,12 @@
+     /* QOM property to indicate we should use the back-compat QARMA5 default */
+     bool backcompat_pauth_default_use_qarma5;
+ 
++    /*
++     * QOM property: TTBR1_EL1's KPTI flips (Linux's: one mm's pair of
++     * ASIDs, the kernel's tables and the trampoline's) keep the TLB
++     */
++    bool kpti_asid_pairs;
++
+     /* Specify the number of cores in this CPU cluster. Used for the L2CTLR
+      * register.
+      */
+--- a/target/arm/cpu.c	2026-11-26 18:17:00.277201536 -0500
++++ b/target/arm/cpu.c	2026-11-26 18:17:44.447659975 -0500
+@@ -2506,6 +2506,8 @@
+     DEFINE_PROP_BOOL("backcompat-cntfrq", ARMCPU, backcompat_cntfrq, false),
+     DEFINE_PROP_BOOL("backcompat-pauth-default-use-qarma5", ARMCPU,
+                       backcompat_pauth_default_use_qarma5, false),
++    /* True for TTBR1_EL1's KPTI flips to keep the TLB (vmsa_ttbr_write) */
++    DEFINE_PROP_BOOL("x-kpti-asid-pairs", ARMCPU, kpti_asid_pairs, false),
+ };
+ 
+ static const gchar *arm_gdb_arch_name(CPUState *cs)
+--- a/target/arm/helper.c	2026-11-26 18:17:00.281494496 -0500
++++ b/target/arm/helper.c	2026-11-26 18:17:44.448895418 -0500
+@@ -2818,12 +2818,37 @@
+     raw_write(env, ri, value);
+ }
+ 
++/*
++ * Linux's KPTI (kernel page table isolation): at each entry to the kernel
++ * from EL0 and each return to EL0, TTBR1_EL1 flips between the kernel's
++ * tables with an mm's ASID, even, and the trampoline's tables with the
++ * same ASID and its bit 0 set (USER_ASID_FLAG). Both are the same mm:
++ * TTBR0's mappings are the same under either, the trampoline is mapped
++ * alike in both tables, and every change of a mapping comes with its TLBI
++ * (for every ASID, here). So such a flip need not flush the TLB, which
++ * otherwise empties twice for every system call and interrupt from EL0.
++ * Only so with the CPU's x-kpti-asid-pairs, and only where the tables'
++ * address changes too: without KPTI an ASID and the next one may well be
++ * two mms, but their switch keeps TTBR1's tables.
++ */
++static bool vmsa_ttbr_kpti_flip(CPUARMState *env, const ARMCPRegInfo *ri,
++                                uint64_t value)
++{
++    uint64_t diff = raw_read(env, ri) ^ value;
++
++    return env_archcpu(env)->kpti_asid_pairs &&
++           ri->state == ARM_CP_STATE_AA64 &&
++           ri->fieldoffset == offsetof(CPUARMState, cp15.ttbr1_el[1]) &&
++           extract64(diff, 48, 16) == 1 && extract64(diff, 1, 47) != 0;
++}
++
+ static void vmsa_ttbr_write(CPUARMState *env, const ARMCPRegInfo *ri,
+                             uint64_t value)
+ {
+     /* If the ASID changes (with a 64-bit write), we must flush the TLB.  */
+     if (cpreg_field_type(ri) == MO_64 &&
+-        extract64(raw_read(env, ri) ^ value, 48, 16) != 0) {
++        extract64(raw_read(env, ri) ^ value, 48, 16) != 0 &&
++        !vmsa_ttbr_kpti_flip(env, ri, value)) {
+         ARMCPU *cpu = env_archcpu(env);
+         tlb_flush(CPU(cpu));
+     }

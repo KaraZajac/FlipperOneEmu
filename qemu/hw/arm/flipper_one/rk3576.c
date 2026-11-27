@@ -1045,6 +1045,10 @@ static void rk3576_realize(DeviceState *dev, Error **errp)
         object_property_set_int(cpu, "reset-cbar", GIC_BASE, &error_abort);
         object_property_set_int(cpu, "core-count", 4, &error_abort);
         object_property_set_uint(cpu, "cntfrq", CNTFRQ_HZ, &error_abort);
+        /* KPTI's flips of TTBR1 keep the TLB (patch 0024): Linux's, under
+           U-Boot's KASLR as on the device */
+        object_property_set_bool(cpu, "x-kpti-asid-pairs", true,
+                                 &error_abort);
         object_property_set_bool(cpu, "start-powered-off",
                                  i || !s->start_on, &error_abort);
         if (!qdev_realize(DEVICE(cpu), NULL, errp)) {
