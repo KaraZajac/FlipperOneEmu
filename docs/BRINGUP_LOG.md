@@ -3122,3 +3122,46 @@ register headers.
        Sink found by SDP) and removes it again. linux_check passes (491 s),
        as do its U-Boot mode (443 s), its MaskROM mode (17 s) and the smoke
        test (51 s).
+
+115. **The speaker plays: A2DP.** Log 114's speaker refused AVDTP's channel,
+     so BlueZ's `connect` ended in "br-connection-refused". It now takes
+     AVDTP and plays what PipeWire sends it to a file.
+     - **AVDTP 1.3** on PSM 25: its signalling channel, then the media
+       channel, the second connection on that PSM (after OPEN).
+       - One stream end point: SEID 1, an audio sink, SBC. It takes every
+         rate, channel mode, block length, subband count and allocation,
+         and bitpools 2 to 53.
+       - It accepts DISCOVER, GET_CAPABILITIES and GET_ALL_CAPABILITIES,
+         SET_CONFIGURATION (the configuration is kept for
+         GET_CONFIGURATION), OPEN, START, SUSPEND, CLOSE, ABORT, RECONFIGURE
+         and DELAYREPORT. Anything else gets a general reject.
+     - **Its media.** Each packet is RTP (version 2; its CSRCs and any
+       extension are skipped), SBC's payload header, then SBC frames.
+       - The frames go, as they come, to the file the `speaker` property
+         names (`run --speaker FILE.sbc`): raw SBC, which `ffmpeg -f sbc`
+         decodes.
+       - Without a file, the frames are dropped.
+     - **L2CAP.**
+       - The speaker's MTU is now 1000, and an L2CAP PDU of up to 2 KiB is
+         reassembled.
+       - A second channel on SDP's or AVDTP's PSM while it has one open is
+         refused (no resources).
+       - Other PSMs (AVRCP's AVCTP) are still refused (PSM not supported).
+     - **What Flipper OS makes of it.**
+       - `bluetoothctl connect`: "Connection successful".
+       - WirePlumber adds a sink, "FlipperOneEmu Speaker" [bluez5]
+         (`bluez_output.C0_FE_46_4F_42_03.1`), as the default, volume 0.40.
+       - PipeWire chooses SBC at 48 kHz: joint stereo, 16 blocks, 8
+         subbands, loudness, bitpool 53 (the speaker's most), 357 kbit/s.
+       - `pw-play` of a 440 Hz tone for 3 s: the file decodes to 48 kHz
+         stereo, the tone at 439.9 Hz for 2.91 s, peak to RMS 1.42 (a sine's
+         is 1.41).
+       - The tone is at −33 dBFS (played at −6): PipeWire turns it down
+         itself (the sink's 0.40), since the speaker has no AVRCP for its
+         volume. That is the USB bullet's open item in PLAN.
+     - **Checked.** linux_check pairs with the speaker, connects, plays the
+       tone with `pw-play` to PipeWire's Bluetooth sink, and decodes the
+       speaker's file (`sbc_tone`: ffmpeg, the loudest stretch's zero
+       crossings): 440 ± 5 Hz for more than 2.5 s. It then disconnects and
+       removes the speaker. linux_check passes (520 s), as do its U-Boot
+       mode (416 s), its MaskROM mode (16 s) and the smoke test (46 s).

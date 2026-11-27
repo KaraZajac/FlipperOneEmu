@@ -188,8 +188,10 @@ screen and its CLI.
       them (QEMU patch 0026), the device tree's nodes; the MT7921 behind it at
       SuperSpeed; USB-A and USB-C2 to plug devices into (2026-11-27, log
       109); a BR/EDR speaker near it that an inquiry finds, which pairs with
-      SSP (Just Works) and answers SDP (an A2DP sink) (2026-11-27, log 114);
-      its audio (AVDTP, SBC)
+      SSP (Just Works) and answers SDP (an A2DP sink) (2026-11-27, log 114),
+      and plays: A2DP (AVDTP 1.3, SBC), PipeWire's Bluetooth sink, what it
+      plays to a file (`run --speaker`) (2026-11-27, log 115); its remote
+      control (AVRCP: its volume, which PipeWire now sets itself)
 - ◐ Audio: the SAIs (0, 2, 6) and the NAU8822: Flipper OS's sound card plays, out of
       QEMU's audio (`run --audio`) (2026-11-25); the internal and the headset's
       microphones, from a WAV file (`run --mic`) (2026-11-25); this PC's own

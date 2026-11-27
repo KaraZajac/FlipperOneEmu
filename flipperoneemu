@@ -211,6 +211,9 @@ def cmd_run(args):
         if not os.path.isfile(args.mic):
             die(f"{args.mic}: no such file")
         cmd += ["-global", f"nau8822.mic={os.path.abspath(args.mic)}"]
+    # what the Bluetooth speaker near it plays (A2DP): raw SBC, to a file
+    if getattr(args, "speaker", None):
+        cmd += ["-global", f"mt7921.speaker={os.path.abspath(args.speaker)}"]
     # an NVMe SSD in the M.2 slot (PCIe0's root port, bus dw-pcie): its disk
     # a raw image, the device's own nvme.img unless told (a blank 256 GB,
     # sparse, the first time)
@@ -727,6 +730,11 @@ def main():
                            help="what the board's internal microphone hears: "
                                 "a WAV file (16-bit PCM), looped; silence "
                                 "without one")
+            p.add_argument("--speaker", metavar="FILE.sbc",
+                           help="where what the Bluetooth speaker near it "
+                                "plays goes (A2DP, raw SBC as it comes: "
+                                "ffmpeg -f sbc -i FILE.sbc out.wav); "
+                                "nowhere without one")
             p.add_argument("--nvme", metavar="FILE.img", nargs="?", const="",
                            help="an NVMe SSD in the M.2 slot, its disk a raw "
                                 "image (default devices/NAME/nvme.img: a "

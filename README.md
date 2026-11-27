@@ -64,20 +64,21 @@ rfkill: the chip takes its real firmware from mt7921u and btusb; NetworkManager 
 Wi-Fi (FlipCTL's Wi-Fi menu with it, the Wi-Fi LED lit once it joins) and BlueZ its
 controller, whose scans find an LE beacon and a sensor near it, the sensor one that
 BlueZ connects to (its GATT services: its battery, its heart rate), and a BR/EDR
-speaker, which BlueZ pairs with (SSP, its services by SDP). With `--wifi` an 802.11n
-access point is near it (144.4 Mbit/s), on this PC's network (through passt): an open
-network and a WPA2 one, which the Wi-Fi finds and joins, from FlipCTL too; nothing else
-is ever found (no radio). It also boots as the device does, through U-Boot from the
-card (its boot menu on the Flipper's screen; with KASLR, and so KPTI, about two and a
-half minutes here), and Flipper OS installs onto it as the docs do it: in its MaskROM,
-rockusb's download-boot of the installer's loader (`scripts/fo_rockusb.py`, over
-USB/IP); the installer provisions the UFS, installs Flipper OS and updates the MCU's
-firmware over I2C, and the boot ROM then boots the UFS. Flipper OS updates the MCU's
-firmware as on the device, and Rockusb's Loader mode (a Rockchip loader's usbplug, or
-U-Boot's rockusb) reads and writes the UFS or the card from the PC. The RK3576's
-DisplayPort (over the USB-C port) and more come next. [RESEARCH.md](RESEARCH.md) is the
-survey this starts from: the device, what Flipper Devices publishes, and what emulating
-it takes. [PLAN.md](PLAN.md) is the order of work; the MCU comes first.
+speaker, which BlueZ pairs with (SSP, its services by SDP) and PipeWire plays to (A2DP,
+SBC: what it plays to a file, `run --speaker`). With `--wifi` an 802.11n access point
+is near it (144.4 Mbit/s), on this PC's network (through passt): an open network and a
+WPA2 one, which the Wi-Fi finds and joins, from FlipCTL too; nothing else is ever found
+(no radio). It also boots as the device does, through U-Boot from the card (its boot
+menu on the Flipper's screen; with KASLR, and so KPTI, about two and a half minutes
+here), and Flipper OS installs onto it as the docs do it: in its MaskROM, rockusb's
+download-boot of the installer's loader (`scripts/fo_rockusb.py`, over USB/IP); the
+installer provisions the UFS, installs Flipper OS and updates the MCU's firmware over
+I2C, and the boot ROM then boots the UFS. Flipper OS updates the MCU's firmware as on
+the device, and Rockusb's Loader mode (a Rockchip loader's usbplug, or U-Boot's
+rockusb) reads and writes the UFS or the card from the PC. The RK3576's DisplayPort
+(over the USB-C port) and more come next. [RESEARCH.md](RESEARCH.md) is the survey this
+starts from: the device, what Flipper Devices publishes, and what emulating it takes.
+[PLAN.md](PLAN.md) is the order of work; the MCU comes first.
 [docs/BRINGUP_LOG.md](docs/BRINGUP_LOG.md) is what was found on the way.
 
 ## Trying it
@@ -144,6 +145,9 @@ scripts/fetch_os.py                  # a Flipper OS build: its kernel, initrd an
                                      # sound needs pipewire-devel when QEMU is configured)
 ./flipperoneemu run --linux --mic FILE.wav ...  # ... and what its internal microphone
                                      # hears: a WAV file (16-bit PCM), looped
+./flipperoneemu run --linux --speaker FILE.sbc ...  # ... what the Bluetooth speaker
+                                     # near it plays (A2DP), raw SBC: ffmpeg -f sbc -i
+                                     # FILE.sbc out.wav
 ./flipperoneemu run --linux --hdmi ...  # ... a monitor in the HDMI port (Linux lights it,
                                      # 1280x720, its console on it; the panel link's
                                      # `hdmi 1|0` plugs it in and out)

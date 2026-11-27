@@ -37,8 +37,8 @@
  *     notifications once the host subscribes, Device Information);
  *     pairing it refuses;
  *   - over BR/EDR, a speaker ("FlipperOneEmu Speaker", an inquiry's
- *     extended result), which pairs with SSP (Just Works) and answers SDP
- *     (an A2DP sink); its audio channels it refuses.
+ *     extended result), which pairs with SSP (Just Works), answers SDP and
+ *     plays: A2DP's sink, SBC, what it receives to the "speaker" file.
  *   The values not fixed by the protocol (its subversion, the TX powers,
  *   the lists' sizes) are a typical controller's, not read from a device.
  *
@@ -168,10 +168,17 @@ struct MT7921State {
     uint8_t br_page_op;                 /* ... a connection's (0x05) or a
                                            name request's (0x19) */
     bool br_conn;                       /* connected (BR_HANDLE) */
-    uint8_t br_l2rx[512];               /* an L2CAP PDU on it, put together */
+    uint8_t br_l2rx[2048];              /* an L2CAP PDU on it, put together */
     int br_l2rx_len;
     uint16_t sdp_cid;                   /* the host's end of the SDP channel
                                            (0: none) */
+    uint16_t avdtp_cid[2];              /* ... of AVDTP's: signalling, the
+                                           media (0: none) */
+    uint8_t avdtp_conf[16];             /* its stream's configuration, as set */
+    int avdtp_conf_len;
+    char *speaker_path;                 /* "speaker": where what it plays
+                                           goes (SBC) */
+    int speaker_fd;
     GQueue aclq;                        /* ACL packets to the host (0x82) */
     USBEndpoint *acl_in;
     uint8_t l2rx[512];                  /* an L2CAP PDU from the host, put
@@ -488,6 +495,7 @@ static void controller_reset(MT7921State *s)
     s->br_conn = false;                         /* (the speaker's link) */
     s->br_l2rx_len = 0;
     s->sdp_cid = 0;
+    s->avdtp_cid[0] = s->avdtp_cid[1] = 0;
     timer_del(s->page);
     s->page_op = 0;
     s->le_connecting = false;
@@ -1063,10 +1071,14 @@ static void page_start(MT7921State *s, uint8_t op, const uint8_t *addr)
  * answers a page. Its connection pairs with SSP, Just Works (it has no
  * input or output, and no Secure Connections): a link key the host keeps,
  * which it takes back later as one it remembers. Its L2CAP has the
- * signalling channel and SDP, which has one record, an A2DP sink's; its
- * profiles' own channels (AVDTP's) it refuses.
+ * signalling channel, SDP (one record, an A2DP sink's) and AVDTP's two
+ * channels: A2DP's sink, SBC (avdtp_sig_rx). What it plays goes to the
+ * "speaker" file as raw SBC, which ffmpeg plays (-f sbc); AVRCP and other
+ * profiles' channels it refuses.
  */
 #define SDP_CID         0x0040          /* its end of an SDP channel */
+#define AVDTP_SIG_CID   0x0041          /* ... of AVDTP's signalling */
+#define AVDTP_MEDIA_CID 0x0042          /* ... of its media channel */
 #define SPEAKER_NAME    "FlipperOneEmu Speaker"
 
 static const uint8_t speaker_addr[6] = { 0x03, 0x42, 0x4f, 0x46, 0xfe, 0xc0 };
@@ -1126,6 +1138,7 @@ static void br_page_done(void *opaque)
         s->br_conn = true;
         s->br_l2rx_len = 0;
         s->sdp_cid = 0;
+        s->avdtp_cid[0] = s->avdtp_cid[1] = 0;
         ev_put(s, 0x03, e, 11);
     } else if (s->br_page_op == 0x19) {         /* Remote Name Request
                                                    Complete */
@@ -1141,6 +1154,7 @@ static void br_conn_drop(MT7921State *s)
     s->br_conn = false;
     s->br_l2rx_len = 0;
     s->sdp_cid = 0;
+    s->avdtp_cid[0] = s->avdtp_cid[1] = 0;
 }
 
 /* an L2CAP PDU to the host on the speaker's connection: one ACL packet */
@@ -1319,6 +1333,7 @@ static void br_sig_rx(MT7921State *s, const uint8_t *q, int n)
 {
     uint8_t d[16] = { 0 };
     uint8_t code, id;
+    uint16_t ours;
 
     if (n < 4) {
         return;
@@ -1333,29 +1348,41 @@ static void br_sig_rx(MT7921State *s, const uint8_t *q, int n)
             return;
         }
         stw_le_p(d + 2, lduw_le_p(q + 2));      /* (its source CID) */
-        if (lduw_le_p(q) != 0x0001) {           /* (not SDP: refused) */
-            stw_le_p(d + 4, 0x0002);            /* PSM not supported */
+        if (lduw_le_p(q) == 0x0001 && !s->sdp_cid) {        /* SDP */
+            s->sdp_cid = lduw_le_p(q + 2);
+            ours = SDP_CID;
+        } else if (lduw_le_p(q) == 0x0019 &&
+                   (!s->avdtp_cid[0] || !s->avdtp_cid[1])) {
+            int k = s->avdtp_cid[0] ? 1 : 0;    /* AVDTP: its signalling,
+                                                   then its media */
+            s->avdtp_cid[k] = lduw_le_p(q + 2);
+            ours = k ? AVDTP_MEDIA_CID : AVDTP_SIG_CID;
+        } else {
+            stw_le_p(d + 4, lduw_le_p(q) == 0x0001 || lduw_le_p(q) == 0x0019 ?
+                     0x0004 : 0x0002);          /* no resources; PSM not
+                                                   supported */
             br_sig(s, 0x03, id, d, 8);
             return;
         }
-        s->sdp_cid = lduw_le_p(q + 2);
-        stw_le_p(d, SDP_CID);
+        stw_le_p(d, ours);
         br_sig(s, 0x03, id, d, 8);              /* success */
-        /* its own configuration: an MTU of 672 */
-        stw_le_p(d, s->sdp_cid);
+        /* its own configuration: its MTU, 1000 (an SBC packet's room) */
+        stw_le_p(d, lduw_le_p(q + 2));
         stw_le_p(d + 2, 0);
         d[4] = 0x01;
         d[5] = 2;
-        stw_le_p(d + 6, 672);
+        stw_le_p(d + 6, 1000);
         br_sig(s, 0x04, id + 0x40, d, 8);
         break;
     case 0x04:                                  /* Configuration Request */
         if (n < 4) {
             return;
         }
-        stw_le_p(d, s->sdp_cid);                /* Configuration Response:
+        ours = lduw_le_p(q);                    /* (its channel: ours) */
+        stw_le_p(d, ours == AVDTP_SIG_CID ? s->avdtp_cid[0] :
+                    ours == AVDTP_MEDIA_CID ? s->avdtp_cid[1] : s->sdp_cid);
+        br_sig(s, 0x05, id, d, 6);              /* Configuration Response:
                                                    accepted */
-        br_sig(s, 0x05, id, d, 6);
         break;
     case 0x06:                                  /* Disconnection Request */
         if (n < 4) {
@@ -1364,6 +1391,10 @@ static void br_sig_rx(MT7921State *s, const uint8_t *q, int n)
         memcpy(d, q, 4);
         if (lduw_le_p(q) == SDP_CID) {
             s->sdp_cid = 0;
+        } else if (lduw_le_p(q) == AVDTP_SIG_CID) {
+            s->avdtp_cid[0] = 0;
+        } else if (lduw_le_p(q) == AVDTP_MEDIA_CID) {
+            s->avdtp_cid[1] = 0;
         }
         br_sig(s, 0x07, id, d, 4);
         break;
@@ -1399,6 +1430,99 @@ static void br_sig_rx(MT7921State *s, const uint8_t *q, int n)
     }
 }
 
+/*
+ * AVDTP's signalling, the speaker's side (AVDTP 1.3, A2DP's sink): one
+ * stream end point, SEID 1, an audio sink taking SBC at any of its rates,
+ * modes, blocks, subbands and allocations, bitpools 2 to 53. Each command
+ * is accepted: discovery, its capabilities, the configuration the host
+ * sets (kept, for GET_CONFIGURATION), open, start, suspend, close, abort,
+ * delay reports; any other is rejected (general reject).
+ */
+static void avdtp_send(MT7921State *s, uint8_t hdr, uint8_t sig,
+                       const uint8_t *d, int n)
+{
+    uint8_t b[32];
+
+    b[0] = hdr;
+    b[1] = sig;
+    if (n) {
+        memcpy(b + 2, d, n);
+    }
+    br_l2cap_send(s, s->avdtp_cid[0], b, 2 + n);
+}
+
+static void avdtp_sig_rx(MT7921State *s, const uint8_t *q, int n)
+{
+    /* its capabilities: media transport; SBC, everything, bitpool 2-53 */
+    static const uint8_t caps[] = { 0x01, 0x00,
+                                    0x07, 0x06, 0x00, 0x00,
+                                    0xff, 0xff, 2, 53 };
+    static const uint8_t sep[] = { 1 << 2, 0x08 };  /* SEID 1, free; audio,
+                                                       a sink */
+    uint8_t accept, sig;
+
+    if (n < 2 || (q[0] & 0x0f) != 0) {          /* (a command, whole) */
+        return;
+    }
+    accept = (q[0] & 0xf0) | 0x02;              /* (its transaction's) */
+    sig = q[1] & 0x3f;
+    switch (sig) {
+    case 0x01:                                  /* DISCOVER */
+        avdtp_send(s, accept, sig, sep, sizeof(sep));
+        break;
+    case 0x02:                                  /* GET_CAPABILITIES */
+    case 0x0c:                                  /* GET_ALL_CAPABILITIES */
+        avdtp_send(s, accept, sig, caps, sizeof(caps));
+        break;
+    case 0x03:                                  /* SET_CONFIGURATION */
+        s->avdtp_conf_len = MIN(MAX(n - 4, 0), (int)sizeof(s->avdtp_conf));
+        memcpy(s->avdtp_conf, q + 4, s->avdtp_conf_len);
+        avdtp_send(s, accept, sig, NULL, 0);
+        break;
+    case 0x04:                                  /* GET_CONFIGURATION */
+        avdtp_send(s, accept, sig, s->avdtp_conf, s->avdtp_conf_len);
+        break;
+    case 0x05:                                  /* RECONFIGURE */
+    case 0x06:                                  /* OPEN */
+    case 0x07:                                  /* START */
+    case 0x08:                                  /* CLOSE */
+    case 0x09:                                  /* SUSPEND */
+    case 0x0a:                                  /* ABORT */
+    case 0x0d:                                  /* DELAYREPORT */
+        avdtp_send(s, accept, sig, NULL, 0);
+        break;
+    default:
+        avdtp_send(s, (q[0] & 0xf0) | 0x01, sig, NULL, 0);  /* (general
+                                                               reject) */
+        break;
+    }
+}
+
+/* a media packet: RTP (its CSRCs and extension skipped), SBC's one-byte
+ * header, then SBC frames, which go to the "speaker" file as they come */
+static void avdtp_media_rx(MT7921State *s, const uint8_t *q, int n)
+{
+    int h;
+
+    if (n < 13 || q[0] >> 6 != 2) {             /* (RTP, version 2) */
+        return;
+    }
+    h = 12 + 4 * (q[0] & 0x0f);
+    if (q[0] & 0x10) {                          /* (an extension) */
+        if (n < h + 4) {
+            return;
+        }
+        h += 4 + 4 * lduw_be_p(q + h + 2);
+    }
+    if (n <= h + 1) {
+        return;
+    }
+    if (s->speaker_fd >= 0 &&
+        qemu_write_full(s->speaker_fd, q + h + 1, n - h - 1) != n - h - 1) {
+        qemu_log_mask(LOG_GUEST_ERROR, "mt7921: speaker: cannot write\n");
+    }
+}
+
 /* an ACL packet's data on the speaker's connection: an L2CAP PDU's */
 static void br_acl_rx(MT7921State *s, uint16_t hdr, const uint8_t *q,
                       int len)
@@ -1422,6 +1546,10 @@ static void br_acl_rx(MT7921State *s, uint16_t hdr, const uint8_t *q,
         br_sig_rx(s, s->br_l2rx + 4, lduw_le_p(s->br_l2rx));
     } else if (cid == SDP_CID && s->sdp_cid) {
         sdp_rx(s, s->br_l2rx + 4, lduw_le_p(s->br_l2rx));
+    } else if (cid == AVDTP_SIG_CID && s->avdtp_cid[0]) {
+        avdtp_sig_rx(s, s->br_l2rx + 4, lduw_le_p(s->br_l2rx));
+    } else if (cid == AVDTP_MEDIA_CID && s->avdtp_cid[1]) {
+        avdtp_media_rx(s, s->br_l2rx + 4, lduw_le_p(s->br_l2rx));
     }
     s->br_l2rx_len = 0;
 }
@@ -3314,6 +3442,15 @@ static void mt7921_realize(USBDevice *dev, Error **errp)
     MT7921State *s = MT7921(dev);
     unsigned int a[6];
 
+    s->speaker_fd = -1;
+    if (s->speaker_path) {                      /* (what the speaker plays) */
+        s->speaker_fd = qemu_create(s->speaker_path,
+                                    O_WRONLY | O_TRUNC | O_BINARY, 0644, errp);
+        if (s->speaker_fd < 0) {
+            return;
+        }
+    }
+
     if (sscanf(s->bdaddr_prop ?: "00:0c:e7:46:4f:01", "%x:%x:%x:%x:%x:%x",
                &a[0], &a[1], &a[2], &a[3], &a[4], &a[5]) != 6) {
         error_setg(errp, "mt7921: bdaddr: xx:xx:xx:xx:xx:xx");
@@ -3378,6 +3515,8 @@ static const Property mt7921_props[] = {
     DEFINE_PROP_STRING("ap-ssid", MT7921State, ap_ssid),
     DEFINE_PROP_UINT8("ap-channel", MT7921State, ap_chan, 6),
     DEFINE_PROP_STRING("ap-psk", MT7921State, ap_psk),
+    /* the speaker's stream, raw SBC as it comes (ffmpeg -f sbc -i FILE) */
+    DEFINE_PROP_STRING("speaker", MT7921State, speaker_path),
     DEFINE_NIC_PROPERTIES(MT7921State, conf),
 };
 

@@ -31,7 +31,8 @@ Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
   BlueZ's controller
   powered, a scan finds the LE beacon and sensor near it and the BR/EDR
   speaker, nothing else, BlueZ connects to the sensor (its GATT services, its
-  battery) and pairs with the speaker (SSP, its SDP); its Wi-Fi is
+  battery) and pairs with the speaker (SSP, its SDP), and PipeWire plays a
+  tone to it (A2DP, SBC: `run --speaker`'s file has it); its Wi-Fi is
   mt7921u's with its
   firmware running, wlx000ce7464f02, NetworkManager's, and a scan completes
   and finds nothing, or with passt (`run --wifi`) the access point near it,
@@ -136,6 +137,7 @@ over 200 s (400 s for a first boot). Exit status 0 = pass. Screenshots go
 to --out.
 """
 import argparse
+import array
 import base64
 import hashlib
 import json
@@ -391,6 +393,29 @@ def png_pixels(path, points):
     return [tuple(rows[y][x * bpp:x * bpp + 3]) for x, y in points]
 
 
+def sbc_tone(path):
+    """the frequency (Hz) and the length (s) of the tone in an SBC stream:
+    decoded with ffmpeg, its loudest stretch, its zero crossings; or None
+    (no ffmpeg, no stream)"""
+    if not shutil.which("ffmpeg") or not path.exists():
+        return None
+    out = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error",
+                          "-f", "sbc", "-i", str(path), "-f", "s16le", "-ac",
+                          "1", "-ar", "48000", "-"], capture_output=True)
+    pcm = array.array("h")
+    pcm.frombytes(out.stdout[:len(out.stdout) & ~1])
+    peak = max((abs(v) for v in pcm), default=0)
+    if out.returncode or peak < 50:
+        return None
+    loud = [i for i, v in enumerate(pcm) if abs(v) > peak * 0.3]
+    seg = pcm[loud[0]:loud[-1]]
+    if len(seg) < 4800:
+        return None
+    crossings = sum(1 for i in range(1, len(seg))
+                    if (seg[i - 1] < 0) != (seg[i] < 0))
+    return round(crossings / 2 / (len(seg) / 48000), 1), round(len(seg) / 48000, 2)
+
+
 def guest_uptime(con):
     """the guest's uptime, the host's time halfway through reading it, and
     how long the reading took; or None"""
@@ -609,13 +634,29 @@ def checks(check, d, out, first_boot, off, net):
     speaker = con.run("A=C0:FE:46:4F:42:03; timeout 40 bluetoothctl pair $A "
                       "2>&1 | grep -c 'Pairing successful'; bluetoothctl info "
                       "$A | grep -E 'Paired:|LegacyPairing:|Audio Sink' | "
-                      "xargs; timeout 20 bluetoothctl remove $A >/dev/null "
-                      "2>&1; echo $?", 150) or []
+                      "xargs", 150) or []
     check("... and pairs with the speaker: SSP (no PIN), its A2DP sink found "
-          "by SDP; then removed",
-          len(speaker) == 3 and speaker[0] == "1" and
+          "by SDP",
+          len(speaker) == 2 and speaker[0] == "1" and
           "Paired: yes" in speaker[1] and "LegacyPairing: no" in speaker[1] and
-          "Audio Sink" in speaker[1] and speaker[2] == "0", str(speaker))
+          "Audio Sink" in speaker[1], str(speaker))
+    # ... and plays to it: A2DP (AVDTP, SBC), PipeWire's Bluetooth sink a
+    # 440 Hz tone for 3 s, the speaker's stream to `run --speaker`'s file
+    play = con.run("A=C0:FE:46:4F:42:03; timeout 40 bluetoothctl connect $A "
+                   "2>&1 | grep -c 'Connection successful'; for i in "
+                   "$(seq 20); do N=$(pw-cli ls Node 2>/dev/null | grep -o "
+                   "'bluez_output[^\"]*' | head -1); [ -n \"$N\" ] && break; "
+                   "sleep 1; done; echo $N; sox -n /tmp/t440.wav synth 3 sine "
+                   "440 vol 0.5; timeout 30 pw-play --target \"$N\" "
+                   "/tmp/t440.wav; echo $?; sleep 2; timeout 20 bluetoothctl "
+                   "disconnect $A >/dev/null 2>&1; timeout 20 bluetoothctl "
+                   "remove $A >/dev/null 2>&1; echo $?", 200) or []
+    tone = sbc_tone(d / "speaker.sbc")
+    check("... and plays to it (A2DP, SBC): PipeWire's Bluetooth sink, a "
+          "440 Hz tone, the speaker's stream decoded; then removed",
+          play == ["1", "bluez_output.C0_FE_46_4F_42_03.1", "0", "0"] and
+          tone is not None and abs(tone[0] - 440) < 5 and tone[1] > 2.5,
+          f"{play} {tone}")
     # its Wi-Fi: mt7921u on interface 3 of the same chip, its firmware
     # running; NetworkManager's; a scan that finds nothing (no radio)
     wifi = con.run("W=$(ls /sys/class/ieee80211/phy0/device/net/ | head -1); "
@@ -1491,6 +1532,7 @@ def main():
            "--linux"] + (["--uboot", "--usbip", str(port)] if args.uboot else
                          mask + ["--net"] if args.mcu_update else mask + [
            "--audio", str(d / "audio.wav"), "--mic", str(d / "mic.wav"),
+           "--speaker", str(d / "speaker.sbc"),
            "--nvme", "--hdmi", "--lan"] +
            (["--net", "--wifi"] if net else []))
     if args.maskrom:                    # (no card: the launcher's blank one)
