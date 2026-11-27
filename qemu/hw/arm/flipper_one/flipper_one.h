@@ -250,6 +250,8 @@ void iqs7211e_touch(struct I2CSlave *dev, bool touching, int x, int y, int p);
 /* mt7921.c: the MT7921's Bluetooth, a USB device on its bus while @on (its
  * PMU_EN): each power-up a cold chip */
 #define TYPE_MT7921 "mt7921"
+/* the board's USB hub, a CoreChips SL6341: one of its two hubs (sl6341.c) */
+#define TYPE_SL6341 "sl6341"
 struct USBDevice;
 void mt7921_power(struct USBDevice *dev, bool on);
 

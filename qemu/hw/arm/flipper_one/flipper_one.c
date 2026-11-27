@@ -1635,21 +1635,34 @@ static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
     s->rk3576.gpio_out = flipper_one_rk_gpio;
     s->rk3576.gpio_out_opaque = s;
     /*
-     * The MT7921 (its Bluetooth), on USB1's second USB 2 port (on the
-     * device behind the board's hub). Its PMU_EN is GPIO1_D5, which the
-     * device tree's rfkill-gpio "Onboard WiFi+BT" drives (blocked by
-     * default): pulled down, the chip off until Linux unblocks it
+     * The board's USB hub on USB1 (sl6341.c): its USB 2.0 hub on USB1's
+     * USB 2 port ("1"), its SuperSpeed hub on the USB 3 one ("2"); the USB-A
+     * and USB-C2 connectors on their ports 2 and 3. The MT7921 (its Wi-Fi
+     * and Bluetooth), USB 3.0, on the SuperSpeed hub's port 1 ("2.1"). Its
+     * PMU_EN is GPIO1_D5, which the device tree's rfkill-gpio "Onboard
+     * WiFi+BT" drives (blocked by default): pulled down, the chip off until
+     * Linux unblocks it. Its wake lines to the host, GPIO1_C6 (Bluetooth)
+     * and C7 (Wi-Fi), low to wake, are pulled up: high
      */
     {
+        BusState *usb1 = BUS(&s->rk3576.usb[1].xhci.xhci.bus);
         DeviceState *bt = qdev_new(TYPE_MT7921);
 
-        qdev_prop_set_string(bt, "port", "2");
+        for (int i = 0; i < 2; i++) {
+            DeviceState *hub = qdev_new(TYPE_SL6341);
+
+            qdev_prop_set_string(hub, "port", i ? "2" : "1");
+            qdev_prop_set_bit(hub, "super", i);
+            qdev_realize_and_unref(hub, usb1, &error_fatal);
+        }
+        qdev_prop_set_string(bt, "port", "2.1");
         /* (its access point's uplink: a -nic of model mt7921, if any) */
         qemu_configure_nic_device(bt, false, "mt7921");
-        qdev_realize_and_unref(bt, BUS(&s->rk3576.usb[1].xhci.xhci.bus),
-                               &error_fatal);
+        qdev_realize_and_unref(bt, usb1, &error_fatal);
         s->mt7921 = USB_DEVICE(bt);
         rk3576_gpio_in(&s->rk3576, 1, 29, false);
+        rk3576_gpio_in(&s->rk3576, 1, 22, true);
+        rk3576_gpio_in(&s->rk3576, 1, 23, true);
     }
     s->rk3576.cru_reset = flipper_one_rk_cru_reset;
     s->rk3576.cru_reset_opaque = s;

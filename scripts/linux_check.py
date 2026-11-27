@@ -26,7 +26,9 @@ Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
   pulled out and plugged in again; USB0 is in
   its device role with its Type-C port, USB1's root hubs are there, and the
   battery reads (its chain waits on USB0's role switch); the MT7921's
-  Bluetooth is on USB1 with its firmware loaded, hci0, BlueZ's controller
+  Bluetooth is on USB1 with its firmware loaded, behind the board's hub (its
+  USB 2.0 and SuperSpeed hubs, the device tree's nodes) at SuperSpeed, hci0,
+  BlueZ's controller
   powered, a scan finds the LE beacon and sensor near it, nothing else, and
   BlueZ connects to the sensor (its GATT services, its battery); its Wi-Fi is
   mt7921u's with its
@@ -536,6 +538,28 @@ def checks(check, d, out, first_boot, off, net):
     check("Bluetooth: the MT7921 on USB1 (0e8d:7961), its firmware loaded "
           "(BT_RAM_CODE_MT7961_1_2), hci0",
           bt is not None and bt[:2] == ["1", "hci0"] and loads >= 1, str(bt))
+    # the board's USB hub on USB1 (a CoreChips SL6341): its USB 2.0 hub on
+    # the USB 2 root port, its SuperSpeed hub on the USB 3 one, each the
+    # device tree's node (hub@1, hub@2), the onboard hub driver's; the
+    # MT7921 on the SuperSpeed hub's port 1, at SuperSpeed, its node device@1
+    hubs = con.run("for d in /sys/bus/usb/devices/*-*; do "
+                   "[ -f $d/idVendor ] || continue; "
+                   "n=$(readlink -f $d/of_node); "
+                   "v=$(readlink -f $d/driver); "
+                   "echo ${d##*/} $(cat $d/idVendor):$(cat $d/idProduct) "
+                   "$(cat $d/speed) ${n##*/} ${v##*/}; done | "
+                   "grep -E ' (3431|0e8d):'", 60) or []
+    rows = [line.split() for line in hubs]
+    got = sorted(" ".join(r[1:]) for r in rows)
+    at = {r[1]: r[0] for r in rows if len(r) > 1}
+    check("USB1's hub: its USB 2.0 hub (3431:6241) and its SuperSpeed hub "
+          "(3431:6341), the device tree's, the onboard hub driver's; the "
+          "MT7921 behind the SuperSpeed one at 5 Gb/s",
+          got == ["0e8d:7961 5000 device@1 usb",
+                  "3431:6241 480 hub@1 onboard-usb-dev",
+                  "3431:6341 5000 hub@2 onboard-usb-dev"] and
+          at.get("0e8d:7961") == at.get("3431:6341", "?") + ".1",
+          " / ".join(hubs))
     show = con.run("timeout 20 bluetoothctl show", 60) or []
     check("... BlueZ's controller, powered (MediaTek's, Bluetooth 5.2)",
           any("Controller 00:0C:E7:46:4F:01" in x for x in show) and

@@ -7,7 +7,8 @@
  * rfkill-gpio "Onboard WiFi+BT", blocked by default: the board,
  * mt7921_power()), and each power-up is a cold chip: its patch firmware
  * gone. As MediaTek's USB devices have it:
- * - its descriptors: 0e8d:7961, an interface association of three
+ * - its descriptors: 0e8d:7961, USB 3.0 as the module is (on the board,
+ *   the hub's SuperSpeed port 1: sl6341.c), an interface association of three
  *   Bluetooth interfaces (e0/01/01): 0, HCI (events on interrupt 0x81, ACL
  *   on bulk 0x82 and 0x02); 1, SCO (isochronous 0x83 and 0x03, the usual
  *   seven alternate settings); 2, ISO over interrupt (0x8a, 0x0a, in its
@@ -211,12 +212,16 @@ static const USBDescStrings mt7921_strings = {
         .bInterfaceSubClass = 0x01, .bInterfaceProtocol = 0x01, \
         .eps = (epsv) }
 
-/* the endpoints at full speed (fs) and high speed (hs): bulk packets and
- * the interrupt endpoints' interval differ */
+/* the endpoints at full speed (fs), high speed (hs) and SuperSpeed (ss):
+ * bulk packets and the interrupt endpoints' interval differ; at
+ * SuperSpeed, each periodic endpoint's companion has its bytes an
+ * interval (what QEMU's descriptors take at the other speeds too, and
+ * leave out) */
 #define HCI_EPS(bulk, ival) (USBDescEndpoint[]) {                       \
         { .bEndpointAddress = USB_DIR_IN | 1,                           \
           .bmAttributes = USB_ENDPOINT_XFER_INT,                        \
-          .wMaxPacketSize = INTR_MPS, .bInterval = (ival) },            \
+          .wMaxPacketSize = INTR_MPS, .bInterval = (ival),              \
+          .wBytesPerInterval = INTR_MPS },                              \
         { .bEndpointAddress = USB_DIR_IN | 2,                           \
           .bmAttributes = USB_ENDPOINT_XFER_BULK,                       \
           .wMaxPacketSize = (bulk) },                                   \
@@ -226,17 +231,21 @@ static const USBDescStrings mt7921_strings = {
 #define SCO_EPS(mps, ival) (USBDescEndpoint[]) {                        \
         { .bEndpointAddress = USB_DIR_IN | 3,                           \
           .bmAttributes = USB_ENDPOINT_XFER_ISOC,                       \
-          .wMaxPacketSize = (mps), .bInterval = (ival) },               \
+          .wMaxPacketSize = (mps), .bInterval = (ival),                 \
+          .wBytesPerInterval = (mps) },                                 \
         { .bEndpointAddress = USB_DIR_OUT | 3,                          \
           .bmAttributes = USB_ENDPOINT_XFER_ISOC,                       \
-          .wMaxPacketSize = (mps), .bInterval = (ival) } }
+          .wMaxPacketSize = (mps), .bInterval = (ival),                 \
+          .wBytesPerInterval = (mps) } }
 #define ISO_EPS(ival) (USBDescEndpoint[]) {                             \
         { .bEndpointAddress = USB_DIR_IN | 10,                          \
           .bmAttributes = USB_ENDPOINT_XFER_INT,                        \
-          .wMaxPacketSize = 64, .bInterval = (ival) },                  \
+          .wMaxPacketSize = 64, .bInterval = (ival),                    \
+          .wBytesPerInterval = 64 },                                    \
         { .bEndpointAddress = USB_DIR_OUT | 10,                         \
           .bmAttributes = USB_ENDPOINT_XFER_INT,                        \
-          .wMaxPacketSize = 64, .bInterval = (ival) } }
+          .wMaxPacketSize = 64, .bInterval = (ival),                    \
+          .wBytesPerInterval = 64 } }
 
 #define BT_IFACES(bulk, ival) {                                         \
         BT_IFACE(0, 0, 3, HCI_EPS(bulk, ival)),                         \
@@ -270,9 +279,11 @@ static const USBDescStrings mt7921_strings = {
 
 static const USBDescIface wifi_iface_fs = WIFI_IFACE(64);
 static const USBDescIface wifi_iface_hs = WIFI_IFACE(512);
+static const USBDescIface wifi_iface_ss = WIFI_IFACE(1024);
 
 static const USBDescIface bt_ifaces_fs[N_BT_IFACES] = BT_IFACES(64, 1);
 static const USBDescIface bt_ifaces_hs[N_BT_IFACES] = BT_IFACES(512, 4);
+static const USBDescIface bt_ifaces_ss[N_BT_IFACES] = BT_IFACES(1024, 4);
 
 static const USBDescIfaceAssoc bt_group_fs = {
     .bFirstInterface = 0, .bInterfaceCount = 3,
@@ -285,6 +296,12 @@ static const USBDescIfaceAssoc bt_group_hs = {
     .bFunctionClass = 0xe0, .bFunctionSubClass = 0x01,
     .bFunctionProtocol = 0x01,
     .nif = N_BT_IFACES, .ifs = bt_ifaces_hs,
+};
+static const USBDescIfaceAssoc bt_group_ss = {
+    .bFirstInterface = 0, .bInterfaceCount = 3,
+    .bFunctionClass = 0xe0, .bFunctionSubClass = 0x01,
+    .bFunctionProtocol = 0x01,
+    .nif = N_BT_IFACES, .ifs = bt_ifaces_ss,
 };
 
 static const USBDescDevice mt7921_dev_fs = {
@@ -311,6 +328,19 @@ static const USBDescDevice mt7921_dev_hs = {
         .nif = 1, .ifs = &wifi_iface_hs,
     } },
 };
+/* (USB 3.0: on the board, the hub's SuperSpeed port 1) */
+static const USBDescDevice mt7921_dev_ss = {
+    .bcdUSB = 0x0320, .bDeviceClass = 0xef, .bDeviceSubClass = 0x02,
+    .bDeviceProtocol = 0x01, .bMaxPacketSize0 = 9, .bNumConfigurations = 1,
+    .confs = (USBDescConfig[]) { {
+        .bNumInterfaces = 4, .bConfigurationValue = 1,
+        .bmAttributes = USB_CFG_ATT_ONE | USB_CFG_ATT_SELFPOWER |
+                        USB_CFG_ATT_WAKEUP,
+        .bMaxPower = 50,
+        .nif_groups = 1, .if_groups = &bt_group_ss,
+        .nif = 1, .ifs = &wifi_iface_ss,
+    } },
+};
 
 static const USBDesc mt7921_desc = {
     .id = {
@@ -320,6 +350,7 @@ static const USBDesc mt7921_desc = {
     },
     .full = &mt7921_dev_fs,
     .high = &mt7921_dev_hs,
+    .super = &mt7921_dev_ss,
     .str = mt7921_strings,
 };
 

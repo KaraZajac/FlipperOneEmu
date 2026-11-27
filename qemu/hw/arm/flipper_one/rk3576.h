@@ -189,7 +189,6 @@ struct RkDwc3State {
     MemoryRegion quiet;                 /* ... where nothing is */
     MemoryRegion regs_mr;               /* ... the DWC3's own registers */
     XHCISysbusState xhci;               /* ... and its xHCI's, at 0 */
-    uint32_t usb2_ports;                /* ... its USB 2 ports ("usb2-ports") */
     uint32_t regs[0xb00 / 4];           /* 0xc100-0xcbff */
     qemu_irq irq;                       /* the xHCI's, ORed with: */
     bool xhci_irq;

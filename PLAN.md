@@ -181,7 +181,11 @@ screen and its CLI.
       (2026-11-26, log 99), an LE beacon near it that its scans find
       (2026-11-26, log 104), and a sensor that BlueZ connects to: ACL, L2CAP,
       its GATT services, notifications (2026-11-26, log 107); its Wi-Fi (M5's
-      last item); the board's hubs; BR/EDR peers, pairing
+      last item); the board's hub, a CoreChips SL6341 (sl6341.c): its USB 2.0
+      and SuperSpeed hubs on USB1's two root ports, numbered as a DWC3 has
+      them (QEMU patch 0026), the device tree's nodes; the MT7921 behind it at
+      SuperSpeed; USB-A and USB-C2 to plug devices into (2026-11-27, log
+      109); BR/EDR peers, pairing
 - ◐ Audio: the SAIs (0, 2, 6) and the NAU8822: Flipper OS's sound card plays, out of
       QEMU's audio (`run --audio`) (2026-11-25); the internal and the headset's
       microphones, from a WAV file (`run --mic`) (2026-11-25); this PC's own

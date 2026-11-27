@@ -1,0 +1,126 @@
+From: FlipperOneEmu
+Subject: [PATCH] hw/usb/hcd-xhci: a DWC3's ports
+
+A host can have its ports as a Synopsys DWC3 does (dwc3-ports):
+
+- its USB 2 ports first, xHCI ports 1 to p2, then its USB 3 ones, in
+  the Supported Protocol capabilities too. QEMU puts the USB 3 ports
+  first. Linux names what is on a root port by that number (its "raw"
+  port), and a device tree does: the Flipper One's has its USB hub's
+  USB 2.0 half on USB1's port 1 and its SuperSpeed half on port 2;
+- each xHCI port a USB port of its own: QEMU's USB port i (path
+  "i + 1") is xHCI port i + 1, where QEMU makes one USB port of a USB 2
+  port and a USB 3 one. So the two halves of a USB 3 hub, two devices,
+  can be on one connection's two ports, as they are on the board. A
+  device goes on the port of its speed, or not at all.
+
+---
+--- a/hw/usb/hcd-xhci.h	2026-11-27 10:33:43.716701613 -0500
++++ b/hw/usb/hcd-xhci.h	2026-11-27 10:33:55.197533113 -0500
+@@ -39,6 +39,8 @@
+     XHCI_FLAG_ENABLE_STREAMS = 1,
+     /* ERSTBA takes effect on the write of its low dword, not its high one */
+     XHCI_FLAG_ERSTBA_HI_LO,
++    /* the USB 2 ports first, each xHCI port a USB port of its own */
++    XHCI_FLAG_DWC3_PORTS,
+ };
+ 
+ typedef enum TRBType {
+@@ -212,7 +214,7 @@
+     uint32_t dcbaap_high;
+     uint32_t config;
+ 
+-    USBPort  uports[MAX_CONST(XHCI_MAXPORTS_2, XHCI_MAXPORTS_3)];
++    USBPort  uports[XHCI_MAXPORTS];     /* (one per xHCI port: dwc3-ports) */
+     XHCIPort ports[XHCI_MAXPORTS];
+     XHCISlot slots[XHCI_MAXSLOTS];
+     uint32_t numports;
+--- a/hw/usb/hcd-xhci.c	2026-11-27 10:33:43.716591462 -0500
++++ b/hw/usb/hcd-xhci.c	2026-11-27 10:34:17.340854360 -0500
+@@ -541,6 +541,12 @@
+     if (!uport->dev) {
+         return NULL;
+     }
++    if (xhci_get_flag(xhci, XHCI_FLAG_DWC3_PORTS)) {
++        /* each xHCI port its USB port: its speeds, or none */
++        XHCIPort *port = &xhci->ports[uport->index];
++
++        return port->speedmask & (1 << uport->dev->speed) ? port : NULL;
++    }
+     switch (uport->dev->speed) {
+     case USB_SPEED_LOW:
+     case USB_SPEED_FULL:
+@@ -2787,7 +2793,11 @@
+         ret = 0x20425355; /* "USB " */
+         break;
+     case 0x28: /* Supported Protocol:08 */
+-        ret = (xhci->numports_2 << 8) | (xhci->numports_3 + 1);
++        if (xhci_get_flag(xhci, XHCI_FLAG_DWC3_PORTS)) {
++            ret = (xhci->numports_2 << 8) | 1;
++        } else {
++            ret = (xhci->numports_2 << 8) | (xhci->numports_3 + 1);
++        }
+         break;
+     case 0x2c: /* Supported Protocol:0c */
+         ret = 0x00000000; /* reserved */
+@@ -2799,7 +2809,11 @@
+         ret = 0x20425355; /* "USB " */
+         break;
+     case 0x38: /* Supported Protocol:08 */
+-        ret = (xhci->numports_3 << 8) | 1;
++        if (xhci_get_flag(xhci, XHCI_FLAG_DWC3_PORTS)) {
++            ret = (xhci->numports_3 << 8) | (xhci->numports_2 + 1);
++        } else {
++            ret = (xhci->numports_3 << 8) | 1;
++        }
+         break;
+     case 0x3c: /* Supported Protocol:0c */
+         ret = 0x00000000; /* reserved */
+@@ -3410,6 +3424,30 @@
+ 
+     usb_bus_new(&xhci->bus, sizeof(xhci->bus), &xhci_bus_ops, xhci->hostOpaque);
+ 
++    if (xhci_get_flag(xhci, XHCI_FLAG_DWC3_PORTS)) {
++        /*
++         * As a DWC3 numbers them: the USB 2 ports first, then the USB 3
++         * ones; and each a USB port of its own (QEMU's USB port i, path
++         * "i + 1", is xHCI port i + 1), so a USB 3 hub's two hubs can be on
++         * a connection's USB 2 and USB 3 ports, as on the board
++         */
++        for (i = 0; i < xhci->numports; i++) {
++            bool usb2 = i < xhci->numports_2;
++
++            port = &xhci->ports[i];
++            port->portnr = i + 1;
++            port->uport = &xhci->uports[i];
++            port->speedmask = usb2 ? USB_SPEED_MASK_LOW | USB_SPEED_MASK_FULL |
++                                     USB_SPEED_MASK_HIGH
++                                   : USB_SPEED_MASK_SUPER;
++            snprintf(port->name, sizeof(port->name), "usb%d port #%d",
++                     usb2 ? 2 : 3, usb2 ? i + 1 : i + 1 - xhci->numports_2);
++            usb_register_port(&xhci->bus, &xhci->uports[i], xhci, i,
++                              &xhci_uport_ops, port->speedmask);
++        }
++        return;
++    }
++
+     for (i = 0; i < usbports; i++) {
+         speedmask = 0;
+         if (i < xhci->numports_2) {
+@@ -3696,6 +3734,16 @@
+      */
+     DEFINE_PROP_BIT("erstba-hi-lo", XHCIState, flags,
+                     XHCI_FLAG_ERSTBA_HI_LO, false),
++    /*
++     * The ports as a Synopsys DWC3 has them: its USB 2 ports first (xHCI
++     * ports 1 to p2), then its USB 3 ones, where QEMU puts the USB 3 ports
++     * first; and each xHCI port a USB port of its own, where QEMU makes one
++     * USB port of a USB 2 port and a USB 3 one. A device tree that names
++     * what is on a root port by its number (a hub's two halves, reg 1 and
++     * 2) then finds it there
++     */
++    DEFINE_PROP_BIT("dwc3-ports", XHCIState, flags,
++                    XHCI_FLAG_DWC3_PORTS, false),
+     DEFINE_PROP_UINT32("p2",    XHCIState, numports_2, 4),
+     DEFINE_PROP_UINT32("p3",    XHCIState, numports_3, 4),
+     DEFINE_PROP_LINK("host",    XHCIState, hostOpaque, TYPE_DEVICE,

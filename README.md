@@ -21,11 +21,11 @@ touchpad test work. Its haptic driver buzzes (the window shakes), its 17 LEDs li
 the window as it drives them, and its settings are kept in the flash across restarts.
 Its main bus (I2C from a PIO program) reaches the main board's expander, which powers
 the Linux side, the battery's gauge (the status bar shows its charge), its charger, the
-system rail's current meter, the five power monitors on the Linux side's rails (`power
-consumption`; the CPU rails follow how many cores run) and the USB-C port's chips: the
-self-check finds every chip. A charger can be plugged into its USB-C port, and the
-battery charges; a computer plugged in gets its USB serial port, also as a real USB
-device on this PC (USB/IP), and the firmware can be updated as picotool updates it,
+system rail's current meter, the five power monitors on the Linux side's rails
+(`power consumption`; the CPU rails follow how many cores run) and the USB-C port's
+chips: the self-check finds every chip. A charger can be plugged into its USB-C port,
+and the battery charges; a computer plugged in gets its USB serial port, also as a real
+USB device on this PC (USB/IP), and the firmware can be updated as picotool updates it,
 through the RP2350's boot ROM. Its `power reboot` power-cycles the board through the
 charger, and its power off (ship mode) turns it off until a charger is plugged in;
 after either, as on the device, Flipper OS stays off until the Power tab's Start
@@ -40,17 +40,19 @@ passes on over their I2C link). Its CPU clusters' clocks come from TF-A's SCMI
 (cpufreq), its temperature sensors, calibrated from its OTP, read the chip warming as
 its cores run, its SARADC reads the boot-order strap, the MCU's BOOT1 and the board's
 revision (which U-Boot tells the board by), and its 64 GB UFS (UFS 2.2 on an HS-G3
-link, new), provisioned as the Flipper OS installer has it (a system LU, boot LUs A
-and B, recovery), is blank until something is installed on it. Its two Ethernet ports have their PHYs, and with `--net`
-the first is on this PC's network: DHCP, DNS, and the internet through NAT. Its USB
-controllers come up (USB devices can be plugged into the second from QEMU's monitor),
-and with them its Type-C port, charger and battery: FlipCTL shows the charge, the power
-flow and both temperatures. A computer plugged into the USB-C port while Flipper OS
-runs reaches the RK3576, as on the device (the MCU switches the port's USB to it with
-its rail), and enumerates Flipper OS's USB gadget at high speed: its serial port's
-login on `devices/NAME/usb.sock`, and over USB/IP the whole gadget on this PC: its
-network (NCM, with a DHCP server on Flipper OS's side), MTP and the serial port. Its
-sound card (the NAU8822 codec on SAI2) plays, at 48 kHz: to a WAV file, or nowhere
+link, new), provisioned as the Flipper OS installer has it (a system LU, boot LUs A and
+B, recovery), is blank until something is installed on it. Its two Ethernet ports have
+their PHYs, and with `--net` the first is on this PC's network: DHCP, DNS, and the
+internet through NAT. Its USB controllers come up, the second with the board's USB hub
+on it (a CoreChips SL6341: its USB 2.0 and SuperSpeed hubs, the MT7921 at SuperSpeed on
+its port 1; USB devices can be plugged into its USB-A and USB-C2 ports from QEMU's
+monitor), and with them its Type-C port, charger and battery: FlipCTL shows the charge,
+the power flow and both temperatures. A computer plugged into the USB-C port while
+Flipper OS runs reaches the RK3576, as on the device (the MCU switches the port's USB
+to it with its rail), and enumerates Flipper OS's USB gadget at high speed: its serial
+port's login on `devices/NAME/usb.sock`, and over USB/IP the whole gadget on this PC:
+its network (NCM, with a DHCP server on Flipper OS's side), MTP and the serial port.
+Its sound card (the NAU8822 codec on SAI2) plays, at 48 kHz: to a WAV file, or nowhere
 (`run --audio`); its microphones (the internal one, and a headset's in the jack) hear a
 WAV file (`run --mic`). An NVMe SSD can be put in its M.2 slot (`run --nvme`), on
 PCIe0, and a monitor in its HDMI port (`run --hdmi`): Linux lights it at 1280x720 with
@@ -215,7 +217,9 @@ scripts/fo_rockusb.py --port 3240 download-boot rk3576_loader.bin  # ... or Rock
                                      # flipper-one-mcu/data (loading 1, then 0) goes to the
                                      # MCU over I2C; Linux's next reboot boots it
 socat - UNIX-CONNECT:devices/NAME/monitor.sock  # QEMU's monitor: device_add usb-kbd,bus=usb-bus.1
-                                     # plugs a keyboard into the RK3576's USB1
+                                     # plugs a keyboard into the USB-A port (the board's
+                                     # hub's port 1.2; 1.3 is USB-C2's, and 2.2 and 2.3
+                                     # theirs at SuperSpeed, for a USB 3 device)
 scripts/fo_picoboot.py --port 3240 load FIRMWARE.uf2 --reboot
                                      # an update, as picotool makes one: after the
                                      # CLI's `power boot` (or --bootsel), a computer
@@ -281,6 +285,7 @@ yet.
 | 0023 | hw/ufs: a reference clock gating wait time (bRefClkGatingWaitTime read 0, which Linux complained of) |
 | 0024 | target/arm: Linux's KPTI flips of TTBR1_EL1 keep the TLB (under U-Boot's KASLR each system call and interrupt from EL0 flushed it twice) |
 | 0025 | hw/ufs: the device's version, its link's highest gear and its health as properties (QEMU's was always UFS 4.1 on HS-G4, its health not given) |
+| 0026 | hw/usb/hcd-xhci: a DWC3's ports: USB 2 first, each xHCI port a USB port of its own (QEMU puts USB 3 first and pairs them, so a USB 3 hub's two hubs could not both be on a connection) |
 
 ## Layout
 

@@ -2876,3 +2876,73 @@ register headers.
          as its scheme has it ("Reprovision UFS… ok"), with the target ready.
        - linux_check passes (458 s), as do its U-Boot mode (386 s), its
          MaskROM mode (16 s) and the smoke test (51 s).
+
+109. **The board's USB hub; the MT7921 at SuperSpeed behind it.**
+     - **What the board has.** The device tree puts a hub on USB1, the
+       host-only DWC3: `hub@1` (3431:6241) and `hub@2` (3431:6341), peers.
+       That is a CoreChips SL6341, a USB 3.0 hub with four ports, which is
+       two hubs to its host, as any USB 3 hub is. Linux's onboard hub
+       driver knows both IDs, with a reset line and two supplies.
+       - Its USB 2.0 hub is on USB1's USB 2 port, its SuperSpeed hub on the
+         USB 3 one. Linux names a device on a root port by the xHCI's own
+         port number ("raw"), and a DWC3 has its USB 2 port first: `hub@1`
+         and `hub@2`.
+       - Their ports: 1 the MT7921, under `hub@2` as `device@1`, so at
+         SuperSpeed (the module is USB 3.0); 2 the USB-A connector, both
+         halves; 3 USB-C2 (its SuperSpeed lanes through the HD3SS3220);
+         4 nothing.
+
+       Before this, the MT7921 sat on a second USB 2 port of USB1's
+       xHCI, at high speed, and got no device-tree node.
+     - **QEMU's xHCI (patch 0026, `dwc3-ports`).** QEMU numbers its USB 3
+       ports first, and makes one USB port of each pair of a USB 2 and a USB
+       3 port, so a USB 3 device and a USB 2 one cannot both be on a
+       connection. With the property: the USB 2 ports first, in the
+       Supported Protocol capabilities too, and each xHCI port its own
+       QEMU USB port, "1" (USB 2) and "2" (USB 3) on each of the RK3576's
+       controllers.
+     - **The hub (`sl6341.c`).** One model, twice: the USB 2.0 hub (high
+       speed, one transaction translator) on "1", the SuperSpeed hub on "2".
+       Its ports do what Linux's hub driver asks: power, connection, reset;
+       suspend on the USB 2.0 hub; on the SuperSpeed hub, link states
+       (Rx.Detect, U0, U3), warm reset, U1 and U2 timeouts, the hub's depth.
+       Only the ports wired to something take a device: QEMU's "1.2" and
+       "1.3" (USB-A, USB-C2), "2.1" (the MT7921), "2.2" and "2.3". A device
+       plugged in from QEMU's monitor with no port given goes to USB-A.
+       Its identity past its IDs (no strings, bcdDevice 1.00, its delays) is
+       not the chip's, which is not published.
+     - **The MT7921 at SuperSpeed.** Its descriptors gain a USB 3.0 set
+       (bcdUSB 3.20, 1024-byte bulk packets, the periodic endpoints'
+       companions). It is on "2.1". Its wake lines to the host (GPIO1_C6 for
+       Bluetooth, C7 for the Wi-Fi), which the tree's pins pull up, are held
+       high.
+     - **The tree's Wi-Fi interface node does not match.** The MT7921's node
+       has the Bluetooth's `interface@0` (reg `<0 1>`: interface 0 of
+       configuration 1) and `interface@0,3` with reg `<0 3>`, which Linux
+       reads as interface 0 of configuration 3. The Wi-Fi is interface 3 of
+       configuration 1, so it gets no node and no wake interrupt. mt7921u
+       reads nothing from the tree, so nothing shows.
+     - **What Linux makes of it.**
+       - USB1's buses: `1-1`, a high-speed hub with 4 ports, and `2-1`, a
+         SuperSpeed hub with 4 ports. Both have their device-tree nodes
+         (`hub@1`, `hub@2`) and are bound to `onboard-usb-dev`.
+       - The MT7921 is `2-1.1`, a SuperSpeed device, with node `device@1`;
+         btusb's interface 0 has `interface@0`. btusb loads its firmware and
+         mt7921u comes up as before (`wlx000ce7464f02`).
+       - With `hub@2` now a device, fw_devlink says it cannot link it to the
+         HD3SS3220 ("Failed to create device link (0x180) with supplier
+         2-0047"): the tree's graph from the hub's port 3 to the mux. A device
+         with the hub on it would say the same.
+       - From QEMU's monitor:
+         - a keyboard plugged in with no port given lands on USB-A (`1-1.2`),
+           a tablet next on USB-C2 (`1-1.3`), both input devices;
+         - the keyboard unplugged is gone (`USB disconnect`);
+         - a USB stick at `2.2` is a SuperSpeed device on `2-1.2`, `sde`, and
+           4 MiB written to it read back the same (35 and 42 MB/s).
+     - **Checked.** linux_check checks the hub: both halves with their
+       nodes, bound to the onboard hub driver, and the MT7921 behind the
+       SuperSpeed one at 5 Gb/s. Bluetooth (its scans, the sensor's
+       connection), the Wi-Fi (both networks), and rfkill's cycle, where the
+       chip leaves the hub's port and comes back, pass as before.
+       linux_check passes (491 s), as do its U-Boot mode (421 s), its MaskROM
+       mode (16 s) and the smoke test (52 s).
