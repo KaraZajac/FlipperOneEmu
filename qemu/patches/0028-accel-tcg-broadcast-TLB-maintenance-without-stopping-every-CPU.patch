@@ -1,0 +1,358 @@
+From: FlipperOneEmu
+Subject: [PATCH] accel/tcg: broadcast TLB maintenance without stopping every CPU
+
+A broadcast flush (tlb_flush_*_all_cpus_synced: an Arm TLBI ...IS) ran
+as an exclusive section. The source left its execution loop, every other
+CPU was kicked out of its own and the halted ones woken (each taking the
+BQL to process its work), the MCU's cores too, and all waited until the
+source had flushed itself. Linux on the RK3576's ARMv8.0 cores issues one
+at each copy-on-write fault and each first write to a clean page: some
+290 for each process a shell starts, each holding the source for about
+48 us.
+
+Now the source flushes itself, asks the same flush of each other CPU on
+its memory, and waits only for those running guest code. They do it
+between two TBs, without leaving cpu_exec or taking the BQL. A CPU not
+running guest code does it before it next runs some, so it is neither
+woken nor waited for. While it waits, the source does what is asked of
+it, so that two sources never wait for each other. A CPU that does not
+answer within 50 us (blocked for the BQL, or its thread not scheduled)
+makes the source fall back to the exclusive section.
+
+---
+--- a/include/hw/core/cpu.h	2026-11-27 16:49:52.909191764 -0500
++++ b/include/hw/core/cpu.h	2026-11-27 16:51:12.868547061 -0500
+@@ -316,6 +316,27 @@
+     size_t full_flush_count;
+     size_t part_flush_count;
+     size_t elide_flush_count;
++    /*
++     * The flushes that other CPUs' broadcast maintenance has asked of this
++     * one (tlb_flush_*_all_cpus_synced), which it does itself: between two
++     * TBs, or before it next runs guest code (see tlb_shootdown()).
++     * @req_lock guards the queue (a request of @req_len 0 is a page's;
++     * past its end, or for a whole flush, the mmu_idxes of @req_full);
++     * @req_gen counts the requests, @req_done those done (atomically, with
++     * release), and @req_pending is set while some wait.
++     */
++    QemuSpin req_lock;
++    bool req_pending;
++    MMUIdxMap req_full;
++    uint32_t req_n;
++    struct {
++        vaddr addr;
++        vaddr len;
++        MMUIdxMap idxmap;
++        unsigned bits;
++    } req[16];
++    uint64_t req_gen;
++    uint64_t req_done;
+ } CPUTLBCommon;
+ 
+ /*
+--- a/accel/tcg/internal-common.h	2026-11-27 16:49:52.940463658 -0500
++++ b/accel/tcg/internal-common.h	2026-11-27 16:51:12.868703385 -0500
+@@ -65,6 +65,11 @@
+  * @cpu: CPU whose TLB should be destroyed
+  */
+ void tlb_destroy(CPUState *cpu);
++/**
++ * tlb_shootdown_process - do the flushes others have asked of a CPU
++ * @cpu: the CPU, on its own thread
++ */
++void tlb_shootdown_process(CPUState *cpu);
+ 
+ bool tcg_exec_realizefn(CPUState *cpu, Error **errp);
+ void tcg_exec_unrealizefn(CPUState *cpu);
+--- a/accel/tcg/cputlb.c	2026-11-27 16:49:52.915610685 -0500
++++ b/accel/tcg/cputlb.c	2026-11-27 16:52:13.405569238 -0500
+@@ -19,6 +19,7 @@
+ 
+ #include "qemu/osdep.h"
+ #include "qemu/main-loop.h"
++#include "qemu/processor.h"
+ #include "qemu/target-info.h"
+ #include "accel/tcg/cpu-loop.h"
+ #include "accel/tcg/cpu-ops.h"
+@@ -325,6 +326,7 @@
+     int i;
+ 
+     qemu_spin_init(&cpu->neg.tlb.c.lock);
++    qemu_spin_init(&cpu->neg.tlb.c.req_lock);
+ 
+     /* All tlbs are initialized flushed. */
+     cpu->neg.tlb.c.dirty = 0;
+@@ -421,12 +423,18 @@
+     tlb_flush_by_mmuidx(cpu, ALL_MMUIDX_BITS);
+ }
+ 
++static bool tlb_shootdown(CPUState *src, vaddr addr, vaddr len,
++                          MMUIdxMap idxmap, unsigned bits);
++
+ void tlb_flush_by_mmuidx_all_cpus_synced(CPUState *src_cpu, MMUIdxMap idxmap)
+ {
+     const run_on_cpu_func fn = tlb_flush_by_mmuidx_async_work;
+ 
+     tlb_debug("mmu_idx: 0x%"PRIx16"\n", idxmap);
+ 
++    if (tlb_shootdown(src_cpu, 0, 0, idxmap, 0)) {
++        return;
++    }
+     flush_all_helper(src_cpu, fn, RUN_ON_CPU_HOST_INT(idxmap));
+     async_safe_run_on_cpu(src_cpu, fn, RUN_ON_CPU_HOST_INT(idxmap));
+ }
+@@ -624,6 +632,9 @@
+     /* This should already be page aligned */
+     addr &= TARGET_PAGE_MASK;
+ 
++    if (tlb_shootdown(src_cpu, addr, 0, idxmap, TARGET_PAGE_BITS)) {
++        return;
++    }
+     /*
+      * Allocate memory to hold addr+idxmap only when needed.
+      * See tlb_flush_page_by_mmuidx for details.
+@@ -764,6 +775,186 @@
+     g_free(d);
+ }
+ 
++/*
++ * Broadcast maintenance without stopping every CPU.
++ *
++ * A broadcast flush (an Arm TLBI ...IS) must be complete on every CPU
++ * that shares the source's translations once the source goes on.  The
++ * synced functions below do that with an exclusive section: the source
++ * leaves its execution loop, every other CPU is kicked out of its own,
++ * those halted are woken (each taking the BQL to process its work), and
++ * all wait until the source has flushed itself.  Linux on an ARMv8.0 core
++ * issues one such flush at each copy-on-write fault and at each first
++ * write to a clean page, hundreds for each process it starts.
++ *
++ * Instead the source flushes itself, asks the same flush of each other CPU
++ * on its memory (tlb_shootdown_post), and waits only for those running
++ * guest code: they break out of their TB chains and do it between two TBs
++ * (cpu_handle_interrupt), without leaving cpu_exec or taking the BQL.  A
++ * CPU not running guest code does it before it next runs some
++ * (tcg_cpu_exec, cpu_exec_step_atomic): it is neither woken nor waited
++ * for.  While the source waits it does what is asked of itself, so that
++ * two sources never wait for each other.  Should a CPU not answer soon
++ * (blocked for the BQL, say, or its thread not scheduled), the source
++ * falls back to the exclusive section, which waits for that CPU to leave
++ * cpu_exec; and before it runs guest code again it does what was asked.
++ */
++
++#define TLB_SHOOTDOWN_SPIN_NS   (50 * SCALE_US)
++
++/* (CPUs on other memory, another SoC's cores, share no translations) */
++static bool tlb_shootdown_peer(CPUState *a, CPUState *b)
++{
++    AddressSpace *x, *y;
++
++    if (!a->cpu_ases || !b->cpu_ases) {
++        return true;
++    }
++    x = cpu_get_address_space(a, 0);
++    y = cpu_get_address_space(b, 0);
++    return !x || !y || x->root == y->root;
++}
++
++/* @d on @cpu: a whole flush (bits below a page's), a page's (len 0), or a
++ * range's */
++static void tlb_shootdown_do(CPUState *cpu, const TLBFlushRangeData *d)
++{
++    if (d->bits < TARGET_PAGE_BITS) {
++        tlb_flush_by_mmuidx_async_work(cpu, RUN_ON_CPU_HOST_INT(d->idxmap));
++    } else if (d->len == 0) {
++        tlb_flush_page_by_mmuidx_async_0(cpu, d->addr, d->idxmap);
++    } else {
++        tlb_flush_range_by_mmuidx_async_0(cpu, *d);
++    }
++}
++
++/* ask @d of @cpu: its request's number */
++static uint64_t tlb_shootdown_post(CPUState *cpu, const TLBFlushRangeData *d)
++{
++    CPUTLBCommon *c = &cpu->neg.tlb.c;
++    uint64_t gen;
++
++    qemu_spin_lock(&c->req_lock);
++    if (d->bits < TARGET_PAGE_BITS || c->req_n == ARRAY_SIZE(c->req)) {
++        c->req_full |= d->idxmap;
++    } else {
++        c->req[c->req_n].addr = d->addr;
++        c->req[c->req_n].len = d->len;
++        c->req[c->req_n].idxmap = d->idxmap;
++        c->req[c->req_n].bits = d->bits;
++        c->req_n++;
++    }
++    gen = ++c->req_gen;
++    qatomic_set(&c->req_pending, true);
++    qemu_spin_unlock(&c->req_lock);
++    return gen;
++}
++
++void tlb_shootdown_process(CPUState *cpu)
++{
++    CPUTLBCommon *c = &cpu->neg.tlb.c;
++    TLBFlushRangeData d[ARRAY_SIZE(c->req)];
++    MMUIdxMap full;
++    uint32_t n;
++    uint64_t gen;
++
++    if (!qatomic_read(&c->req_pending)) {
++        return;
++    }
++    qemu_spin_lock(&c->req_lock);
++    n = c->req_n;
++    for (uint32_t i = 0; i < n; i++) {
++        d[i].addr = c->req[i].addr;
++        d[i].len = c->req[i].len;
++        d[i].idxmap = c->req[i].idxmap;
++        d[i].bits = c->req[i].bits;
++    }
++    full = c->req_full;
++    c->req_n = 0;
++    c->req_full = 0;
++    gen = c->req_gen;
++    qatomic_set(&c->req_pending, false);
++    qemu_spin_unlock(&c->req_lock);
++
++    if (full) {
++        tlb_flush_by_mmuidx_async_work(cpu, RUN_ON_CPU_HOST_INT(full));
++    }
++    for (uint32_t i = 0; i < n; i++) {
++        if (d[i].idxmap & ~full) {
++            tlb_shootdown_do(cpu, &d[i]);
++        }
++    }
++    qatomic_store_release(&c->req_done, gen);
++}
++
++static void tlb_shootdown_fallback(CPUState *cpu, run_on_cpu_data data)
++{
++    /* (the exclusive section itself is the point) */
++}
++
++/* a flush broadcast from @src, as above (as tlb_shootdown_do's: whole,
++ * page or range): false if it is not for this way (not from the source's
++ * own thread, inside cpu_exec) */
++static bool tlb_shootdown(CPUState *src, vaddr addr, vaddr len,
++                          MMUIdxMap idxmap, unsigned bits)
++{
++    TLBFlushRangeData d = {
++        .addr = addr, .len = len, .idxmap = idxmap, .bits = bits
++    };
++    struct {
++        CPUState *cpu;
++        uint64_t gen;
++    } wait[64];
++    bool fallback = false;
++    int64_t deadline = 0;
++    CPUState *cpu;
++    int n = 0;
++
++    if (current_cpu != src || !qatomic_read(&src->running)) {
++        return false;
++    }
++    CPU_FOREACH(cpu) {
++        uint64_t gen;
++
++        if (cpu == src || !tlb_shootdown_peer(src, cpu)) {
++            continue;
++        }
++        gen = tlb_shootdown_post(cpu, &d);
++        smp_mb();                       /* (asked, then is it running?) */
++        if (!qatomic_read(&cpu->running)) {
++            continue;                   /* (it does it before it runs) */
++        }
++        qatomic_store_release(&cpu->neg.icount_decr.u16.high, -1);
++        if (n < ARRAY_SIZE(wait)) {
++            wait[n].cpu = cpu;
++            wait[n].gen = gen;
++            n++;
++        } else {
++            fallback = true;
++        }
++    }
++    tlb_shootdown_do(src, &d);
++    for (int i = 0; i < n && !fallback; i++) {
++        CPUTLBCommon *c = &wait[i].cpu->neg.tlb.c;
++
++        while (qatomic_load_acquire(&c->req_done) < wait[i].gen &&
++               qatomic_read(&wait[i].cpu->running)) {
++            tlb_shootdown_process(src);
++            if (!deadline) {
++                deadline = get_clock() + TLB_SHOOTDOWN_SPIN_NS;
++            } else if (get_clock() > deadline) {
++                fallback = true;
++                break;
++            }
++            cpu_relax();
++        }
++    }
++    if (fallback) {
++        async_safe_run_on_cpu(src, tlb_shootdown_fallback, RUN_ON_CPU_NULL);
++    }
++    return true;
++}
++
+ void tlb_flush_range_by_mmuidx(CPUState *cpu, vaddr addr,
+                                vaddr len, MMUIdxMap idxmap,
+                                unsigned bits)
+@@ -830,6 +1021,9 @@
+     d.idxmap = idxmap;
+     d.bits = bits;
+ 
++    if (len && tlb_shootdown(src_cpu, d.addr, d.len, d.idxmap, d.bits)) {
++        return;
++    }
+     /* Allocate a separate data block for each destination cpu.  */
+     CPU_FOREACH(dst_cpu) {
+         if (dst_cpu != src_cpu) {
+--- a/accel/tcg/cpu-exec.c	2026-11-27 16:49:52.922758762 -0500
++++ b/accel/tcg/cpu-exec.c	2026-11-27 16:51:12.869611456 -0500
+@@ -559,6 +559,9 @@
+         g_assert(cpu == current_cpu);
+         g_assert(!cpu->running);
+         cpu->running = true;
++#ifndef CONFIG_USER_ONLY
++        tlb_shootdown_process(cpu);     /* (what others asked of it) */
++#endif
+ 
+         TCGTBCPUState s = cpu->cc->tcg_ops->get_tb_cpu_state(cpu);
+         s.cflags = curr_cflags(cpu);
+@@ -799,6 +802,14 @@
+      */
+     qatomic_set_mb(&cpu->neg.icount_decr.u16.high, 0);
+ 
++#ifndef CONFIG_USER_ONLY
++    /* (flushes another CPU's broadcast maintenance asked of this one) */
++    if (unlikely(qatomic_read(&cpu->neg.tlb.c.req_pending))) {
++        tlb_shootdown_process(cpu);
++        *last_tb = NULL;
++    }
++#endif
++
+ #ifdef CONFIG_USER_ONLY
+     assert(!cpu_test_interrupt(cpu, ~0));
+ #else
+--- a/accel/tcg/tcg-accel-ops.c	2026-11-27 16:49:52.930883629 -0500
++++ b/accel/tcg/tcg-accel-ops.c	2026-11-27 16:51:12.869779585 -0500
+@@ -48,6 +48,7 @@
+ #include "tcg-accel-ops-mttcg.h"
+ #include "tcg-accel-ops-rr.h"
+ #include "tcg-accel-ops-icount.h"
++#include "internal-common.h"
+ 
+ /* common functionality among all TCG variants */
+ 
+@@ -80,6 +81,10 @@
+     int ret;
+     assert(tcg_enabled());
+     cpu_exec_start(cpu);
++    /* (running, then the flushes others' broadcast maintenance asked of it,
++     * as tlb_shootdown() wants) */
++    smp_mb();
++    tlb_shootdown_process(cpu);
+     ret = cpu_exec(cpu);
+     cpu_exec_end(cpu);
+ 

@@ -221,7 +221,12 @@ screen and its CLI.
       from the kernel's tree in a direct boot (QEMU idle at a third of the host
       CPU, an IPI to an idle core four times quicker) (2026-11-26, log 106);
       U-Boot's tree keeps it; the guest's capacity-aware placement (little cores
-      as slow as big here) moves tasks between cores for nothing
+      as slow as big here) moves tasks between cores for nothing;
+      broadcast TLB flushes (a TLBI ...IS at each copy-on-write fault, some 290
+      for each process a shell starts) without stopping every CPU: the running
+      ones flush between two TBs, the others before they next run (patch 0028:
+      a process starts 2.5 to 4 times quicker, linux_check 447 s from 481-520,
+      its U-Boot mode 293 s from 403-435) (2026-11-27, log 117)
 - ◐ Wi-Fi (the MT7921 on USB, its Bluetooth there too, log 99): mt7921u on its
       interface 3, its real firmware through the emulated MCU, the interface
       NetworkManager's and FlipCTL's, scans that complete (2026-11-26, log 101); an

@@ -3214,3 +3214,80 @@ register headers.
        HE-MCS 11 at 80 MHz both ways. linux_check passes (481 s), as do its
        U-Boot mode (403 s), its MaskROM mode (16 s) and the smoke test
        (50 s).
+
+117. **Broadcast TLB flushes without stopping every CPU (QEMU patch 0028).**
+     Log 111's survey left exclusive sections at 17 % of the busy vCPUs'
+     time.
+     - **What a process start cost.** With eight vCPUs, once the boot had
+       settled, `/bin/true` took 63-125 ms, `sh -c true` 80-103 ms and `id`
+       89-150 ms. With one vCPU (`--cpus 1`) each took 45-56 ms: eight CPUs
+       were slower than one.
+     - **Counted.** A throwaway patch of counters was read with gdb.
+       - Every exclusive section was a synced TLB flush, one each.
+       - There were some 290 for each process a shell starts, and several
+         hundred a second with the guest idle.
+       - Each kept its source waiting 48 µs on average.
+     - **Why so many.** Linux calls `flush_tlb_page` (a TLBI VALE1IS, then a
+       DSB) at each copy-on-write fault and at each write that makes a
+       read-only PTE writable. After a fork, each page the shell writes
+       takes one.
+       - It is one TLBI for each DSB, so syncing at the DSB instead would
+         not help.
+       - Nor would hardware dirty-bit management (ARMv8.1's HAFDBS, which
+         the cores lack): a page shared for copy-on-write is read-only in
+         earnest.
+     - **What a flush cost.** QEMU ran each as an exclusive section:
+       - the source left cpu_exec;
+       - every other vCPU was kicked out of its own, and the halted ones
+         woken, each taking the BQL to process its work (the MCU's two cores
+         too);
+       - and all of them waited for the source.
+
+       Skipping the sync altogether (unsafe, for the measurement only) cut
+       the times in half: `/bin/true` 27 ms.
+     - **The patch.**
+       - The source flushes itself and posts the flush to each other CPU on
+         its memory. The MCU's cores, on another memory root, are left
+         alone.
+       - It waits only for the CPUs running guest code. They break out of
+         their TB chains and do the flush between two TBs
+         (cpu_handle_interrupt), without leaving cpu_exec or taking the
+         BQL.
+       - A CPU not running guest code does it before it next runs some
+         (tcg_cpu_exec, cpu_exec_step_atomic). It is neither woken nor
+         waited for.
+       - While the source waits, it does what is asked of itself, so two
+         sources never wait for each other.
+       - A CPU that does not answer within 50 µs (blocked for the BQL, its
+         thread not scheduled) makes the source fall back to the exclusive
+         section.
+       - Each CPU queues 16 requests. Past that, the rest becomes a whole
+         flush of their mmu_idxes.
+     - **What it gives.** Measured two minutes after a boot, against the
+       settled times above:
+       - `/bin/true` takes 23-26 ms (63-125 before);
+       - `id` 43 ms (89-150);
+       - `sh -c true` 29-38 ms (80-103);
+       - `getent hosts` 35-39 ms (100-157).
+
+       That is 2.5 to 4 times quicker, and quicker than skipping the sync
+       had been.
+     - **Is it right.**
+       - stress-ng's tlb-shootdown (eight workers), vm with `--verify` and
+         fork, mmap with `--verify` and fork, and memthrash with `--verify`
+         all passed, and none failed.
+       - Three `xz -T8` round trips of a 23 MB file, run while two loops
+         forked, and a parallel sort each gave the same sha256.
+       - dmesg shows nothing.
+     - **Checked.** A whole run of linux_check is quicker too.
+       - Its default mode passes in 447 s (481-520 before), the login at
+         76.5 s.
+       - Its U-Boot mode passes in 293 s (403-435), the login 102 s after
+         U-Boot starts the kernel.
+       - Its MaskROM mode passes in 16 s and the smoke test in 47 s.
+       - Its first run on the patch caught a flaw in its own Wi-Fi check:
+         `iw dev scan` found the chip busy with NetworkManager's scan, so it
+         tried again, but the failed try's error stayed in the output. Its
+         error is now not shown.
+       - README's boot times are now about a minute and a quarter, and two
+         minutes through U-Boot.

@@ -663,7 +663,8 @@ def checks(check, d, out, first_boot, off, net):
                    "echo $W; sudo dmesg -t | grep -c 'WM Firmware Version'; "
                    "nmcli -t -f DEVICE,TYPE,STATE dev | grep \"^$W:\"; "
                    "for i in 1 2 3 4 5; do out=$(sudo timeout 60 iw dev $W "
-                   "scan) && break; sleep 3; done; "   # (NetworkManager's own)
+                   "scan 2>/dev/null) && break; sleep 3; done; "  # (busy with
+                   # NetworkManager's own: tried again, its error not shown)
                    "echo \"scan $? $(echo -n \"$out\" | grep -c '^BSS')\"",
                    150) or []
     check("Wi-Fi: the MT7921's (mt7921u), its firmware running, its interface "

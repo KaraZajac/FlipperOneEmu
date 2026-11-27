@@ -57,8 +57,8 @@ Its sound card (the NAU8822 codec on SAI2) plays, at 48 kHz: to a WAV file, or n
 WAV file (`run --mic`). An NVMe SSD can be put in its M.2 slot (`run --nvme`), on
 PCIe0, and a monitor in its HDMI port (`run --hdmi`): Linux lights it at 1280x720 with
 its console on it, and `shot --hdmi` takes its picture. It reaches its login in about a
-minute and a half to two (TCG emulates eight cores). The MCU switches the RK3576 on and
-off as on the device: Flipper OS's power-off and reboot work, and so does the MCU's own
+minute and a quarter (TCG emulates eight cores). The MCU switches the RK3576 on and off
+as on the device: Flipper OS's power-off and reboot work, and so does the MCU's own
 Stop. Its Wi-Fi and Bluetooth are the MT7921's, on USB1 while Linux unblocks its
 rfkill: the chip takes its real firmware from mt7921u and btusb; NetworkManager has its
 Wi-Fi (FlipCTL's Wi-Fi menu with it, the Wi-Fi LED lit once it joins) and BlueZ its
@@ -70,17 +70,17 @@ it, on this PC's network (through passt): an open network and a WPA2 one on 2.4 
 (802.11n, 144.4 Mbit/s) and an open one on 5 GHz (802.11ax on 80 MHz, 1200.9 Mbit/s),
 which the Wi-Fi finds and joins, from FlipCTL too; nothing else is ever found (no
 radio). It also boots as the device does, through U-Boot from the card (its boot menu
-on the Flipper's screen; with KASLR, and so KPTI, about two and a half minutes here),
-and Flipper OS installs onto it as the docs do it: in its MaskROM, rockusb's
-download-boot of the installer's loader (`scripts/fo_rockusb.py`, over USB/IP); the
-installer provisions the UFS, installs Flipper OS and updates the MCU's firmware over
-I2C, and the boot ROM then boots the UFS. Flipper OS updates the MCU's firmware as on
-the device, and Rockusb's Loader mode (a Rockchip loader's usbplug, or U-Boot's
-rockusb) reads and writes the UFS or the card from the PC. The RK3576's DisplayPort
-(over the USB-C port) and more come next. [RESEARCH.md](RESEARCH.md) is the survey this
-starts from: the device, what Flipper Devices publishes, and what emulating it takes.
-[PLAN.md](PLAN.md) is the order of work; the MCU comes first.
-[docs/BRINGUP_LOG.md](docs/BRINGUP_LOG.md) is what was found on the way.
+on the Flipper's screen; with KASLR, and so KPTI, about two minutes here), and Flipper
+OS installs onto it as the docs do it: in its MaskROM, rockusb's download-boot of the
+installer's loader (`scripts/fo_rockusb.py`, over USB/IP); the installer provisions the
+UFS, installs Flipper OS and updates the MCU's firmware over I2C, and the boot ROM then
+boots the UFS. Flipper OS updates the MCU's firmware as on the device, and Rockusb's
+Loader mode (a Rockchip loader's usbplug, or U-Boot's rockusb) reads and writes the UFS
+or the card from the PC. The RK3576's DisplayPort (over the USB-C port) and more come
+next. [RESEARCH.md](RESEARCH.md) is the survey this starts from: the device, what
+Flipper Devices publishes, and what emulating it takes. [PLAN.md](PLAN.md) is the order
+of work; the MCU comes first. [docs/BRINGUP_LOG.md](docs/BRINGUP_LOG.md) is what was
+found on the way.
 
 ## Trying it
 
@@ -300,6 +300,7 @@ yet.
 | 0025 | hw/ufs: the device's version, its link's highest gear and its health as properties (QEMU's was always UFS 4.1 on HS-G4, its health not given) |
 | 0026 | hw/usb/hcd-xhci: a DWC3's ports: USB 2 first, each xHCI port a USB port of its own (QEMU puts USB 3 first and pairs them, so a USB 3 hub's two hubs could not both be on a connection) |
 | 0027 | target/arm: the generic timer at its frequency exactly (QEMU counts a tick each whole ns: at 24 MHz each 41 ns, 1.6 % fast; NTP stepped Flipper OS's clock back at each poll), and WFIT/WFET/WFE's timer armed in ns, not ticks |
+| 0028 | accel/tcg: broadcast TLB flushes without stopping every CPU (each TLBI ...IS was an exclusive section that woke every halted vCPU, the MCU's too: some 290 for each process a shell starts; now the running CPUs flush between two TBs and the others before they next run: a process starts 2.5 to 4 times quicker) |
 
 ## Layout
 
