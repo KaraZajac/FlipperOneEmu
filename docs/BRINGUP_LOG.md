@@ -2978,3 +2978,41 @@ register headers.
        - linux_check's join now checks the rx bitrate. It passes (506 s), as
          do its U-Boot mode (392 s), its MaskROM mode (16 s) and the smoke
          test (49 s).
+
+111. **Where a boot's time goes.** No change to the emulator here. This is a
+     survey, for the next speed work.
+     - **The vCPUs are mostly idle.** eu-stack sampled QEMU 210 times through
+       a direct boot to the login. The RK3576's eight vCPUs were halted in 84 %
+       of their samples, so about 1.3 of them were busy on average. QEMU's
+       main thread was polling in 88 %, and the MCU's two cores were halted in
+       87-98 % (FreeRTOS idles in WFI). Of the busy vCPU samples:
+       - 60 % in the guest's code and helpers, about half of that waiting for
+         the BQL, around interrupts and in the vCPU's loop;
+       - 17 % waiting in an exclusive section. QEMU runs each inner-shareable
+         TLB invalidate (Linux's TLBI ...IS, at every munmap, COW and exec) as
+         safe work that stops every vCPU, the MCU's too;
+       - 17 % translating code;
+       - a few % each looking up TBs, walking page tables, flushing TLBs.
+     - **The guest's view.** `systemd-analyze`: 28 s in the kernel and
+       initramfs, 69 s in userspace. The critical chain waits 26.6 s for the
+       root partition's device unit: the udev event for `mmcblk0p3` ends 8 s
+       after coldplug has queued everything, behind the other events. Then
+       NetworkManager, the USB gadget (7.8 s) and smbd (13.3 s).
+     - **Not the SD card.** Measured inside one root shell: 1 MiB reads at
+       48 MB/s, 4 KiB ones at about 2 ms each, and mmc's tracepoints give a
+       request 0.25 ms from start to done (median) and 0.54 ms to the next.
+       `blkid -p` of the root takes 0.23 s; one udev change event for it
+       1.5 s.
+     - **Starting a process is what is slow.** `/bin/true` takes 64 ms, `id`
+       100 ms, `getent hosts` 230 ms, `sudo true` 0.7 to 2.2 s. A boot runs
+       hundreds of processes, mostly one after another.
+     - **A trap on the way.** Timing `sudo CMD` from outside counts sudo's own
+       start: the first numbers had the SD card at 15 ms a read. Time inside
+       one `sudo sh -c`.
+     - **What could be done.**
+       - Cheaper inner-shareable TLB flushes: wait only for each other vCPU
+         to flush itself, not for all of them to stop at once. This needs
+         care around QEMU's other exclusive sections, or it deadlocks.
+       - Cheaper context switches: QEMU flushes its whole TLB at each change
+         of ASID, the kernel's global entries too.
+       - The BQL around interrupts.
