@@ -3016,3 +3016,34 @@ register headers.
        - Cheaper context switches: QEMU flushes its whole TLB at each change
          of ASID, the kernel's global entries too.
        - The BQL around interrupts.
+
+112. **The guest's time 1.6 % fast; the generic timer at 24 MHz exactly.**
+     - **Seen.** With `--net`, journald said "Time jumped backwards,
+       rotating" every 32 s. systemd-timesyncd had synced once and logged
+       nothing after. Measured from outside, the guest's uptime went 125.21 s
+       in 123.20 s of the host's: a ratio of 1.0163.
+     - **Why.** QEMU counts the generic timer a tick each whole number of ns,
+       1e9 / CNTFRQ truncated. That makes a QEMUTimer's integer scale the
+       exact inverse of the counter, so a timer never fires before its tick.
+       At the RK3576's 24 MHz a tick is 41 ns, not 41.67, so the counter runs
+       41.67 / 41 = 1.0163 times too fast, and so does the guest's clock.
+       That is 0.52 s at each of timesyncd's 32 s polls, past its 0.4 s for a
+       step, so it stepped the clock back every time (at debug level, which
+       is why its log was quiet).
+     - **QEMU patch 0027 (`x-exact-cntfrq`, set on the RK3576's cores).**
+       - The counter is exact: `muldiv64(ns, CNTFRQ, 1e9)`.
+       - A timer is armed in ns for the first ns at which the counter has
+         reached its tick, rounded up. The counter there is never short of
+         it, which was all the truncation was for.
+     - **QEMU's WFxT timer took ticks as ns.** WFIT, WFET and WFE armed it
+       (`timer_new_ns`) with an absolute tick count. A tick count read as ns
+       is long past, so the timer fired at once. Linux on the A53 and A72
+       has no WFxT, and its WFE waits come after an LDXR, where QEMU's WFE
+       returns at once anyway; so little changes for it. They convert now too.
+     - **Checked.** The guest's uptime goes 123.37 s in 123.39 s of the
+       host's. No time jump in 300 s with NTP. The Rockchip timer (TIMER0)
+       already converted with `muldiv64`. linux_check now times the guest's
+       uptime against the host's between its first console and its reboot,
+       about 170 s, and wants it within 0.4 % (plus how long its two readings
+       took). It passes (471 s), as do its U-Boot mode (407 s), its MaskROM
+       mode (16 s) and the smoke test (49 s).

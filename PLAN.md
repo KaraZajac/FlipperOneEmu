@@ -89,7 +89,8 @@ screen and its CLI.
 
 ## M3: the RK3576 to a shell ◐
 - ☑ The cluster: 4× Cortex-A53 and 4× Cortex-A72, GIC-400, the generic timer at 24 MHz,
-      PSCI (QEMU's, over SMC) (2026-11-24)
+      PSCI (QEMU's, over SMC) (2026-11-24); the timer at exactly 24 MHz, where QEMU's
+      ran 1.6 % fast (patch 0027, 2026-11-27, log 112)
 - ◐ CRU (its registers, the PLLs locked, the clocks the timer counts at), the PMU's
       power domains, the TRNG, the Rockchip timer (the broadcast clockevent), the
       DesignWare UARTs (UART0 the console, UART4 the MCU's line) (2026-11-24); GRFs,

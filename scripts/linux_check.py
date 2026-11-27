@@ -61,6 +61,7 @@ Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
   hears the device's mic.wav (`run --mic`), 440 Hz, and arecord gets that
   at its level; so does a headset's, plugged in on the panel link (and
   pulled out: silence);
+- its clock keeps the host's time (the generic timer at 24 MHz exactly);
 - `systemctl reboot` starts the RK3576 again, and the kernel with it;
   `systemctl poweroff` switches it off (PSCI), after which the MCU cuts
   its rail; the MCU's CPU app switches it on again, and the kernel starts;
@@ -386,6 +387,18 @@ def png_pixels(path, points):
     return [tuple(rows[y][x * bpp:x * bpp + 3]) for x, y in points]
 
 
+def guest_uptime(con):
+    """the guest's uptime, the host's time halfway through reading it, and
+    how long the reading took; or None"""
+    t0 = time.time()
+    out = con.run("cut -d' ' -f1 /proc/uptime")
+    t1 = time.time()
+    try:
+        return float(out[-1]), (t0 + t1) / 2, t1 - t0
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
 def copy_card(src, dst):
     subprocess.run(["cp", "--reflink=auto", "--sparse=always", str(src),
                     str(dst)], check=True)
@@ -434,6 +447,7 @@ def checks(check, d, out, first_boot, off, net):
 
     con = Console(d / "linux.sock")
     check("its console answers", con.ready(60 * slow))
+    up0 = guest_uptime(con)             # (its clock's rate: before the reboot)
     vsys = con.run("cat /sys/bus/i2c/devices/2-0045/hwmon/hwmon*/in1_input")
     check("Linux reads VSYS on the main bus (the INA219)",
           bool(vsys) and vsys[-1].strip().isdigit() and
@@ -781,6 +795,20 @@ def checks(check, d, out, first_boot, off, net):
           abs(with_headset - MIC_PEAK / 32768) < 0.005 and without < 0.001,
           f"{with_headset} {without}")
 
+    # the guest's time against the host's, since its console first answered:
+    # the generic timer counts at 24 MHz exactly (QEMU patch 0027; QEMU's own
+    # ran 1.6 % fast). The readings' own lengths widen the margin.
+    up1 = guest_uptime(con)
+    if up0 and up1 and up1[1] > up0[1]:
+        span = up1[1] - up0[1]
+        ratio = (up1[0] - up0[0]) / span
+        slack = (up0[2] + up1[2]) / 2 / span
+        check("its clock keeps the host's time (the generic timer at 24 MHz "
+              "exactly)", abs(ratio - 1) < 0.004 + slack,
+              f"{ratio:.4f} over {span:.0f} s (readings +-{slack:.4f})")
+    else:
+        check("its clock keeps the host's time (the generic timer at 24 MHz "
+              "exactly)", False, f"{up0} {up1}")
     qmark = len(text_of(qlog))
     lmark = len(text_of(linux))
     con.send("systemctl reboot")

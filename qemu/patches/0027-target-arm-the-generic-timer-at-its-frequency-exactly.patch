@@ -1,0 +1,193 @@
+From: FlipperOneEmu
+Subject: [PATCH] target/arm: the generic timer at its frequency exactly
+
+QEMU counts the generic timer a tick each whole number of ns, 1e9 /
+CNTFRQ truncated, so that a QEMUTimer's integer scale is the exact
+inverse of the counter. At 24 MHz (the RK3576's) that is a tick each
+41 ns, not 41.67: the counter runs 1.6 % fast, and so does the guest's
+time. Flipper OS's NTP client then steps its clock back at every poll
+(journald: "Time jumped backwards").
+
+With the CPU property x-exact-cntfrq, the counter is exact
+(muldiv64), and a timer is set in ns for the first ns at which the
+counter has reached its tick (rounded up), so it never fires before
+its count, which is what the truncation was for. Without it the
+counter is as before.
+
+The WFIT, WFET and WFE paths armed their ns timer (timer_new_ns) with a
+tick count, an absolute one, so it fired at once; they convert it now,
+with or without the property.
+
+---
+--- a/target/arm/cpu.h	2026-11-27 12:46:54.167410172 -0500
++++ b/target/arm/cpu.h	2026-11-27 12:47:01.376518101 -0500
+@@ -1138,6 +1138,11 @@
+      * ASIDs, the kernel's tables and the trampoline's) keep the TLB
+      */
+     bool kpti_asid_pairs;
++    /*
++     * QOM property: the generic timer counts at CNTFRQ exactly, where
++     * QEMU counts a tick a whole number of ns (24 MHz: 41 ns, 1.6 % fast)
++     */
++    bool exact_cntfrq;
+ 
+     /* Specify the number of cores in this CPU cluster. Used for the L2CTLR
+      * register.
+@@ -1287,6 +1292,10 @@
+ void arm_gt_sel2vtimer_cb(void *opaque);
+ 
+ unsigned int gt_cntfrq_period_ns(ARMCPU *cpu);
++/* the counter at @ns of QEMU_CLOCK_VIRTUAL */
++uint64_t gt_ns_to_ticks(ARMCPU *cpu, int64_t ns);
++/* when the counter reaches @ticks, in ns (INT64_MAX: past a QEMUTimer's) */
++int64_t gt_ticks_to_ns(ARMCPU *cpu, uint64_t ticks);
+ void gt_rme_post_el_change(ARMCPU *cpu, void *opaque);
+ 
+ #define ARM_AFF0_SHIFT 0
+--- a/target/arm/cpu.c	2026-11-27 12:46:54.167578988 -0500
++++ b/target/arm/cpu.c	2026-11-27 12:47:14.219710615 -0500
+@@ -1462,6 +1462,38 @@
+       NANOSECONDS_PER_SECOND / cpu->gt_cntfrq_hz : 1;
+ }
+ 
++/*
++ * With exact-cntfrq, the counter is the exact approach above, and a timer
++ * is set for the first ns at which the counter has reached its tick (the
++ * ns rounded up): gt_ns_to_ticks(gt_ticks_to_ns(t)) >= t, so a timer
++ * never fires before its count, which is what the truncation above buys.
++ * Without, both are the truncated period's. The timers set with these
++ * take ns (timer_mod_ns) whatever their scale.
++ */
++uint64_t gt_ns_to_ticks(ARMCPU *cpu, int64_t ns)
++{
++    if (cpu->exact_cntfrq && cpu->gt_cntfrq_hz < NANOSECONDS_PER_SECOND) {
++        return muldiv64(ns, cpu->gt_cntfrq_hz, NANOSECONDS_PER_SECOND);
++    }
++    return ns / gt_cntfrq_period_ns(cpu);
++}
++
++int64_t gt_ticks_to_ns(ARMCPU *cpu, uint64_t ticks)
++{
++    if (cpu->exact_cntfrq && cpu->gt_cntfrq_hz < NANOSECONDS_PER_SECOND) {
++        if (ticks > muldiv64(INT64_MAX, cpu->gt_cntfrq_hz,
++                             NANOSECONDS_PER_SECOND)) {
++            return INT64_MAX;
++        }
++        return muldiv64_round_up(ticks, NANOSECONDS_PER_SECOND,
++                                 cpu->gt_cntfrq_hz);
++    }
++    if (ticks > INT64_MAX / gt_cntfrq_period_ns(cpu)) {
++        return INT64_MAX;
++    }
++    return ticks * gt_cntfrq_period_ns(cpu);
++}
++
+ static void arm_cpu_propagate_feature_implications(ARMCPU *cpu)
+ {
+     CPUARMState *env = &cpu->env;
+@@ -2508,6 +2540,8 @@
+                       backcompat_pauth_default_use_qarma5, false),
+     /* True for TTBR1_EL1's KPTI flips to keep the TLB (vmsa_ttbr_write) */
+     DEFINE_PROP_BOOL("x-kpti-asid-pairs", ARMCPU, kpti_asid_pairs, false),
++    /* True for the generic timer to count at CNTFRQ exactly */
++    DEFINE_PROP_BOOL("x-exact-cntfrq", ARMCPU, exact_cntfrq, false),
+ };
+ 
+ static const gchar *arm_gdb_arch_name(CPUState *cs)
+--- a/target/arm/helper.c	2026-11-27 12:46:54.167821343 -0500
++++ b/target/arm/helper.c	2026-11-27 12:47:23.669852269 -0500
+@@ -1355,7 +1355,7 @@
+ {
+     ARMCPU *cpu = env_archcpu(env);
+ 
+-    return qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / gt_cntfrq_period_ns(cpu);
++    return gt_ns_to_ticks(cpu, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+ }
+ 
+ static void gt_update_gicv5_ppi(CPUARMState *env, int timeridx, bool level)
+@@ -1546,11 +1546,7 @@
+          * set the timer for as far in the future as possible. When the
+          * timer expires we will reset the timer for any remaining period.
+          */
+-        if (nexttick > INT64_MAX / gt_cntfrq_period_ns(cpu)) {
+-            timer_mod_ns(cpu->gt_timer[timeridx], INT64_MAX);
+-        } else {
+-            timer_mod(cpu->gt_timer[timeridx], nexttick);
+-        }
++        timer_mod_ns(cpu->gt_timer[timeridx], gt_ticks_to_ns(cpu, nexttick));
+         trace_arm_gt_recalc(timeridx, nexttick);
+     } else {
+         /* Timer disabled: ISTATUS and timer output always clear */
+--- a/target/arm/tcg/op_helper.c	2026-11-27 12:46:54.169874873 -0500
++++ b/target/arm/tcg/op_helper.c	2026-11-27 12:47:44.578165676 -0500
+@@ -457,15 +457,11 @@
+     if (uadd64_overflow(cntval, timeout - cntvct, &nexttick)) {
+         nexttick = UINT64_MAX;
+     }
+-    if (nexttick > INT64_MAX / gt_cntfrq_period_ns(cpu)) {
+-        /*
+-         * If the timeout is too long for the signed 64-bit range
+-         * of a QEMUTimer, let it expire early.
+-         */
+-        timer_mod_ns(cpu->wfxt_timer, INT64_MAX);
+-    } else {
+-        timer_mod(cpu->wfxt_timer, nexttick);
+-    }
++    /*
++     * (The timer takes ns: the tick's, or, if the timeout is too long for
++     * the signed 64-bit range of a QEMUTimer, as far as it goes)
++     */
++    timer_mod_ns(cpu->wfxt_timer, gt_ticks_to_ns(cpu, nexttick));
+     env->halt_reason = HALT_WFI;
+     cs->exception_index = EXCP_HLT;
+     cs->halted = 1;
+@@ -529,7 +525,7 @@
+         if (uadd64_overflow(next_tick, offset, &abstick)) {
+             abstick = UINT64_MAX;
+         }
+-        if (abstick > INT64_MAX / gt_cntfrq_period_ns(cpu)) {
++        if (gt_ticks_to_ns(cpu, abstick) == INT64_MAX) {
+             return INT64_MAX;
+         } else {
+             return abstick;
+@@ -627,11 +623,14 @@
+         return;
+     }
+ 
+-    /* For A-profile we also can be woken by the event stream */
++    /*
++     * For A-profile we also can be woken by the event stream (its next
++     * event a tick: in ns for the timer, which QEMU gave it as they were)
++     */
+     if (cpu->wfxt_timer) {
+         int64_t next_event = gt_calc_next_event_stream(env);
+         if (next_event > 0) {
+-            timer_mod(cpu->wfxt_timer, next_event);
++            timer_mod_ns(cpu->wfxt_timer, gt_ticks_to_ns(cpu, next_event));
+         }
+     }
+ 
+@@ -715,20 +714,13 @@
+     if (uadd64_overflow(cntval, timeout - cntvct, &nexttick)) {
+         nexttick = UINT64_MAX;
+     }
+-    if (nexttick > INT64_MAX / gt_cntfrq_period_ns(cpu)) {
+-        nexttick = INT64_MAX;
+-    }
+ 
++    /* (the earlier of the two ticks, in ns for the timer) */
+     next_event = gt_calc_next_event_stream(env);
+     if (next_event > 0 && next_event < nexttick) {
+-        timer_mod(cpu->wfxt_timer, next_event);
+-    } else {
+-        if (nexttick == INT64_MAX) {
+-            timer_mod_ns(cpu->wfxt_timer, INT64_MAX);
+-        } else {
+-            timer_mod(cpu->wfxt_timer, nexttick);
+-        }
++        nexttick = next_event;
+     }
++    timer_mod_ns(cpu->wfxt_timer, gt_ticks_to_ns(cpu, nexttick));
+ 
+     env->halt_reason = HALT_WFE;
+     cs->exception_index = EXCP_HLT;

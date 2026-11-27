@@ -1045,6 +1045,9 @@ static void rk3576_realize(DeviceState *dev, Error **errp)
         object_property_set_int(cpu, "reset-cbar", GIC_BASE, &error_abort);
         object_property_set_int(cpu, "core-count", 4, &error_abort);
         object_property_set_uint(cpu, "cntfrq", CNTFRQ_HZ, &error_abort);
+        /* ... counted at exactly that (patch 0027): QEMU's tick of a whole
+           41 ns had the guest's time 1.6 % fast */
+        object_property_set_bool(cpu, "x-exact-cntfrq", true, &error_abort);
         /* KPTI's flips of TTBR1 keep the TLB (patch 0024): Linux's, under
            U-Boot's KASLR as on the device */
         object_property_set_bool(cpu, "x-kpti-asid-pairs", true,

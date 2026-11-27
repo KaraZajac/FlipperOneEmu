@@ -287,6 +287,7 @@ yet.
 | 0024 | target/arm: Linux's KPTI flips of TTBR1_EL1 keep the TLB (under U-Boot's KASLR each system call and interrupt from EL0 flushed it twice) |
 | 0025 | hw/ufs: the device's version, its link's highest gear and its health as properties (QEMU's was always UFS 4.1 on HS-G4, its health not given) |
 | 0026 | hw/usb/hcd-xhci: a DWC3's ports: USB 2 first, each xHCI port a USB port of its own (QEMU puts USB 3 first and pairs them, so a USB 3 hub's two hubs could not both be on a connection) |
+| 0027 | target/arm: the generic timer at its frequency exactly (QEMU counts a tick each whole ns: at 24 MHz each 41 ns, 1.6 % fast; NTP stepped Flipper OS's clock back at each poll), and WFIT/WFET/WFE's timer armed in ns, not ticks |
 
 ## Layout
 
