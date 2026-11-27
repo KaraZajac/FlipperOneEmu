@@ -3078,3 +3078,47 @@ register headers.
        `linux4.sock` too. It passes (547 s), as do its U-Boot mode (399 s),
        its MaskROM mode (16 s) and the smoke test (49 s), where the MCU's
        UART0 is on the line with the RK3576 off.
+
+114. **A Bluetooth speaker near the Flipper: an inquiry finds it, SSP pairs
+     with it.** Until now the MT7921's controller found nothing over BR/EDR,
+     and its pages timed out.
+     - **Found.** "FlipperOneEmu Speaker", C0:FE:46:4F:42:03.
+       - An inquiry reports it 0.3 s in, as the host's inquiry mode asks.
+         Flipper OS asks for extended results: its name and its services'
+         UUIDs (A2DP's sink, AVRCP), class 0x240414 (a loudspeaker; rendering,
+         audio), -50 dBm.
+       - A name request answers its name.
+       - A page connects (handle 0x0041). It answers on that connection:
+         - remote features, both pages (SSP on the host's, no Secure
+           Connections);
+         - version, clock offset, RSSI, sniff and back, link policy,
+           supervision timeout, packet type, role.
+     - **Paired, SSP's Just Works.**
+       - Authentication Requested; Link Key Request; the host has none;
+         IO capabilities: the speaker's NoInputNoOutput, general bonding, no
+         MITM.
+       - User Confirmation, which Linux's kernel accepts itself: no agent is
+         asked.
+       - Simple Pairing Complete, a link key (unauthenticated, P-192),
+         Authentication Complete, then encryption on (key size 16).
+       - Later, a link key the host offers is one the speaker remembers,
+         whichever it is.
+     - **L2CAP and SDP** on its connection.
+       - Signalling: information (extended features, fixed channels),
+         connection, configuration both ways, echo, disconnection.
+       - SDP on PSM 1, with one record, an A2DP sink: its class, L2CAP and
+         AVDTP 1.3, the public browse group, A2DP 1.3, "Audio Sink", a
+         speaker's features.
+       - Its other channels are refused. A `connect` reaches the speaker,
+         but BlueZ's A2DP channel is refused ("br-connection-refused"):
+         audio is not modelled.
+     - **What BlueZ makes of it.** `bluetoothctl pair`: "Pairing
+       successful"; Paired and Bonded yes, LegacyPairing no; UUIDs Audio Sink
+       and A/V Remote Control; the audio-card icon. btmon shows the exchange
+       as above, two SDP searches answered (the record, then none for the
+       next).
+     - **Checked.** linux_check's scan now wants the speaker beside the beacon
+       and the sensor. It pairs with it (SSP, "LegacyPairing: no", the Audio
+       Sink found by SDP) and removes it again. linux_check passes (491 s),
+       as do its U-Boot mode (443 s), its MaskROM mode (17 s) and the smoke
+       test (51 s).

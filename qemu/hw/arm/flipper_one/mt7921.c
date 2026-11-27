@@ -27,14 +27,18 @@
  * - then a Bluetooth 5.2 controller (HCI and LMP 0x0b, MediaTek's company
  *   ID 70), BR/EDR and LE, with what it claims in its features and its
  *   supported commands answered: the HCI core's initialisation, BlueZ's
- *   settings, inquiry (complete after its length, no device found), LE
- *   scanning and advertising, BR/EDR connections (pages time out). No
- *   radio, but two LE devices near the Flipper, which its scans hear: a
- *   beacon (non-connectable, "FlipperOneEmu Beacon") and a sensor
- *   ("FlipperOneEmu Sensor"), which a connection reaches: its ACL data
- *   over bulk 0x02 and 0x82, L2CAP, and an ATT server with its GATT
- *   database (Generic Access, Battery, Heart Rate with its notifications
- *   once the host subscribes, Device Information); pairing it refuses.
+ *   settings, inquiry (complete after its length), LE scanning and
+ *   advertising, BR/EDR connections (pages of anything else time out).
+ *   No radio, but three devices near the Flipper, which its scans hear:
+ *   - over LE, a beacon (non-connectable, "FlipperOneEmu Beacon") and a
+ *     sensor ("FlipperOneEmu Sensor"), which a connection reaches: its
+ *     ACL data over bulk 0x02 and 0x82, L2CAP, and an ATT server with its
+ *     GATT database (Generic Access, Battery, Heart Rate with its
+ *     notifications once the host subscribes, Device Information);
+ *     pairing it refuses;
+ *   - over BR/EDR, a speaker ("FlipperOneEmu Speaker", an inquiry's
+ *     extended result), which pairs with SSP (Just Works) and answers SDP
+ *     (an A2DP sink); its audio channels it refuses.
  *   The values not fixed by the protocol (its subversion, the TX powers,
  *   the lists' sizes) are a typical controller's, not read from a device.
  *
@@ -158,6 +162,16 @@ struct MT7921State {
                                            Battery Level, Heart Rate */
     QEMUTimer *hr_timer;                /* its heart rate notifications */
     uint8_t hr_beat;
+    /* the speaker near it: a BR/EDR device, SSP's pairing, its SDP */
+    QEMUTimer *inq_result;              /* an inquiry finding it */
+    QEMUTimer *br_page;                 /* a page of it, answered */
+    uint8_t br_page_op;                 /* ... a connection's (0x05) or a
+                                           name request's (0x19) */
+    bool br_conn;                       /* connected (BR_HANDLE) */
+    uint8_t br_l2rx[512];               /* an L2CAP PDU on it, put together */
+    int br_l2rx_len;
+    uint16_t sdp_cid;                   /* the host's end of the SDP channel
+                                           (0: none) */
     GQueue aclq;                        /* ACL packets to the host (0x82) */
     USBEndpoint *acl_in;
     uint8_t l2rx[512];                  /* an L2CAP PDU from the host, put
@@ -468,6 +482,12 @@ static void le_conn_drop(MT7921State *s)
 static void controller_reset(MT7921State *s)
 {
     timer_del(s->inquiry);
+    timer_del(s->inq_result);
+    timer_del(s->br_page);
+    s->br_page_op = 0;
+    s->br_conn = false;                         /* (the speaker's link) */
+    s->br_l2rx_len = 0;
+    s->sdp_cid = 0;
     timer_del(s->page);
     s->page_op = 0;
     s->le_connecting = false;
@@ -873,9 +893,13 @@ static void l2cap_rx(MT7921State *s, uint16_t cid, const uint8_t *q, int n)
     }
 }
 
+static void br_acl_rx(MT7921State *s, uint16_t hdr, const uint8_t *q,
+                      int len);
+#define BR_HANDLE       0x0041          /* the speaker's connection */
+
 /* an ACL packet from the host (bulk 0x02): its buffer back at once (Number
  * Of Completed Packets), and on the sensor's connection its data an L2CAP
- * PDU's, put together */
+ * PDU's, put together (on the speaker's: br_acl_rx) */
 static void acl_rx(MT7921State *s, const uint8_t *q, int n)
 {
     uint8_t e[5] = { 1 };
@@ -889,6 +913,10 @@ static void acl_rx(MT7921State *s, const uint8_t *q, int n)
     stw_le_p(e + 1, hdr & 0xfff);
     stw_le_p(e + 3, 1);
     ev_put(s, 0x13, e, sizeof(e));
+    if ((hdr & 0xfff) == BR_HANDLE && s->br_conn) {
+        br_acl_rx(s, hdr, q + 4, len);
+        return;
+    }
     if ((hdr & 0xfff) != LE_HANDLE || !s->le_conn) {
         return;
     }
@@ -1027,6 +1055,581 @@ static void page_start(MT7921State *s, uint8_t op, const uint8_t *addr)
               (int64_t)s->page_timeout * 625000);       /* 0.625 ms each */
 }
 
+/* ------------------------------------- the speaker near it (BR/EDR) */
+
+/*
+ * "FlipperOneEmu Speaker", C0:FE:46:4F:42:03: a BR/EDR device an inquiry
+ * finds (its name and services in its extended inquiry response), which
+ * answers a page. Its connection pairs with SSP, Just Works (it has no
+ * input or output, and no Secure Connections): a link key the host keeps,
+ * which it takes back later as one it remembers. Its L2CAP has the
+ * signalling channel and SDP, which has one record, an A2DP sink's; its
+ * profiles' own channels (AVDTP's) it refuses.
+ */
+#define SDP_CID         0x0040          /* its end of an SDP channel */
+#define SPEAKER_NAME    "FlipperOneEmu Speaker"
+
+static const uint8_t speaker_addr[6] = { 0x03, 0x42, 0x4f, 0x46, 0xfe, 0xc0 };
+/* its class: audio/video, a loudspeaker; the rendering and audio services */
+static const uint8_t speaker_cod[3] = { 0x14, 0x04, 0x24 };
+
+static bool is_speaker(const uint8_t *addr)
+{
+    return !memcmp(addr, speaker_addr, 6);
+}
+
+/* an inquiry finding it, 0.3 s in: its result as the host's inquiry mode
+ * asks (2: extended, its name and its services' UUIDs: A2DP's sink, AVRCP) */
+static void inq_result(void *opaque)
+{
+    static const uint8_t eir_tail[] = { 5, 0x03, 0x0b, 0x11, 0x0e, 0x11,
+                                        2, 0x0a, 0x04 };
+    MT7921State *s = opaque;
+    uint8_t e[255] = { 1 };                     /* one response */
+    int n = sizeof(SPEAKER_NAME) - 1;
+
+    if (!timer_pending(s->inquiry)) {
+        return;
+    }
+    memcpy(e + 1, speaker_addr, 6);
+    e[7] = 0x01;                                /* page scan: R1 */
+    if (s->inquiry_mode == 0) {                 /* Inquiry Result */
+        memcpy(e + 10, speaker_cod, 3);
+        stw_le_p(e + 13, 0x1234);               /* (its clock offset) */
+        ev_put(s, 0x02, e, 15);
+        return;
+    }
+    memcpy(e + 9, speaker_cod, 3);
+    stw_le_p(e + 12, 0x1234);
+    e[14] = (uint8_t)-50;                       /* RSSI, dBm */
+    if (s->inquiry_mode == 1) {                 /* ... with RSSI */
+        ev_put(s, 0x22, e, 15);
+        return;
+    }
+    e[15] = n + 1;                              /* Extended Inquiry Result */
+    e[16] = 0x09;                               /* (its name, complete) */
+    memcpy(e + 17, SPEAKER_NAME, n);
+    memcpy(e + 17 + n, eir_tail, sizeof(eir_tail));
+    ev_put(s, 0x2f, e, 255);
+}
+
+/* a page of it answered: its connection, or its name */
+static void br_page_done(void *opaque)
+{
+    MT7921State *s = opaque;
+    uint8_t e[255] = { 0 };
+
+    if (s->br_page_op == 0x05) {                /* Connection Complete */
+        stw_le_p(e + 1, BR_HANDLE);
+        memcpy(e + 3, speaker_addr, 6);
+        e[9] = 0x01;                            /* ACL, not encrypted */
+        s->br_conn = true;
+        s->br_l2rx_len = 0;
+        s->sdp_cid = 0;
+        ev_put(s, 0x03, e, 11);
+    } else if (s->br_page_op == 0x19) {         /* Remote Name Request
+                                                   Complete */
+        memcpy(e + 1, speaker_addr, 6);
+        memcpy(e + 7, SPEAKER_NAME, sizeof(SPEAKER_NAME) - 1);
+        ev_put(s, 0x07, e, 255);
+    }
+    s->br_page_op = 0;
+}
+
+static void br_conn_drop(MT7921State *s)
+{
+    s->br_conn = false;
+    s->br_l2rx_len = 0;
+    s->sdp_cid = 0;
+}
+
+/* an L2CAP PDU to the host on the speaker's connection: one ACL packet */
+static void br_l2cap_send(MT7921State *s, uint16_t cid, const uint8_t *q,
+                          int n)
+{
+    GByteArray *a = g_byte_array_sized_new(8 + n);
+    uint8_t h[8];
+
+    stw_le_p(h, BR_HANDLE | 0x2000);            /* (PB: a start, flushable) */
+    stw_le_p(h + 2, 4 + n);
+    stw_le_p(h + 4, n);
+    stw_le_p(h + 6, cid);
+    g_byte_array_append(a, h, 8);
+    g_byte_array_append(a, q, n);
+    g_queue_push_tail(&s->aclq, a);
+    usb_wakeup(s->acl_in, 0);
+}
+
+/* a signalling command to the host: @code, @ident, its data */
+static void br_sig(MT7921State *s, uint8_t code, uint8_t ident,
+                   const uint8_t *d, int n)
+{
+    uint8_t c[64];
+
+    c[0] = code;
+    c[1] = ident;
+    stw_le_p(c + 2, n);
+    if (n) {
+        memcpy(c + 4, d, n);
+    }
+    br_l2cap_send(s, 1, c, 4 + n);
+}
+
+/*
+ * Its SDP record, an A2DP sink's, as SDP's data elements: its handle; its
+ * class (Audio Sink); its protocols (L2CAP, PSM 0x19; AVDTP 1.3); the
+ * public browse group; its profile (A2DP 1.3); its name; its features (a
+ * speaker)
+ */
+static const uint8_t sdp_record[] = {
+    0x35, 0x4f,
+    0x09, 0x00, 0x00, 0x0a, 0x00, 0x01, 0x00, 0x01,
+    0x09, 0x00, 0x01, 0x35, 0x03, 0x19, 0x11, 0x0b,
+    0x09, 0x00, 0x04, 0x35, 0x10,
+        0x35, 0x06, 0x19, 0x01, 0x00, 0x09, 0x00, 0x19,
+        0x35, 0x06, 0x19, 0x00, 0x19, 0x09, 0x01, 0x03,
+    0x09, 0x00, 0x05, 0x35, 0x03, 0x19, 0x10, 0x02,
+    0x09, 0x00, 0x09, 0x35, 0x08, 0x35, 0x06, 0x19, 0x11, 0x0d,
+        0x09, 0x01, 0x03,
+    0x09, 0x01, 0x00, 0x25, 0x0a, 'A', 'u', 'd', 'i', 'o', ' ',
+        'S', 'i', 'n', 'k',
+    0x09, 0x03, 0x11, 0x09, 0x00, 0x02,
+};
+/* the UUIDs a search finds it by */
+static const uint16_t sdp_uuids[] = {
+    0x1002, 0x0100, 0x0019, 0x110b, 0x110d, 0x110a,
+};
+
+/* does an SDP search pattern (a sequence of UUIDs, at @p) find the record? */
+static bool sdp_matches(const uint8_t *p, int n)
+{
+    int i = p[0] == 0x36 ? 3 : 2;
+
+    if (n < 3 || (p[0] != 0x35 && p[0] != 0x36)) {
+        return false;
+    }
+    n = MIN(n, p[0] == 0x35 ? 2 + p[1] : 3 + lduw_be_p(p + 1));
+    while (i + 3 <= n) {
+        if (p[i] == 0x19) {                     /* a 16-bit UUID */
+            uint16_t u = lduw_be_p(p + i + 1);
+
+            for (int k = 0; k < ARRAY_SIZE(sdp_uuids); k++) {
+                if (u == sdp_uuids[k]) {
+                    return true;
+                }
+            }
+            i += 3;
+        } else if (p[i] == 0x1a) {              /* a 32-bit one */
+            i += 5;
+        } else if (p[i] == 0x1c) {              /* a 128-bit one */
+            i += 17;
+        } else {
+            break;
+        }
+    }
+    return false;
+}
+
+/* the length of the data element at @p (its header too), or 0 */
+static int sdp_de_len(const uint8_t *p, int n)
+{
+    int sz = p[0] & 7;
+
+    if (n < 1) {
+        return 0;
+    }
+    if (sz < 5) {
+        return p[0] ? 1 + (1 << sz) : 1;
+    }
+    if (sz == 5 && n >= 2) {
+        return 2 + p[1];
+    }
+    if (sz == 6 && n >= 3) {
+        return 3 + lduw_be_p(p + 1);
+    }
+    return 0;
+}
+
+/* an SDP PDU from the host: the search and attribute requests, answered
+ * whole (no continuation: the record is small) */
+static void sdp_rx(MT7921State *s, const uint8_t *q, int n)
+{
+    uint8_t r[160];
+    int pat, m = 0;
+    bool found;
+
+    if (n < 5) {
+        return;
+    }
+    pat = sdp_de_len(q + 5, n - 5);
+    found = pat && sdp_matches(q + 5, pat);
+    r[0] = q[0] + 1;                            /* (its response) */
+    r[1] = q[1];                                /* (its transaction) */
+    r[2] = q[2];
+    switch (q[0]) {
+    case 0x02:                                  /* Service Search */
+        stw_be_p(r + 5, found);                 /* (total, current) */
+        stw_be_p(r + 7, found);
+        m = 9;
+        if (found) {
+            stl_be_p(r + 9, 0x00010001);
+            m += 4;
+        }
+        r[m++] = 0;                             /* (no continuation) */
+        break;
+    case 0x04:                                  /* Service Attribute */
+        if (n < 9 || ldl_be_p(q + 5) != 0x00010001) {
+            r[0] = 0x01;                        /* Error: */
+            stw_be_p(r + 5, 0x0002);            /* invalid record handle */
+            m = 7;
+            break;
+        }
+        stw_be_p(r + 5, sizeof(sdp_record));
+        memcpy(r + 7, sdp_record, sizeof(sdp_record));
+        m = 7 + sizeof(sdp_record);
+        r[m++] = 0;
+        break;
+    case 0x06:                                  /* Service Search Attribute */
+        if (found) {
+            stw_be_p(r + 5, 2 + sizeof(sdp_record));
+            r[7] = 0x35;                        /* (the one record's list) */
+            r[8] = sizeof(sdp_record);
+            memcpy(r + 9, sdp_record, sizeof(sdp_record));
+            m = 9 + sizeof(sdp_record);
+        } else {
+            stw_be_p(r + 5, 2);
+            r[7] = 0x35;                        /* (an empty list) */
+            r[8] = 0;
+            m = 9;
+        }
+        r[m++] = 0;
+        break;
+    default:
+        r[0] = 0x01;                            /* Error: invalid syntax */
+        stw_be_p(r + 5, 0x0003);
+        m = 7;
+        break;
+    }
+    stw_be_p(r + 3, m - 5);
+    br_l2cap_send(s, s->sdp_cid, r, m);
+}
+
+/* a signalling command from the host on the speaker's connection */
+static void br_sig_rx(MT7921State *s, const uint8_t *q, int n)
+{
+    uint8_t d[16] = { 0 };
+    uint8_t code, id;
+
+    if (n < 4) {
+        return;
+    }
+    code = q[0];
+    id = q[1];
+    q += 4;
+    n -= 4;
+    switch (code) {
+    case 0x02:                                  /* Connection Request */
+        if (n < 4) {
+            return;
+        }
+        stw_le_p(d + 2, lduw_le_p(q + 2));      /* (its source CID) */
+        if (lduw_le_p(q) != 0x0001) {           /* (not SDP: refused) */
+            stw_le_p(d + 4, 0x0002);            /* PSM not supported */
+            br_sig(s, 0x03, id, d, 8);
+            return;
+        }
+        s->sdp_cid = lduw_le_p(q + 2);
+        stw_le_p(d, SDP_CID);
+        br_sig(s, 0x03, id, d, 8);              /* success */
+        /* its own configuration: an MTU of 672 */
+        stw_le_p(d, s->sdp_cid);
+        stw_le_p(d + 2, 0);
+        d[4] = 0x01;
+        d[5] = 2;
+        stw_le_p(d + 6, 672);
+        br_sig(s, 0x04, id + 0x40, d, 8);
+        break;
+    case 0x04:                                  /* Configuration Request */
+        if (n < 4) {
+            return;
+        }
+        stw_le_p(d, s->sdp_cid);                /* Configuration Response:
+                                                   accepted */
+        br_sig(s, 0x05, id, d, 6);
+        break;
+    case 0x06:                                  /* Disconnection Request */
+        if (n < 4) {
+            return;
+        }
+        memcpy(d, q, 4);
+        if (lduw_le_p(q) == SDP_CID) {
+            s->sdp_cid = 0;
+        }
+        br_sig(s, 0x07, id, d, 4);
+        break;
+    case 0x08:                                  /* Echo Request */
+        br_sig(s, 0x09, id, NULL, 0);
+        break;
+    case 0x0a:                                  /* Information Request */
+        if (n < 2) {
+            return;
+        }
+        stw_le_p(d, lduw_le_p(q));
+        if (lduw_le_p(q) == 0x0002) {           /* extended features: */
+            stl_le_p(d + 4, 0x80);              /* fixed channels */
+            br_sig(s, 0x0b, id, d, 8);
+        } else if (lduw_le_p(q) == 0x0003) {    /* fixed channels: */
+            d[4] = 0x02;                        /* signalling */
+            br_sig(s, 0x0b, id, d, 12);
+        } else {
+            stw_le_p(d + 2, 0x0001);            /* not supported */
+            br_sig(s, 0x0b, id, d, 4);
+        }
+        break;
+    case 0x03:                                  /* (Connection Response,
+    case 0x05:                                     Configuration Response,
+    case 0x07:                                     Disconnection Response:
+    case 0x0b:                                     to its own) */
+        break;
+    default:
+        stw_le_p(d, 0);                         /* Command Reject: not
+                                                   understood */
+        br_sig(s, 0x01, id, d, 2);
+        break;
+    }
+}
+
+/* an ACL packet's data on the speaker's connection: an L2CAP PDU's */
+static void br_acl_rx(MT7921State *s, uint16_t hdr, const uint8_t *q,
+                      int len)
+{
+    uint16_t cid;
+
+    if ((hdr >> 12 & 3) != 1) {                 /* (not a continuation) */
+        s->br_l2rx_len = 0;
+    }
+    if (s->br_l2rx_len + len > sizeof(s->br_l2rx)) {
+        s->br_l2rx_len = 0;
+        return;
+    }
+    memcpy(s->br_l2rx + s->br_l2rx_len, q, len);
+    s->br_l2rx_len += len;
+    if (s->br_l2rx_len < 4 || s->br_l2rx_len < 4 + lduw_le_p(s->br_l2rx)) {
+        return;
+    }
+    cid = lduw_le_p(s->br_l2rx + 2);
+    if (cid == 1) {
+        br_sig_rx(s, s->br_l2rx + 4, lduw_le_p(s->br_l2rx));
+    } else if (cid == SDP_CID && s->sdp_cid) {
+        sdp_rx(s, s->br_l2rx + 4, lduw_le_p(s->br_l2rx));
+    }
+    s->br_l2rx_len = 0;
+}
+
+/*
+ * A command on the speaker's connection, or about it: answered, and the
+ * events that end it. False: not one of these.
+ */
+static bool br_command(MT7921State *s, uint16_t op, const uint8_t *p,
+                       int plen)
+{
+    uint8_t e[24] = { 0 };
+    bool on_conn = plen >= 2 && (lduw_le_p(p) & 0xfff) == BR_HANDLE &&
+                   s->br_conn;
+    bool of_it = plen >= 6 && is_speaker(p);
+
+    switch (op) {
+    case 0x0405:                                /* Create Connection */
+    case 0x0419:                                /* Remote Name Request */
+        if (!of_it) {
+            return false;
+        }
+        if (s->br_page_op || (op == 0x0405 && s->br_conn)) {
+            ev_cs(s, op, op == 0x0405 && s->br_conn ? 0x0b : 0x0c);
+            return true;
+        }
+        ev_cs(s, op, 0);
+        s->br_page_op = op & 0xff;
+        timer_mod(s->br_page, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                  (op == 0x0405 ? 120 : 40) * SCALE_MS);
+        return true;
+    case 0x0408:                                /* Create Connection Cancel */
+    case 0x041a:                                /* Remote Name Request
+                                                   Cancel */
+        if (!of_it) {
+            return false;
+        }
+        e[0] = s->br_page_op ? 0 : 0x02;
+        memcpy(e + 1, speaker_addr, 6);
+        ev_cc(s, op, e, 7);
+        if (s->br_page_op) {
+            timer_del(s->br_page);
+            memset(e, 0, sizeof(e));
+            e[0] = 0x02;                        /* Unknown Connection ID */
+            memcpy(e + (s->br_page_op == 0x05 ? 3 : 1), speaker_addr, 6);
+            if (s->br_page_op == 0x05) {
+                e[9] = 0x01;
+                ev_put(s, 0x03, e, 11);
+            } else {
+                uint8_t r[255] = { 0x02 };
+
+                memcpy(r + 1, speaker_addr, 6);
+                ev_put(s, 0x07, r, 255);
+            }
+            s->br_page_op = 0;
+        }
+        return true;
+    }
+    if (!on_conn) {
+        return false;
+    }
+    stw_le_p(e + 1, BR_HANDLE);
+    switch (op) {
+    case 0x0406:                                /* Disconnect */
+        ev_cs(s, op, 0);
+        e[3] = 0x16;                            /* (by the local host) */
+        br_conn_drop(s);
+        ev_put(s, 0x05, e, 4);                  /* Disconnection Complete */
+        break;
+    case 0x041b:                                /* Read Remote Features */
+        ev_cs(s, op, 0);
+        memcpy(e + 3, lmp_features, 8);
+        ev_put(s, 0x0b, e, 11);
+        break;
+    case 0x041c:                                /* ... Extended Features:
+                                                   page 1, the host's SSP */
+        ev_cs(s, op, 0);
+        e[3] = plen > 2 ? p[2] : 0;
+        e[4] = 1;
+        if (e[3] == 0) {
+            memcpy(e + 5, lmp_features, 8);
+        } else if (e[3] == 1) {
+            e[5] = 0x01;
+        }
+        ev_put(s, 0x23, e, 13);
+        break;
+    case 0x041d:                                /* Read Remote Version */
+        ev_cs(s, op, 0);
+        e[3] = 0x09;                            /* (5.0) */
+        stw_le_p(e + 4, 0xffff);
+        stw_le_p(e + 6, 0x0001);
+        ev_put(s, 0x0c, e, 8);
+        break;
+    case 0x041f:                                /* Read Clock Offset */
+        ev_cs(s, op, 0);
+        stw_le_p(e + 3, 0x1234);
+        ev_put(s, 0x1c, e, 5);
+        break;
+    case 0x0411:                                /* Authentication Requested:
+                                                   the host's link key? */
+        ev_cs(s, op, 0);
+        ev_put(s, 0x17, speaker_addr, 6);       /* Link Key Request */
+        break;
+    case 0x0413:                                /* Set Connection Encryption */
+        ev_cs(s, op, 0);
+        e[3] = plen > 2 ? p[2] : 1;
+        ev_put(s, 0x08, e, 4);                  /* Encryption Change */
+        break;
+    case 0x0803:                                /* Sniff Mode */
+        ev_cs(s, op, 0);
+        e[3] = 2;
+        stw_le_p(e + 4, plen >= 4 ? lduw_le_p(p + 2) : 0x0800);
+        ev_put(s, 0x14, e, 6);                  /* Mode Change */
+        break;
+    case 0x0804:                                /* Exit Sniff Mode */
+        ev_cs(s, op, 0);
+        ev_put(s, 0x14, e, 6);
+        break;
+    case 0x0809:                                /* Role Discovery: central */
+        ev_cc(s, op, e, 4);
+        break;
+    case 0x040f:                                /* Change Connection Packet
+                                                   Type: as asked */
+        ev_cs(s, op, 0);
+        stw_le_p(e + 3, plen >= 4 ? lduw_le_p(p + 2) : 0xcc18);
+        ev_put(s, 0x1d, e, 5);
+        break;
+    case 0x080d:                                /* Write Link Policy */
+    case 0x0c37:                                /* Write Link Supervision
+                                                   Timeout */
+        ev_cc(s, op, e, 3);
+        break;
+    case 0x1405:                                /* Read RSSI */
+        e[3] = (uint8_t)-50;
+        ev_cc(s, op, e, 4);
+        break;
+    case 0x1408:                                /* Read Encryption Key Size */
+        e[3] = 16;
+        ev_cc(s, op, e, 4);
+        break;
+    default:
+        return false;
+    }
+    return true;
+}
+
+/* SSP's commands, about the speaker: a link key, its pairing */
+static bool br_pairing(MT7921State *s, uint16_t op, const uint8_t *p,
+                       int plen)
+{
+    uint8_t e[24] = { 0 };
+
+    if (plen < 6 || !is_speaker(p) || !s->br_conn) {
+        return false;
+    }
+    memcpy(e + 1, speaker_addr, 6);
+    switch (op) {
+    case 0x040b:                                /* Link Key Request Reply:
+                                                   one it remembers */
+        ev_cc(s, op, e, 7);
+        stw_le_p(e + 1, BR_HANDLE);
+        ev_put(s, 0x06, e, 3);                  /* Authentication Complete */
+        break;
+    case 0x040c:                                /* ... Negative: pairing */
+        ev_cc(s, op, e, 7);
+        ev_put(s, 0x31, speaker_addr, 6);       /* IO Capability Request */
+        break;
+    case 0x042b:                                /* IO Capability Request
+                                                   Reply */
+        ev_cc(s, op, e, 7);
+        memcpy(e, speaker_addr, 6);
+        e[6] = 0x03;                            /* NoInputNoOutput */
+        e[7] = 0;                               /* (no OOB data) */
+        e[8] = 0x04;                            /* general bonding, no MITM */
+        ev_put(s, 0x32, e, 9);                  /* IO Capability Response */
+        stl_le_p(e + 6, 413131);                /* (its number, Just Works:
+                                                   never shown) */
+        ev_put(s, 0x33, e, 10);                 /* User Confirmation
+                                                   Request */
+        break;
+    case 0x042c:                                /* User Confirmation
+                                                   Request Reply */
+        ev_cc(s, op, e, 7);
+        ev_put(s, 0x36, e, 7);                  /* Simple Pairing Complete */
+        memcpy(e, speaker_addr, 6);
+        qemu_guest_getrandom_nofail(e + 6, 16);
+        e[22] = 0x04;                           /* unauthenticated, P-192 */
+        ev_put(s, 0x18, e, 23);                 /* Link Key Notification */
+        memset(e, 0, sizeof(e));
+        stw_le_p(e + 1, BR_HANDLE);
+        ev_put(s, 0x06, e, 3);                  /* Authentication Complete */
+        break;
+    case 0x042d:                                /* ... Negative */
+    case 0x0434:                                /* IO Capability Request
+                                                   Negative Reply */
+        ev_cc(s, op, e, 7);
+        e[0] = 0x05;                            /* Authentication Failure */
+        ev_put(s, 0x36, e, 7);
+        e[0] = 0x05;
+        stw_le_p(e + 1, BR_HANDLE);
+        ev_put(s, 0x06, e, 3);
+        break;
+    default:
+        return false;
+    }
+    return true;
+}
+
 /* an HCI command: what it asks, answered */
 static void hci_command(MT7921State *s, const uint8_t *pkt, int len)
 {
@@ -1042,6 +1645,9 @@ static void hci_command(MT7921State *s, const uint8_t *pkt, int len)
     plen = MIN(pkt[2], len - 3);
     p = pkt + 3;
 
+    if (br_command(s, op, p, plen) || br_pairing(s, op, p, plen)) {
+        return;                                 /* (the speaker's) */
+    }
     switch (op) {
     /* ---- link control */
     case 0x0401:                                /* Inquiry */
@@ -1052,9 +1658,12 @@ static void hci_command(MT7921State *s, const uint8_t *pkt, int len)
         ev_cs(s, op, 0);
         timer_mod(s->inquiry, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                   (int64_t)MAX(p[3], 1) * 1280 * SCALE_MS);
+        timer_mod(s->inq_result, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                  300 * SCALE_MS);              /* (the speaker found) */
         break;
     case 0x0402:                                /* Inquiry Cancel */
         timer_del(s->inquiry);
+        timer_del(s->inq_result);
         ev_cc_status(s, op, 0);
         break;
     case 0x0405:                                /* Create Connection */
@@ -2727,6 +3336,8 @@ static void mt7921_realize(USBDevice *dev, Error **errp)
     s->acl_in = usb_ep_get(dev, USB_TOKEN_IN, 2);
     s->evq = g_byte_array_new();
     s->inquiry = timer_new_ns(QEMU_CLOCK_VIRTUAL, inquiry_done, s);
+    s->inq_result = timer_new_ns(QEMU_CLOCK_VIRTUAL, inq_result, s);
+    s->br_page = timer_new_ns(QEMU_CLOCK_VIRTUAL, br_page_done, s);
     s->page = timer_new_ns(QEMU_CLOCK_VIRTUAL, page_done, s);
     s->beacon_ble = timer_new_ns(QEMU_CLOCK_VIRTUAL, beacon_ble, s);
     s->le_conn_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, le_conn_done, s);

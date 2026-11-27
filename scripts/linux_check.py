@@ -29,8 +29,9 @@ Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
   Bluetooth is on USB1 with its firmware loaded, behind the board's hub (its
   USB 2.0 and SuperSpeed hubs, the device tree's nodes) at SuperSpeed, hci0,
   BlueZ's controller
-  powered, a scan finds the LE beacon and sensor near it, nothing else, and
-  BlueZ connects to the sensor (its GATT services, its battery); its Wi-Fi is
+  powered, a scan finds the LE beacon and sensor near it and the BR/EDR
+  speaker, nothing else, BlueZ connects to the sensor (its GATT services, its
+  battery) and pairs with the speaker (SSP, its SDP); its Wi-Fi is
   mt7921u's with its
   firmware running, wlx000ce7464f02, NetworkManager's, and a scan completes
   and finds nothing, or with passt (`run --wifi`) the access point near it,
@@ -587,10 +588,11 @@ def checks(check, d, out, first_boot, off, net):
     scan = con.run("timeout 30 bluetoothctl --timeout 10 scan on", 60) or []
     found = sorted(x[x.index("Device"):] for x in scan if "[NEW] Device" in x)
     check("... a scan (inquiry and LE) finds the beacon and the sensor near "
-          "it (LE), nothing else",
+          "it (LE) and the speaker (BR/EDR), nothing else",
           any("Discovery started" in x for x in scan) and found == [
               "Device C0:FE:46:4F:42:01 FlipperOneEmu Beacon",
-              "Device C0:FE:46:4F:42:02 FlipperOneEmu Sensor"],
+              "Device C0:FE:46:4F:42:02 FlipperOneEmu Sensor",
+              "Device C0:FE:46:4F:42:03 FlipperOneEmu Speaker"],
           " / ".join(found or scan[-3:]))
     sensor = con.run("A=C0:FE:46:4F:42:02; timeout 40 bluetoothctl connect $A "
                      ">/dev/null 2>&1; for i in $(seq 40); do bluetoothctl info "
@@ -602,6 +604,18 @@ def checks(check, d, out, first_boot, off, net):
     check("... it connects to the sensor: its GATT services found (five), "
           "its battery read (87 %), and disconnects",
           sensor == ["5", "Battery Percentage: 0x57", "0"], str(sensor))
+    # the speaker: SSP's pairing, Just Works (it has no input or output, so
+    # the kernel accepts it without an agent), then SDP: its A2DP sink
+    speaker = con.run("A=C0:FE:46:4F:42:03; timeout 40 bluetoothctl pair $A "
+                      "2>&1 | grep -c 'Pairing successful'; bluetoothctl info "
+                      "$A | grep -E 'Paired:|LegacyPairing:|Audio Sink' | "
+                      "xargs; timeout 20 bluetoothctl remove $A >/dev/null "
+                      "2>&1; echo $?", 150) or []
+    check("... and pairs with the speaker: SSP (no PIN), its A2DP sink found "
+          "by SDP; then removed",
+          len(speaker) == 3 and speaker[0] == "1" and
+          "Paired: yes" in speaker[1] and "LegacyPairing: no" in speaker[1] and
+          "Audio Sink" in speaker[1] and speaker[2] == "0", str(speaker))
     # its Wi-Fi: mt7921u on interface 3 of the same chip, its firmware
     # running; NetworkManager's; a scan that finds nothing (no radio)
     wifi = con.run("W=$(ls /sys/class/ieee80211/phy0/device/net/ | head -1); "
