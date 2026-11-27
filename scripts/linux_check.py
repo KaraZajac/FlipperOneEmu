@@ -62,6 +62,9 @@ Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
   at its level; so does a headset's, plugged in on the panel link (and
   pulled out: silence);
 - its clock keeps the host's time (the generic timer at 24 MHz exactly);
+- the UART between the chips: what Linux sends on ttyS1 (UART4) reaches
+  the MCU's UART0 and comes back from its uart_echo, and linux4.sock sees
+  it go;
 - `systemctl reboot` starts the RK3576 again, and the kernel with it;
   `systemctl poweroff` switches it off (PSCI), after which the MCU cuts
   its rail; the MCU's CPU app switches it on again, and the kernel starts;
@@ -667,6 +670,30 @@ def checks(check, d, out, first_boot, off, net):
           cycle is not None and cycle[:3] == ["0", "0", "1"] and
           len(cycle) == 4 and cycle[3].isdigit() and int(cycle[3]) > loads,
           str(cycle))
+    # the UART between the chips (uart_link.c): UART4, Flipper OS's ttyS1
+    # (its console=ttyS4 names no port: OS-05), to the MCU's UART0. With the
+    # MCU's uart_echo started, what Linux sends comes back, and linux4.sock
+    # (the line, watched) sees it go
+    tap = socket.socket(socket.AF_UNIX)
+    tap.connect(str(d / "linux4.sock"))
+    tap.settimeout(0.2)
+    st.cli(d, "uart_echo start", r"control>", 15)
+    echo = con.run("sudo sh -c 'stty -F /dev/ttyS1 raw -echo -icanon; "
+                   "(timeout 5 cat /dev/ttyS1 > /tmp/uart.txt) & sleep 1; "
+                   "printf uart-link-check > /dev/ttyS1; wait'; "
+                   "tr -c '[:print:]' . < /tmp/uart.txt; echo", 60) or []
+    st.cli(d, "uart_echo stop", r"control>", 15)
+    seen = b""
+    try:
+        while True:
+            seen += tap.recv(1 << 16)
+    except OSError:
+        pass
+    tap.close()
+    check("the UART between the chips: Linux's ttyS1 (UART4) to the MCU's "
+          "UART0, its uart_echo's answer back, the line watched",
+          any("uart-link-check" in line for line in echo) and
+          b"uart-link-check" in seen, f"{echo} {seen[-60:]!r}")
     eth = con.run("for p in end0 end1; do echo $p "
                   "$(cat /sys/class/net/$p/phydev/phy_id) "
                   "$(cat /sys/class/net/$p/carrier 2>/dev/null || echo -); "

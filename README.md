@@ -212,6 +212,10 @@ scripts/fo_rockusb.py --port 3240 download-boot rk3576_loader.bin  # ... or Rock
                                      # which then boots
 ./flipperoneemu console [-n NAME] [CMD]  # Linux's console (the RK3576's UART0); Ctrl-] leaves
 ./flipperoneemu console --usb ...    # ... Flipper OS's serial port on its USB gadget
+./flipperoneemu console --uart4 ...  # ... the UART between the chips, watched: what
+                                     # Linux sends on it (its ttyS1), which the MCU's
+                                     # UART0 receives (the CLI's `uart_echo start`
+                                     # answers it), and typing to Linux there
                                      # (a computer plugged in: Ctrl+Shift+U)
                                      # The MCU's firmware from Flipper OS, as on the
                                      # device: a .uf2 written to /sys/class/firmware/

@@ -522,6 +522,8 @@ struct RK3576State {
     MemoryRegion ufs_hci;               /* its registers, where the RK3576
                                            has its host's */
     DeviceState *uart[2];               /* UART0, UART4 */
+    Chardev *uart4_chr;                 /* UART4's line: the board's
+                                           (uart_link.c), else serial 3 */
     DeviceState *dmac[3];
     MemoryRegion dmac_id[3];            /* the PL330s' IDs, where AMBA
                                            looks: their regions' ends */

@@ -18,7 +18,8 @@
     ./flipperoneemu cli [-n NAME] [COMMAND...]   the MCU firmware's CLI (UART1)
     ./flipperoneemu console [-n NAME] [--uart4|--usb]  Linux's console (the
                                          RK3576's UART0: the debug port; UART4:
-                                         the MCU's; --usb: its USB gadget's)
+                                         the line to the MCU, watched, Flipper
+                                         OS's ttyS1; --usb: its USB gadget's)
 
 A device is a folder, devices/NAME (default "one"): the MCU's flash image
 (flash.bin, made from a recovery .uf2 the first time, and written to as the
@@ -110,8 +111,10 @@ def cmd_run(args):
            "-bios", str(BOOTROM), "-display", "none",
            "-chardev", f"socket,id=cli,path={d / 'cli.sock'},server=on,wait=off",
            "-serial", "chardev:cli",
-           "-serial", "null",                   # (the RP2350's UART0)
-           # the RK3576's UART0 (the debug port) and UART4 (to the MCU)
+           "-serial", "null",                   # (the RP2350's UART0: the
+           #                                      machine wires it to UART4)
+           # the RK3576's UART0 (the debug port), and its UART4's line to the
+           # MCU's UART0 watched (uart_link.c: what UART4 sends, and typing)
            "-chardev", f"socket,id=linux,path={d / 'linux.sock'},server=on,wait=off,"
                        f"logfile={d / 'linux.log'},logappend=off",
            "-serial", "chardev:linux",
@@ -772,7 +775,9 @@ def main():
                                 "computer plugged in), not its UART")
         if name == "console":
             p.add_argument("--uart4", action="store_true",
-                           help="UART4, the line to the MCU, not UART0")
+                           help="UART4, the line to the MCU (what Linux "
+                                "sends it, and typing to Linux beside the "
+                                "MCU), not UART0")
             p.add_argument("--usb", action="store_true",
                            help="Flipper OS's serial port on its USB gadget "
                                 "(a computer plugged in), not UART0")

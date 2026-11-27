@@ -159,11 +159,12 @@ screen and its CLI.
       Flipper OS's `flipper-one-mcu` driver and the MCU firmware talk (2026-11-24)
 - ☑ spi0 with the MCU's frame sampler: FlipCTL on the emulated screen, the Flipper's
       keys reaching it through the MCU (2026-11-24)
-- ◐ The CPU's state, power off, reboot: Linux's states reach the MCU's Host service,
+- ☑ The CPU's state, power off, reboot: Linux's states reach the MCU's Host service,
       which cuts the rail after a power-off; its CPU app powers Linux on again
       (2026-11-24); the MCU's firmware updated from Flipper OS over I2C, staged in its
       other slot and booted by the boot ROM's flash-update boot, bought (2026-11-25); the
-      console UART between the two
+      UART between the two: UART4 (Flipper OS's ttyS1, OS-05) to the MCU's UART0, which
+      its uart_echo answers on; linux4.sock watching (2026-11-27, log 113)
 
 ## M5: Flipper OS's hardware ☐
 - ☑ Ethernet (GMAC, dwmac 4.20a, RTL8211F): both ports and their PHYs; the first on the

@@ -1108,7 +1108,9 @@ static void rk3576_realize(DeviceState *dev, Error **errp)
                                        DEVICE_LITTLE_ENDIAN));
     s->uart[1] = DEVICE(serial_mm_init(sysmem, UART4_BASE, 2,
                                        rk3576_spi(s, UART4_SPI),
-                                       UART_BAUDBASE, serial_hd(3),
+                                       UART_BAUDBASE,
+                                       s->uart4_chr ? s->uart4_chr :
+                                       serial_hd(3),
                                        DEVICE_LITTLE_ENDIAN));
 
     rk_block_init(s, &s->cru, "rk3576.cru", CRU_BASE, CRU_SIZE, true);

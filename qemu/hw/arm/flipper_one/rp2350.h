@@ -377,6 +377,8 @@ struct RP2350State {
     /* UART0, UART1: QEMU's PL011, behind the aliases */
     DeviceState *uart[2];
     RP2Wrap uart_wrap[2];
+    Chardev *uart0_chr;                 /* UART0's line: the board's
+                                           (uart_link.c), else serial 1 */
 
     /* rp2350_sio.c */
     RP2SIO sio;

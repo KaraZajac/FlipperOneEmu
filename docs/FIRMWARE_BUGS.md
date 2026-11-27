@@ -32,6 +32,7 @@ keeps its row, with the build that fixed it.
 | OS-02 | With no computer on the USB gadget, the getty on its serial port (flipserial0) blocks while holding the console's lock, and now and then the debug UART's and tty1's gettys never start: no login | Flipper OS 2501 | no console login | no |
 | OS-03 | The image's boot entries for the 6.1.172 kernel (one per profile) cannot boot: their `vmlinuz` is the kernel's configuration, and their device-tree directory has no Flipper One tree. U-Boot lists them in its boot menu, and picking one fails ("Bad Linux ARM64 Image magic!") | Flipper OS 2501 | four of nine boot entries do not boot | no |
 | OS-04 | FlipCTL's Settings row "USB-C1 power out" opens nothing: FlipCTL reads Type-C port 0, which on the Flipper One's tree is USB-C2's (the HD3SS3220's), not USB-C1's (the FUSB302's, port 1) | Flipper OS 2501 | a setting that does nothing | no |
+| OS-05 | The kernel's command line has `console=ttyS4` for the line to the MCU, but the kernel registers four 8250 ports at most (`CONFIG_SERIAL_8250_RUNTIME_UARTS=4`), so there is no ttyS4: UART4 (the tree's `serial4`) is ttyS1, and Linux's console never reaches the MCU | Flipper OS 2501 | the MCU's console line has no console | no |
 
 ### FW-01: the main bus after a NACK, with words still queued
 
@@ -368,3 +369,26 @@ keeps its row, with the build that fixed it.
   example, take the `/sys/class/typec/port*` that has `select_usb_power_delivery`,
   or the one whose device is bound to `fusb302`.
 - **Log:** entry 108.
+
+### OS-05: `console=ttyS4` names no port
+
+- **What happens:** every boot entry's options (and the emulator's direct boot, which
+  takes them from the build) have `console=ttyS4,1500000n8`, for UART4, the device
+  tree's "MCU interconnect" and its alias `serial4`. No ttyS4 exists: `/proc/consoles`
+  lists ttyS0 and tty1 only, so the kernel's messages never go to the MCU, and
+  systemd's getty generator, which follows the active consoles, starts no getty there.
+  UART4 is ttyS1 (`2ad70000.serial: ttyS1 MMIO32:0x000000002ad70000`).
+- **Why:** the kernel has `CONFIG_SERIAL_8250_NR_UARTS=8` but
+  `CONFIG_SERIAL_8250_RUNTIME_UARTS=4`, so the 8250 core makes ports 0 to 3 at boot
+  (`/sys/module/8250/parameters/nr_uarts` reads 4). A port whose alias names a line
+  past those, 4 here, gets the first one free instead: 1, after UART0's 0.
+- **What of the emulator is in its path:** none. The numbering comes from the kernel's
+  configuration and the device tree's aliases. The emulator's UART4 is a 16550 (the
+  DesignWare UART's own registers past it read 0), which 8250_dw registers as it
+  would the chip.
+- **Seen on:** Flipper OS build 2501, in the emulator. Not tried on a real Flipper One,
+  where the same kernel and tree should number it the same.
+- **A fix, for Flipper OS:** `CONFIG_SERIAL_8250_RUNTIME_UARTS` of 5 or more (or
+  `8250.nr_uarts=12` on the command line), so the alias's line exists; or name the
+  console `ttyS1`, which holds only while no UART before it in the tree is enabled.
+- **Log:** entry 113.

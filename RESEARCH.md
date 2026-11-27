@@ -169,7 +169,7 @@ testing program yet.
 | I2C | i2c0 (0x27300000), 400 kHz, master | I2C1 slave 0x69 | Registers: 16-bit big-endian address, 16-bit little-endian values, auto-increment |
 | Interrupt | GPIO2_A6, level-low | GPIO35 (`f1`; GPIO42 on `f2`), open drain | New events; the `flipper,one-mcu` node is an interrupt controller for 7 of them |
 | SPI | spi0 (0x2acf0000), mode 3, 33 MHz, transmit only | PIO sampler, CS 25 / SCK 26 / data 28 | One frame per CS: 258×144 = 37152 bytes Y8 (0 black, 255 white, low 2 bits dropped). No flow control; the MCU asks for a resend by interrupt |
-| UART | uart4, "MCU interconnect" (`console=ttyS4`) | a UART | The Linux console to the MCU (which pair is wired to which is not published) |
+| UART | uart4, "MCU interconnect" (`console=ttyS4`, which names no port: UART4 is ttyS1, FIRMWARE_BUGS OS-05) | UART0 (GPIO32/33, the firmware's "uart: cpu"; its CLI's `uart_echo` opens it) | The Linux console to the MCU |
 | Power | the main bus's expander | `VCC5V0_SYS_S5_EN`, `USB20_SEL` | Power on: reset the expander 50 ms, switch the rail on, hand the bus to the CPU; Linux has 30 s to report its state. CPU state 9 (off): power cut 300 ms later |
 | Maskrom | — | `MASKROM_EN` | Power on with it held 1 s |
 | BOOT1 | a SARADC input | PWM on GPIO4, filtered | A voltage that picks the boot source |

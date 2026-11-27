@@ -30,6 +30,14 @@ typedef struct FlipperLink {
     bool held, busy;
 } FlipperLink;
 void flipper_link_resume(FlipperLink *l);
+/*
+ * The UART between the chips (uart_link.c): two chardevs, @cpu for the
+ * RK3576's UART4 and @mcu for the RP2350's UART0, each one's sends the
+ * other's receives; @tap_chr, if any, sees UART4's and types to it
+ */
+void fo_uart_link_new(Chardev **cpu, Chardev **mcu, CharFrontend *tap,
+                      Chardev *tap_chr);
+
 void flipper_link_init(FlipperLink *l, CharFrontend *chr, const char *name,
                        void (*on_line)(void *opaque, char *line),
                        void (*on_open)(void *opaque, bool open), void *opaque);

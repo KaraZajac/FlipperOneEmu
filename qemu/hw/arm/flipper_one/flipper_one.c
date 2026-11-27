@@ -25,6 +25,7 @@
 #include "hw/i2c/i2c.h"
 #include "hw/arm/machines-qom.h"
 #include "chardev/char.h"
+#include "system/system.h"
 #include "system/runstate.h"
 #include "system/reset.h"
 #include "system/blockdev.h"
@@ -128,6 +129,9 @@ struct FlipperOneState {
     FoLeds leds;                /* the WS2812s, GPIO29-31 */
     FoHost *host;               /* a program in the RK3576's place */
     CharFrontend log;
+    CharFrontend uart4_tap;     /* (linux4.sock: UART4's line, watched) */
+    Chardev *uart_link[2];      /* the UART between the chips: UART4's
+                                   end, the MCU's UART0's (uart_link.c) */
     char *flash;
     char *log_id;
     bool bootsel;
@@ -344,6 +348,21 @@ static void flipper_one_maskrom(void *opaque, int n, int level)
  * halfway points between codes): 0 and 416. The others: 0.
  */
 #define SARADC_BOOT_ORDER   2862
+
+/*
+ * The UART between the chips, made the first time either chip's end is
+ * asked for (@end 0: the RK3576's UART4; 1: the MCU's UART0): the line
+ * between them, the launcher's linux4.sock (the fourth serial port)
+ * watching and typing at UART4's end
+ */
+static Chardev *flipper_one_uart_link(FlipperOneState *s, int end)
+{
+    if (!s->uart_link[0]) {
+        fo_uart_link_new(&s->uart_link[0], &s->uart_link[1], &s->uart4_tap,
+                         serial_hd(3));
+    }
+    return s->uart_link[end];
+}
 
 static int flipper_one_saradc(void *opaque, int ch)
 {
@@ -1544,6 +1563,7 @@ static void flipper_one_modify_dtb(const struct arm_boot_info *info,
 static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
 {
     object_initialize_child(OBJECT(ms), "rk3576", &s->rk3576, TYPE_RK3576);
+    s->rk3576.uart4_chr = flipper_one_uart_link(s, 0);
     /* its UFS's own state (patch 0017): -drive if=none,id=ufsnv */
     s->rk3576.ufs_nvram = blk_by_name("ufsnv");
     s->rk3576.ufs_boot_enable = true;
@@ -1735,6 +1755,7 @@ static void flipper_one_init(MachineState *ms)
     clock_set_hz(s->mcu_clk, 150 * 1000 * 1000);
 
     object_initialize_child(OBJECT(ms), "mcu", &s->mcu, TYPE_RP2350);
+    s->mcu.uart0_chr = flipper_one_uart_link(s, 1);
     mcu = DEVICE(&s->mcu);
     qdev_prop_set_string(mcu, "bootrom", ms->firmware);
     if (s->flash) {

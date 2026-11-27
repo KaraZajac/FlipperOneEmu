@@ -55,6 +55,7 @@ arm_common_ss.add(when: 'CONFIG_FLIPPER_ONE', if_true: files(
   'usb_host.c',
   'mt7921.c',
   'sl6341.c',
+  'uart_link.c',
 ))
 # (the Flipper OS installer's kernel is zstd: fo_falcon())
 arm_common_ss.add(when: 'CONFIG_FLIPPER_ONE', if_true: zstd)

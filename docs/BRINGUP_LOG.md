@@ -3047,3 +3047,34 @@ register headers.
        about 170 s, and wants it within 0.4 % (plus how long its two readings
        took). It passes (471 s), as do its U-Boot mode (407 s), its MaskROM
        mode (16 s) and the smoke test (49 s).
+
+113. **The UART between the chips; Flipper OS's console there names no
+     port.**
+     - **The line.** The RK3576's UART4 (the tree's "MCU interconnect") and
+       the RP2350's UART0 (GPIO32 and 33, its firmware's "uart: cpu") are
+       wired to each other now (`uart_link.c`). Before, UART4 went to a
+       socket, and UART0 to nothing.
+       - The link is two chardevs, one at each end. What one end's UART sends
+         goes into the other's receiver as fast as its FIFO takes it (64 KiB
+         wait at most).
+       - Speed is not modelled: bytes cross whatever each end's baud rate.
+       - `linux4.sock` (the launcher's `console --uart4`) now watches UART4's
+         end: it gets a copy of what UART4 sends, and what it types goes to
+         UART4 beside the MCU's bytes.
+       - The SoCs take their UARTs' chardevs from the board when it gives
+         them.
+     - **The MCU's end.** Its CLI's `uart_echo start` opens UART0 at 230400
+       and sends back what it receives. Linux's string came back from the
+       MCU, and its log said "[UartEcho] Transmit complete".
+     - **Linux's end is ttyS1 (OS-05).** Flipper OS's command line has
+       `console=ttyS4`, and the tree's alias for UART4 is `serial4`. But the
+       kernel makes four 8250 ports at boot (`CONFIG_SERIAL_8250_RUNTIME_UARTS=4`),
+       so line 4 does not exist and UART4 takes the first free one, ttyS1.
+       `/proc/consoles` has ttyS0 and tty1 only: the kernel's messages never
+       go to the MCU, and no getty runs there. A test's `printf ... >
+       /dev/ttyS4` made a regular file in /dev.
+     - **Checked.** linux_check starts the MCU's `uart_echo` from its CLI,
+       sends a string on ttyS1, reads it back from the MCU, and finds it in
+       `linux4.sock` too. It passes (547 s), as do its U-Boot mode (399 s),
+       its MaskROM mode (16 s) and the smoke test (49 s), where the MCU's
+       UART0 is on the line with the RK3576 off.

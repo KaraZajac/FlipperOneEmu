@@ -229,7 +229,8 @@ static void rp2350_uarts_realize(RP2350State *s)
         g_autofree char *name = g_strdup_printf("rp2350.uart%d", i);
 
         qdev_prop_set_uint32(dev, "tx-buffer", 1 * MiB);
-        qdev_prop_set_chr(dev, "chardev", serial_hd(i ? 0 : 1));
+        qdev_prop_set_chr(dev, "chardev", i ? serial_hd(0) :
+                          s->uart0_chr ? s->uart0_chr : serial_hd(1));
         qdev_connect_clock_in(dev, "clk", s->sysclk);
         sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
         sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, rp2350_irq(s, 33 + i));
