@@ -68,7 +68,8 @@ Wi-Fi (FlipCTL's Wi-Fi menu with it, the Wi-Fi LED lit once it joins) and BlueZ 
 controller, whose scans find an LE beacon and a sensor near it, the sensor one that
 BlueZ connects to (its GATT services: its battery, its heart rate), and a BR/EDR
 speaker, which BlueZ pairs with (SSP, its services by SDP) and PipeWire plays to (A2DP,
-SBC: what it plays to a file, `run --speaker`). With `--wifi` an access point is near
+SBC: what it plays to a file, `run --speaker`), setting its volume over AVRCP (logged in
+the device's qemu.log). With `--wifi` an access point is near
 it, on this PC's network (through passt): an open network and a WPA2 one on 2.4 GHz
 (802.11n, 144.4 Mbit/s) and on 5 GHz (802.11ax on 80 MHz, 1200.9 Mbit/s) an open one
 and a WPA3 one (SAE, management frames protected), which the Wi-Fi finds and joins,

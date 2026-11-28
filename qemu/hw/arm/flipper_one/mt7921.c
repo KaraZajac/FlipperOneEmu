@@ -38,7 +38,8 @@
  *     pairing it refuses;
  *   - over BR/EDR, a speaker ("FlipperOneEmu Speaker", an inquiry's
  *     extended result), which pairs with SSP (Just Works), answers SDP and
- *     plays: A2DP's sink, SBC, what it receives to the "speaker" file.
+ *     plays: A2DP's sink, SBC, what it receives to the "speaker" file; its
+ *     volume the host's to set (AVRCP's target, absolute volume), logged.
  *   The values not fixed by the protocol (its subversion, the TX powers,
  *   the lists' sizes) are a typical controller's, not read from a device.
  *
@@ -191,6 +192,10 @@ struct MT7921State {
                                            (0: none) */
     uint16_t avdtp_cid[2];              /* ... of AVDTP's: signalling, the
                                            media (0: none) */
+    uint16_t avctp_cid;                 /* ... of AVCTP's (AVRCP's) */
+    uint8_t avrcp_volume;               /* its volume, AVRCP's (0-127) */
+    int avrcp_notify;                   /* the host's VOLUME_CHANGED
+                                           registration: its label, or -1 */
     uint8_t avdtp_conf[16];             /* its stream's configuration, as set */
     int avdtp_conf_len;
     char *speaker_path;                 /* "speaker": where what it plays
@@ -527,6 +532,8 @@ static void controller_reset(MT7921State *s)
     s->br_l2rx_len = 0;
     s->sdp_cid = 0;
     s->avdtp_cid[0] = s->avdtp_cid[1] = 0;
+    s->avctp_cid = 0;
+    s->avrcp_notify = -1;
     timer_del(s->page);
     s->page_op = 0;
     s->le_connecting = false;
@@ -1102,14 +1109,17 @@ static void page_start(MT7921State *s, uint8_t op, const uint8_t *addr)
  * answers a page. Its connection pairs with SSP, Just Works (it has no
  * input or output, and no Secure Connections): a link key the host keeps,
  * which it takes back later as one it remembers. Its L2CAP has the
- * signalling channel, SDP (one record, an A2DP sink's) and AVDTP's two
- * channels: A2DP's sink, SBC (avdtp_sig_rx). What it plays goes to the
- * "speaker" file as raw SBC, which ffmpeg plays (-f sbc); AVRCP and other
- * profiles' channels it refuses.
+ * signalling channel, SDP (two records: an A2DP sink's, an AVRCP target's),
+ * AVDTP's two channels: A2DP's sink, SBC (avdtp_sig_rx), and AVCTP's:
+ * AVRCP's target, an amplifier's, whose volume the host sets (absolute
+ * volume, AVRCP 1.4: avctp_rx). What it plays goes to the "speaker" file as
+ * raw SBC, which ffmpeg plays (-f sbc), the volume it is set to logged
+ * (it is not applied to the file); other profiles' channels it refuses.
  */
 #define SDP_CID         0x0040          /* its end of an SDP channel */
 #define AVDTP_SIG_CID   0x0041          /* ... of AVDTP's signalling */
 #define AVDTP_MEDIA_CID 0x0042          /* ... of its media channel */
+#define AVCTP_CID       0x0043          /* ... of AVCTP's (AVRCP's) */
 #define SPEAKER_NAME    "FlipperOneEmu Speaker"
 
 static const uint8_t speaker_addr[6] = { 0x03, 0x42, 0x4f, 0x46, 0xfe, 0xc0 };
@@ -1170,6 +1180,8 @@ static void br_page_done(void *opaque)
         s->br_l2rx_len = 0;
         s->sdp_cid = 0;
         s->avdtp_cid[0] = s->avdtp_cid[1] = 0;
+        s->avctp_cid = 0;
+        s->avrcp_notify = -1;
         ev_put(s, 0x03, e, 11);
     } else if (s->br_page_op == 0x19) {         /* Remote Name Request
                                                    Complete */
@@ -1186,6 +1198,8 @@ static void br_conn_drop(MT7921State *s)
     s->br_l2rx_len = 0;
     s->sdp_cid = 0;
     s->avdtp_cid[0] = s->avdtp_cid[1] = 0;
+    s->avctp_cid = 0;
+    s->avrcp_notify = -1;
 }
 
 /* an L2CAP PDU to the host on the speaker's connection: one ACL packet */
@@ -1221,7 +1235,7 @@ static void br_sig(MT7921State *s, uint8_t code, uint8_t ident,
 }
 
 /*
- * Its SDP record, an A2DP sink's, as SDP's data elements: its handle; its
+ * Its SDP records, as SDP's data elements. An A2DP sink's: its handle; its
  * class (Audio Sink); its protocols (L2CAP, PSM 0x19; AVDTP 1.3); the
  * public browse group; its profile (A2DP 1.3); its name; its features (a
  * speaker)
@@ -1240,15 +1254,46 @@ static const uint8_t sdp_record[] = {
         'S', 'i', 'n', 'k',
     0x09, 0x03, 0x11, 0x09, 0x00, 0x02,
 };
-/* the UUIDs a search finds it by */
-static const uint16_t sdp_uuids[] = {
-    0x1002, 0x0100, 0x0019, 0x110b, 0x110d, 0x110a,
+/*
+ * ... an AVRCP target's: its handle; its class (A/V Remote Control
+ * Target); its protocols (L2CAP, PSM 0x17; AVCTP 1.4); the public browse
+ * group; its profile (AVRCP 1.6); its name; its features (category 2: an
+ * amplifier, whose volume the host sets)
+ */
+static const uint8_t sdp_record_avrcp[] = {
+    0x35, 0x51,
+    0x09, 0x00, 0x00, 0x0a, 0x00, 0x01, 0x00, 0x02,
+    0x09, 0x00, 0x01, 0x35, 0x03, 0x19, 0x11, 0x0c,
+    0x09, 0x00, 0x04, 0x35, 0x10,
+        0x35, 0x06, 0x19, 0x01, 0x00, 0x09, 0x00, 0x17,
+        0x35, 0x06, 0x19, 0x00, 0x17, 0x09, 0x01, 0x04,
+    0x09, 0x00, 0x05, 0x35, 0x03, 0x19, 0x10, 0x02,
+    0x09, 0x00, 0x09, 0x35, 0x08, 0x35, 0x06, 0x19, 0x11, 0x0e,
+        0x09, 0x01, 0x06,
+    0x09, 0x01, 0x00, 0x25, 0x0c, 'A', 'V', 'R', 'C', 'P', ' ',
+        'T', 'a', 'r', 'g', 'e', 't',
+    0x09, 0x03, 0x11, 0x09, 0x00, 0x02,
 };
 
-/* does an SDP search pattern (a sequence of UUIDs, at @p) find the record? */
-static bool sdp_matches(const uint8_t *p, int n)
+/* the records: their handles, and the UUIDs a search finds each by */
+static const struct {
+    uint32_t handle;
+    const uint8_t *rec;
+    int len;
+    uint16_t uuids[6];
+} sdp_records[] = {
+    { 0x00010001, sdp_record, sizeof(sdp_record),
+      { 0x1002, 0x0100, 0x0019, 0x110b, 0x110d, 0x110a } },
+    { 0x00010002, sdp_record_avrcp, sizeof(sdp_record_avrcp),
+      { 0x1002, 0x0100, 0x0017, 0x110c, 0x110e, 0x110e } },
+};
+
+/* does an SDP search pattern (a sequence of UUIDs, at @p) find record @r?
+ * (each of its UUIDs in the record's) */
+static bool sdp_matches(int r, const uint8_t *p, int n)
 {
     int i = p[0] == 0x36 ? 3 : 2;
+    bool any = false;
 
     if (n < 3 || (p[0] != 0x35 && p[0] != 0x36)) {
         return false;
@@ -1257,22 +1302,25 @@ static bool sdp_matches(const uint8_t *p, int n)
     while (i + 3 <= n) {
         if (p[i] == 0x19) {                     /* a 16-bit UUID */
             uint16_t u = lduw_be_p(p + i + 1);
+            bool in = false;
 
-            for (int k = 0; k < ARRAY_SIZE(sdp_uuids); k++) {
-                if (u == sdp_uuids[k]) {
-                    return true;
-                }
+            for (int k = 0; k < ARRAY_SIZE(sdp_records[r].uuids); k++) {
+                in |= u == sdp_records[r].uuids[k];
             }
+            if (!in) {
+                return false;
+            }
+            any = true;
             i += 3;
-        } else if (p[i] == 0x1a) {              /* a 32-bit one */
-            i += 5;
+        } else if (p[i] == 0x1a) {              /* a 32-bit one: not ours */
+            return false;
         } else if (p[i] == 0x1c) {              /* a 128-bit one */
-            i += 17;
+            return false;
         } else {
             break;
         }
     }
-    return false;
+    return any;
 }
 
 /* the length of the data element at @p (its header too), or 0 */
@@ -1299,53 +1347,62 @@ static int sdp_de_len(const uint8_t *p, int n)
  * whole (no continuation: the record is small) */
 static void sdp_rx(MT7921State *s, const uint8_t *q, int n)
 {
-    uint8_t r[160];
-    int pat, m = 0;
-    bool found;
+    uint8_t r[320];
+    int pat, m = 0, k, nfound = 0, list = 0;
+    bool found[ARRAY_SIZE(sdp_records)];
 
     if (n < 5) {
         return;
     }
     pat = sdp_de_len(q + 5, n - 5);
-    found = pat && sdp_matches(q + 5, pat);
+    for (k = 0; k < ARRAY_SIZE(sdp_records); k++) {
+        found[k] = pat && sdp_matches(k, q + 5, pat);
+        nfound += found[k];
+        list += found[k] ? sdp_records[k].len : 0;
+    }
     r[0] = q[0] + 1;                            /* (its response) */
     r[1] = q[1];                                /* (its transaction) */
     r[2] = q[2];
     switch (q[0]) {
     case 0x02:                                  /* Service Search */
-        stw_be_p(r + 5, found);                 /* (total, current) */
-        stw_be_p(r + 7, found);
+        stw_be_p(r + 5, nfound);                /* (total, current) */
+        stw_be_p(r + 7, nfound);
         m = 9;
-        if (found) {
-            stl_be_p(r + 9, 0x00010001);
-            m += 4;
+        for (k = 0; k < ARRAY_SIZE(sdp_records); k++) {
+            if (found[k]) {
+                stl_be_p(r + m, sdp_records[k].handle);
+                m += 4;
+            }
         }
         r[m++] = 0;                             /* (no continuation) */
         break;
     case 0x04:                                  /* Service Attribute */
-        if (n < 9 || ldl_be_p(q + 5) != 0x00010001) {
+        for (k = 0; n >= 9 && k < ARRAY_SIZE(sdp_records); k++) {
+            if (ldl_be_p(q + 5) == sdp_records[k].handle) {
+                break;
+            }
+        }
+        if (n < 9 || k == ARRAY_SIZE(sdp_records)) {
             r[0] = 0x01;                        /* Error: */
             stw_be_p(r + 5, 0x0002);            /* invalid record handle */
             m = 7;
             break;
         }
-        stw_be_p(r + 5, sizeof(sdp_record));
-        memcpy(r + 7, sdp_record, sizeof(sdp_record));
-        m = 7 + sizeof(sdp_record);
+        stw_be_p(r + 5, sdp_records[k].len);
+        memcpy(r + 7, sdp_records[k].rec, sdp_records[k].len);
+        m = 7 + sdp_records[k].len;
         r[m++] = 0;
         break;
     case 0x06:                                  /* Service Search Attribute */
-        if (found) {
-            stw_be_p(r + 5, 2 + sizeof(sdp_record));
-            r[7] = 0x35;                        /* (the one record's list) */
-            r[8] = sizeof(sdp_record);
-            memcpy(r + 9, sdp_record, sizeof(sdp_record));
-            m = 9 + sizeof(sdp_record);
-        } else {
-            stw_be_p(r + 5, 2);
-            r[7] = 0x35;                        /* (an empty list) */
-            r[8] = 0;
-            m = 9;
+        stw_be_p(r + 5, 2 + list);
+        r[7] = 0x35;                            /* (the records' lists) */
+        r[8] = list;
+        m = 9;
+        for (k = 0; k < ARRAY_SIZE(sdp_records); k++) {
+            if (found[k]) {
+                memcpy(r + m, sdp_records[k].rec, sdp_records[k].len);
+                m += sdp_records[k].len;
+            }
         }
         r[m++] = 0;
         break;
@@ -1388,8 +1445,13 @@ static void br_sig_rx(MT7921State *s, const uint8_t *q, int n)
                                                    then its media */
             s->avdtp_cid[k] = lduw_le_p(q + 2);
             ours = k ? AVDTP_MEDIA_CID : AVDTP_SIG_CID;
+        } else if (lduw_le_p(q) == 0x0017 && !s->avctp_cid) {  /* AVCTP */
+            s->avctp_cid = lduw_le_p(q + 2);
+            s->avrcp_notify = -1;
+            ours = AVCTP_CID;
         } else {
-            stw_le_p(d + 4, lduw_le_p(q) == 0x0001 || lduw_le_p(q) == 0x0019 ?
+            stw_le_p(d + 4, lduw_le_p(q) == 0x0001 || lduw_le_p(q) == 0x0019 ||
+                     lduw_le_p(q) == 0x0017 ?
                      0x0004 : 0x0002);          /* no resources; PSM not
                                                    supported */
             br_sig(s, 0x03, id, d, 8);
@@ -1411,7 +1473,8 @@ static void br_sig_rx(MT7921State *s, const uint8_t *q, int n)
         }
         ours = lduw_le_p(q);                    /* (its channel: ours) */
         stw_le_p(d, ours == AVDTP_SIG_CID ? s->avdtp_cid[0] :
-                    ours == AVDTP_MEDIA_CID ? s->avdtp_cid[1] : s->sdp_cid);
+                    ours == AVDTP_MEDIA_CID ? s->avdtp_cid[1] :
+                    ours == AVCTP_CID ? s->avctp_cid : s->sdp_cid);
         br_sig(s, 0x05, id, d, 6);              /* Configuration Response:
                                                    accepted */
         break;
@@ -1426,6 +1489,9 @@ static void br_sig_rx(MT7921State *s, const uint8_t *q, int n)
             s->avdtp_cid[0] = 0;
         } else if (lduw_le_p(q) == AVDTP_MEDIA_CID) {
             s->avdtp_cid[1] = 0;
+        } else if (lduw_le_p(q) == AVCTP_CID) {
+            s->avctp_cid = 0;
+            s->avrcp_notify = -1;
         }
         br_sig(s, 0x07, id, d, 4);
         break;
@@ -1459,6 +1525,109 @@ static void br_sig_rx(MT7921State *s, const uint8_t *q, int n)
         br_sig(s, 0x01, id, d, 2);
         break;
     }
+}
+
+/*
+ * AVCTP (1.4) and AVRCP (1.6), the speaker's side: a target, category 2
+ * (an amplifier), for AVRCP 1.4's absolute volume. Its UNIT INFO and
+ * SUBUNIT INFO (a panel); PASS THROUGH's keys taken; of the vendor
+ * dependent PDUs (the Bluetooth SIG's), GetCapabilities (its company,
+ * the one event it has: VOLUME_CHANGED), RegisterNotification for that
+ * (INTERIM, its volume) and SetAbsoluteVolume (ACCEPTED: what it is set
+ * to, logged). Any other PDU is rejected (invalid command), another
+ * profile's PID answered as invalid (IPID).
+ */
+static void avctp_send(MT7921State *s, uint8_t hdr, const uint8_t *f, int n)
+{
+    uint8_t r[64];
+
+    r[0] = hdr;
+    stw_be_p(r + 1, 0x110e);
+    memcpy(r + 3, f, n);
+    br_l2cap_send(s, s->avctp_cid, r, 3 + n);
+}
+
+static void avctp_rx(MT7921State *s, const uint8_t *q, int n)
+{
+    uint8_t f[40];
+    uint8_t label, pdu;
+    int m;
+
+    if (n < 3 || (q[0] & 0x0e)) {               /* (a response, fragments) */
+        return;
+    }
+    label = q[0] & 0xf0;
+    if (lduw_be_p(q + 1) != 0x110e) {           /* another profile's: IPID */
+        avctp_send(s, label | 0x03, NULL, 0);
+        return;
+    }
+    q += 3;
+    n -= 3;
+    if (n < 3) {
+        return;
+    }
+    m = MIN(n, (int)sizeof(f));
+    memcpy(f, q, m);
+    switch (q[2]) {
+    case 0x30:                                  /* UNIT INFO */
+    case 0x31:                                  /* SUBUNIT INFO */
+        f[0] = 0x0c;                            /* STABLE */
+        f[1] = 0xff;
+        f[3] = 0x07;
+        f[4] = 0x48;                            /* (a panel, unit 0) */
+        f[5] = f[6] = f[7] = 0xff;
+        m = 8;
+        break;
+    case 0x7c:                                  /* PASS THROUGH: a key */
+        f[0] = 0x09;                            /* ACCEPTED */
+        break;
+    case 0x00:                                  /* VENDOR DEPENDENT */
+        if (n < 10 || q[3] != 0x00 || q[4] != 0x19 || q[5] != 0x58) {
+            f[0] = 0x08;                        /* NOT IMPLEMENTED */
+            break;
+        }
+        pdu = q[6];
+        f[7] = 0x00;                            /* (a single packet) */
+        if (pdu == 0x10 && n >= 11 && q[10] == 0x02) {  /* GetCapabilities:
+                                                           its company */
+            f[0] = 0x0c;
+            f[10] = 0x02;
+            f[11] = 1;
+            f[12] = 0x00;
+            f[13] = 0x19;
+            f[14] = 0x58;
+            m = 15;
+        } else if (pdu == 0x10 && n >= 11 && q[10] == 0x03) {  /* its events */
+            f[0] = 0x0c;
+            f[10] = 0x03;
+            f[11] = 1;
+            f[12] = 0x0d;                       /* VOLUME_CHANGED */
+            m = 13;
+        } else if (pdu == 0x31 && n >= 11 && q[10] == 0x0d) {
+            f[0] = 0x0f;                        /* INTERIM: its volume */
+            f[10] = 0x0d;
+            f[11] = s->avrcp_volume;
+            m = 12;
+            s->avrcp_notify = label >> 4;
+        } else if (pdu == 0x50 && n >= 11) {    /* SetAbsoluteVolume */
+            s->avrcp_volume = q[10] & 0x7f;
+            f[0] = 0x09;                        /* ACCEPTED */
+            f[10] = s->avrcp_volume;
+            m = 11;
+            qemu_log("mt7921: the speaker's volume: %d of 127\n",
+                     s->avrcp_volume);
+        } else {
+            f[0] = 0x0a;                        /* REJECTED: */
+            f[10] = 0x00;                       /* invalid command */
+            m = 11;
+        }
+        stw_be_p(f + 8, m - 10);
+        break;
+    default:
+        f[0] = 0x08;                            /* NOT IMPLEMENTED */
+        break;
+    }
+    avctp_send(s, label | 0x02, f, m);
 }
 
 /*
@@ -1579,6 +1748,8 @@ static void br_acl_rx(MT7921State *s, uint16_t hdr, const uint8_t *q,
         sdp_rx(s, s->br_l2rx + 4, lduw_le_p(s->br_l2rx));
     } else if (cid == AVDTP_SIG_CID && s->avdtp_cid[0]) {
         avdtp_sig_rx(s, s->br_l2rx + 4, lduw_le_p(s->br_l2rx));
+    } else if (cid == AVCTP_CID && s->avctp_cid) {
+        avctp_rx(s, s->br_l2rx + 4, lduw_le_p(s->br_l2rx));
     } else if (cid == AVDTP_MEDIA_CID && s->avdtp_cid[1]) {
         avdtp_media_rx(s, s->br_l2rx + 4, lduw_le_p(s->br_l2rx));
     }
@@ -3751,6 +3922,8 @@ static void mt7921_realize(USBDevice *dev, Error **errp)
     unsigned int a[6];
 
     s->speaker_fd = -1;
+    s->avrcp_volume = 64;                       /* (the speaker's: half) */
+    s->avrcp_notify = -1;
     if (s->speaker_path) {                      /* (what the speaker plays) */
         s->speaker_fd = qemu_create(s->speaker_path,
                                     O_WRONLY | O_TRUNC | O_BINARY, 0644, errp);

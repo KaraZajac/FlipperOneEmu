@@ -176,7 +176,7 @@ screen and its CLI.
       host's network through passt (`run --net`), SSH from the host (`run --ssh PORT`)
       (2026-11-24); the second on a LAN of its own (`run --lan`: a socket that a VM or
       scripts/lan_host.py joins, the link up while one is there) (2026-11-25)
-- ◐ USB: both DWC3 cores (dual-role; QEMU's xHCI for the host role, patch 0011), the
+- ☑ USB: both DWC3 cores (dual-role; QEMU's xHCI for the host role, patch 0011), the
       USBDP PHY, the Type-C port, the charger and battery in Linux; devices plugged in
       from the monitor (2026-11-25); USB0's device role, high speed: a computer on the
       USB-C port (the virtual PC, through USB20_SEL) enumerates Flipper OS's gadget,
@@ -196,7 +196,8 @@ screen and its CLI.
       SSP (Just Works) and answers SDP (an A2DP sink) (2026-11-27, log 114),
       and plays: A2DP (AVDTP 1.3, SBC), PipeWire's Bluetooth sink, what it
       plays to a file (`run --speaker`) (2026-11-27, log 115); its remote
-      control (AVRCP: its volume, which PipeWire now sets itself)
+      control: AVRCP's target, an amplifier's, its volume PipeWire's to set
+      while it plays (absolute volume), logged (2026-11-28, log 127)
 - ◐ Audio: the SAIs (0, 2, 6) and the NAU8822: Flipper OS's sound card plays, out of
       QEMU's audio (`run --audio`) (2026-11-25); the internal and the headset's
       microphones, from a WAV file (`run --mic`) (2026-11-25); this PC's own

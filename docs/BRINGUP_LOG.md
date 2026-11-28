@@ -3783,3 +3783,41 @@ register headers.
          measured nothing about C-states.
      - **So** a boot is bound by these hops' latency, which is the host's,
        and the host's power settings are not the emulator's to change.
+
+127. **The speaker's volume: AVRCP's target, absolute volume.** The speaker
+     (logs 114-115) advertised AVRCP in its inquiry response but had no
+     record for it and refused its channel, so PipeWire scaled the samples
+     itself. A real Bluetooth speaker takes its volume from the host.
+     - **SDP: a second record**, an AVRCP target: AVCTP 1.4 on PSM 0x17,
+       AVRCP 1.6, category 2 (an amplifier). SDP's search now matches a
+       pattern as the specification has it (each of its UUIDs in the
+       record) and answers with each record that matches.
+     - **AVCTP and AVRCP**, the target's side:
+       - UNIT INFO and SUBUNIT INFO (a panel);
+       - PASS THROUGH's keys, taken;
+       - of the vendor-dependent PDUs: GetCapabilities (the Bluetooth
+         SIG's company, and the one event it has, VOLUME_CHANGED);
+         RegisterNotification for it (INTERIM, its volume: half, 64, from
+         the start); SetAbsoluteVolume (ACCEPTED), logged ("the speaker's
+         volume: N of 127").
+
+       Any other PDU is rejected (invalid command), and a frame for another
+       profile is answered as such (IPID). Its volume is not applied to the
+       SBC it writes to its file.
+     - **What Flipper OS makes of it.**
+       - BlueZ lists its A/V Remote Control Target, and the A2DP transport
+         has a `Volume`, the speaker's 64.
+       - Set on the transport (busctl), it reaches the speaker
+         (SetAbsoluteVolume, 32).
+       - PipeWire reads it as the sink's volume after a connection, and
+         while the speaker plays, a volume set on the sink (wpctl, 0.7)
+         goes to the speaker: 89 of 127. While the speaker is idle,
+         PipeWire keeps the volume to itself.
+     - **Checked.**
+       - linux_check: while its tone plays to the speaker, the sink's
+         volume is set to 0.4 from PipeWire. The transport reads back 51,
+         and the speaker logs "51 of 127".
+       - The regression: smoke test 50 s, MaskROM 16 s, U-Boot 285 s, and
+         Linux 431 s after one fix. Its first run printed the console
+         shell's job-control lines into the check's output; the playback
+         now runs in a subshell.

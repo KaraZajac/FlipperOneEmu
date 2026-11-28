@@ -35,7 +35,8 @@ Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
   powered, a scan finds the LE beacon and sensor near it and the BR/EDR
   speaker, nothing else, BlueZ connects to the sensor (its GATT services, its
   battery) and pairs with the speaker (SSP, its SDP), and PipeWire plays a
-  tone to it (A2DP, SBC: `run --speaker`'s file has it); its Wi-Fi is
+  tone to it (A2DP, SBC: `run --speaker`'s file has it) and sets its volume
+  (AVRCP's absolute volume, the speaker's own); its Wi-Fi is
   mt7921u's with its
   firmware running, wlx000ce7464f02, NetworkManager's, and a scan completes
   and finds nothing, or with passt (`run --wifi`) the access point near it,
@@ -693,22 +694,37 @@ def checks(check, d, out, first_boot, off, net):
           "Paired: yes" in speaker[1] and "LegacyPairing: no" in speaker[1] and
           "Audio Sink" in speaker[1], str(speaker))
     # ... and plays to it: A2DP (AVDTP, SBC), PipeWire's Bluetooth sink a
-    # 440 Hz tone for 3 s, the speaker's stream to `run --speaker`'s file
+    # 440 Hz tone for 4 s, the speaker's stream to `run --speaker`'s file;
+    # 2 s in, the sink's volume set to 0.4: PipeWire hands it to the speaker
+    # (AVRCP's absolute volume: BlueZ's SetAbsoluteVolume, 51 of 127), which
+    # the transport reads back and the speaker logs
     play = con.run("A=C0:FE:46:4F:42:03; timeout 40 bluetoothctl connect $A "
                    "2>&1 | grep -c 'Connection successful'; for i in "
                    "$(seq 20); do N=$(pw-cli ls Node 2>/dev/null | grep -o "
                    "'bluez_output[^\"]*' | head -1); [ -n \"$N\" ] && break; "
-                   "sleep 1; done; echo $N; sox -n /tmp/t440.wav synth 3 sine "
-                   "440 vol 0.5; timeout 30 pw-play --target \"$N\" "
-                   "/tmp/t440.wav; echo $?; sleep 2; timeout 20 bluetoothctl "
-                   "disconnect $A >/dev/null 2>&1; timeout 20 bluetoothctl "
-                   "remove $A >/dev/null 2>&1; echo $?", 200) or []
+                   "sleep 1; done; echo $N; I=$(pw-cli ls Node 2>/dev/null | "
+                   "awk '/^[[:space:]]*id /{i=$2} /bluez_output/{print i; "
+                   "exit}' | tr -d ,); sox -n /tmp/t440.wav synth 4 sine 440 "
+                   "vol 0.5; (timeout 30 pw-play --target \"$N\" "
+                   "/tmp/t440.wav & P=$!; sleep 2; wpctl set-volume $I 0.4 "
+                   ">/dev/null 2>&1; wait $P); echo $?; T=$(busctl --system "
+                   "tree org.bluez "
+                   "2>/dev/null | grep -o '/org/bluez/hci0/dev_C0_FE_46_4F_42_"
+                   "03/sep[0-9]*/fd[0-9]*' | head -1); busctl --system "
+                   "get-property org.bluez $T org.bluez.MediaTransport1 Volume; "
+                   "sleep 2; timeout 20 bluetoothctl disconnect $A >/dev/null "
+                   "2>&1; timeout 20 bluetoothctl remove $A >/dev/null 2>&1; "
+                   "echo $?", 200) or []
     tone = sbc_tone(d / "speaker.sbc")
     check("... and plays to it (A2DP, SBC): PipeWire's Bluetooth sink, a "
           "440 Hz tone, the speaker's stream decoded; then removed",
-          play == ["1", "bluez_output.C0_FE_46_4F_42_03.1", "0", "0"] and
-          tone is not None and abs(tone[0] - 440) < 5 and tone[1] > 2.5,
-          f"{play} {tone}")
+          play[:3] == ["1", "bluez_output.C0_FE_46_4F_42_03.1", "0"] and
+          play[-1:] == ["0"] and tone is not None and
+          abs(tone[0] - 440) < 5 and tone[1] > 2.5, f"{play} {tone}")
+    check("... its volume set from PipeWire while it plays: AVRCP's absolute "
+          "volume (51 of 127), the speaker's own",
+          play[3:4] == ["q 51"] and "the speaker's volume: 51 of 127" in
+          text_of(d / "qemu.log"), f"{play[3:4]}")
     # its Wi-Fi: mt7921u on interface 3 of the same chip, its firmware
     # running; NetworkManager's; a scan that finds nothing (no radio)
     wifi = con.run("W=$(ls /sys/class/ieee80211/phy0/device/net/ | head -1); "
