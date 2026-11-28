@@ -243,6 +243,12 @@ screen and its CLI.
       it: SAE (group 19, the PWE by hunting and pecking: sae.c), management
       frames protected (an IGTK; the AP's ADDBA Response protected), AKM 8's
       4-way handshake; a wrong passphrase refused (2026-11-27, log 118)
+- ◐ The M.2 slot (Key B: its USB on the hub's port 4) and a 5G modem in it (`run
+      --modem`): a Quectel RM520N-GL's QMI interface (rm520n.c), qmi_wwan's, on while
+      Linux's tree has the slot's supply up and its power-off and reset lines released;
+      CTL, DMS, UIM (a USIM, ready), NAS (registered: LTE with an NR cell, its signal,
+      its cell) and WDA, which ModemManager registers and FlipCTL's 5G Modem page shows
+      (2026-11-27, log 121); its data (WDS, raw IP, through passt)
 
 ## Not planned
 - The RK3576's mask ROM and DDR training blob (closed), SPL and TF-A's BL31: the machine

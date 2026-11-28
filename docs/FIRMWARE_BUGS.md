@@ -33,6 +33,8 @@ keeps its row, with the build that fixed it.
 | OS-03 | The image's boot entries for the 6.1.172 kernel (one per profile) cannot boot: their `vmlinuz` is the kernel's configuration, and their device-tree directory has no Flipper One tree. U-Boot lists them in its boot menu, and picking one fails ("Bad Linux ARM64 Image magic!") | Flipper OS 2501 | four of nine boot entries do not boot | no |
 | OS-04 | FlipCTL's Settings row "USB-C1 power out" opens nothing: FlipCTL reads Type-C port 0, which on the Flipper One's tree is USB-C2's (the HD3SS3220's), not USB-C1's (the FUSB302's, port 1) | Flipper OS 2501 | a setting that does nothing | no |
 | OS-05 | The kernel's command line has `console=ttyS4` for the line to the MCU, but the kernel registers four 8250 ports at most (`CONFIG_SERIAL_8250_RUNTIME_UARTS=4`), so there is no ttyS4: UART4 (the tree's `serial4`) is ttyS1, and Linux's console never reaches the MCU | Flipper OS 2501 | the MCU's console line has no console | no |
+| OS-06 | FlipCTL's status bar never names a modem's technology (5G, LTE ...): it reads `mmcli --output-keyvalue`'s `modem.generic.access-technologies`, which mmcli prints as an array (`.length`, `.value[1]` ...), so the key is never there and the label stays `--` | Flipper OS 2501 | a status that never shows | no |
+| OS-07 | FlipCTL's 5G Modem page never shows the cell (TAC, cell ID, PLMN, PCI, channel, band, RSRP ...): it runs qmicli through qmi-proxy as the desktop's user, and qmi-proxy takes no client but root | Flipper OS 2501 | a page's details always empty | no |
 
 ### FW-01: the main bus after a NACK, with words still queued
 
@@ -392,3 +394,57 @@ keeps its row, with the build that fixed it.
   `8250.nr_uarts=12` on the command line), so the alias's line exists; or name the
   console `ttyS1`, which holds only while no UART before it in the tree is enabled.
 - **Log:** entry 113.
+
+### OS-06: the status bar's modem technology is always `--`
+
+- **What happens:** with a modem registered (in the emulator, `run --modem`: LTE with an
+  NR cell, ModemManager's access technologies `lte, 5gnr`), the status bar shows the
+  signal's bars but `--` where the technology should be.
+- **Why:** FlipCTL (`crates/flipper-ui/src/status.rs`, `mod modem`, at 6c8c74e) runs
+  `mmcli -m N --output-keyvalue` and takes the line whose key is
+  `modem.generic.access-technologies`. ModemManager 1.24's mmcli prints that list as an
+  array, one line for its length and one for each value:
+
+  ```
+  modem.generic.access-technologies.length    : 2
+  modem.generic.access-technologies.value[1]  : lte
+  modem.generic.access-technologies.value[2]  : 5gnr
+  ```
+
+  No line has the key itself, so `label()` gets nothing and returns `--`.
+  - Its comment has mmcli name the technologies "newest first", and `label()` shows
+    the first it knows. mmcli lists them in the order of ModemManager's flags, oldest
+    first. Read as an array, a non-standalone 5G connection (`lte, 5gnr`) would still
+    show `LTE`.
+- **What of the emulator is in its path:** the modem's registration (QMI's system
+  info). The key's form is mmcli's own. The 5G Modem page reads `mmcli -J`, where the
+  list is a JSON array, and shows `LTE/5GNR` from it.
+- **Seen on:** Flipper OS build 2501 (FlipCTL 6c8c74e, ModemManager 1.24.0), in the
+  emulator. Not tried on a real Flipper One, where the same mmcli should print the
+  same.
+- **A fix, for FlipCTL:** read `.value[1]`, `.value[2]` ... (or `mmcli -J`), and pick the
+  newest technology it knows, not the first.
+- **Log:** entry 121.
+
+### OS-07: the 5G Modem page's cell is always `--`
+
+- **What happens:** Network > 5G Modem shows the operator, the technologies and the
+  signal (from ModemManager), but `--` for TAC, Cell ID, PLMN, PCI and the rest below.
+- **Why:** FlipCTL (`crates/flipper-ui/src/sysinfo.rs`, `modem()`, at 6c8c74e) gets
+  them by running `qmicli -d DEV --device-open-proxy --nas-get-serving-system`,
+  `--nas-get-cell-location-info` and `--nas-get-signal-strength`. FlipCTL runs as the
+  desktop's user (`user`). qmi-proxy, which ModemManager has the device through, takes
+  no client but root: as `user`, qmicli fails ("Cannot read from istream: connection
+  broken", "couldn't open the QmiDevice: ... Broken pipe"). The device itself
+  (`/dev/cdc-wdm0`, `crw------- root root`) is root's too.
+  - As root, the same command prints what the page wants (`3GPP cell ID: '1714947'`,
+    `LTE tracking area code: '10783'`, `MCC: '1'`, `MNC: '1'`).
+- **What of the emulator is in its path:** the modem's answers to those three QMI
+  messages, which root's qmicli shows are there.
+- **Seen on:** Flipper OS build 2501 (FlipCTL 6c8c74e, libqmi 1.36.0), in the emulator.
+  Not tried on a real Flipper One.
+- **A fix, for Flipper OS or FlipCTL:** let FlipCTL's user reach the modem (qmi-proxy
+  run for that group, or a udev rule and qmicli without the proxy while ModemManager
+  is not using it), or take the cell from ModemManager (`mmcli --location-get`, with
+  location's 3GPP source enabled, and `--signal-get`).
+- **Log:** entry 121.

@@ -118,6 +118,11 @@ struct FlipperOneState {
     int headset;                /* in the jack: FO_HEADSET_... */
     DeviceState *codec;         /* ... its mic on the NAU8822's RMICP */
     struct USBDevice *mt7921;   /* Wi-Fi and Bluetooth, on USB1 */
+    bool modem;                 /* a 5G modem in the M.2 slot (property) */
+    struct USBDevice *rm520n;   /* ... it, on the hub's port 4 */
+    bool m2_vcc, m2_power, m2_unreset;  /* the slot's 3.3 V, and its
+                                   FULL_CARD_POWER_OFF# and RESET#
+                                   released (high) */
     bool hdmi;                  /* a monitor in the HDMI port */
     bool hdmi_at_start;         /* ... from the start (property) */
     int ambient_dc;             /* around the device: 0.1 °C */
@@ -696,6 +701,24 @@ static void flipper_one_rk_gpio(void *opaque, int bank, int pin, bool level)
                                                    PMU_EN (rfkill's) */
         if (s->mt7921) {
             mt7921_power(s->mt7921, level);
+        }
+        return;
+    }
+    if ((bank == 0 && pin == 9) || (bank == 2 && pin == 11) ||
+        (bank == 3 && pin == 16)) {
+        /* GPIO0_B1, GPIO2_B3, GPIO3_C0: the M.2 slot's 3.3 V (vcc3v3_m2),
+         * its FULL_CARD_POWER_OFF# and RESET# (Linux's tree has the supply
+         * on, and holds the two released, high) */
+        if (bank == 0) {
+            s->m2_vcc = level;
+        } else if (bank == 2) {
+            s->m2_power = level;
+        } else {
+            s->m2_unreset = level;
+        }
+        if (s->rm520n) {
+            rm520n_power(s->rm520n,
+                         s->m2_vcc && s->m2_power && s->m2_unreset);
         }
         return;
     }
@@ -1680,9 +1703,24 @@ static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
         qemu_configure_nic_device(bt, false, "mt7921");
         qdev_realize_and_unref(bt, usb1, &error_fatal);
         s->mt7921 = USB_DEVICE(bt);
+        /* a 5G modem in the M.2 slot (Key B), its USB on the hub's port 4,
+         * its data a -nic of model rm520n, if any */
+        if (s->modem) {
+            DeviceState *m = qdev_new(TYPE_RM520N);
+
+            qdev_prop_set_string(m, "port", "1.4");
+            qemu_configure_nic_device(m, false, "rm520n");
+            qdev_realize_and_unref(m, usb1, &error_fatal);
+            s->rm520n = USB_DEVICE(m);
+        }
         rk3576_gpio_in(&s->rk3576, 1, 29, false);
         rk3576_gpio_in(&s->rk3576, 1, 22, true);
         rk3576_gpio_in(&s->rk3576, 1, 23, true);
+        /* the M.2 slot's supply, power and reset, pulled down: the card off
+         * until Linux drives them */
+        rk3576_gpio_in(&s->rk3576, 0, 9, false);
+        rk3576_gpio_in(&s->rk3576, 2, 11, false);
+        rk3576_gpio_in(&s->rk3576, 3, 16, false);
     }
     s->rk3576.cru_reset = flipper_one_rk_cru_reset;
     s->rk3576.cru_reset_opaque = s;
@@ -1984,6 +2022,16 @@ static void flipper_one_set_hdmi(Object *obj, bool value, Error **errp)
     FLIPPER_ONE(obj)->hdmi_at_start = value;
 }
 
+static bool flipper_one_get_modem(Object *obj, Error **errp)
+{
+    return FLIPPER_ONE(obj)->modem;
+}
+
+static void flipper_one_set_modem(Object *obj, bool value, Error **errp)
+{
+    FLIPPER_ONE(obj)->modem = value;
+}
+
 static bool flipper_one_get_deep_idle(Object *obj, Error **errp)
 {
     return FLIPPER_ONE(obj)->deep_idle;
@@ -2092,6 +2140,12 @@ static void flipper_one_class_init(ObjectClass *oc, const void *data)
         "tree, in a direct boot or SPL's Falcon mode: the device's tree as "
         "it is. QEMU's PSCI runs them as a WFI; without them Linux idles "
         "with WFI, and spares itself their way in and out");
+    object_class_property_add_bool(oc, "modem", flipper_one_get_modem,
+                                   flipper_one_set_modem);
+    object_class_property_set_description(oc, "modem",
+        "A 5G modem in the M.2 slot: a Quectel RM520N-GL, its QMI interface "
+        "on the board's hub (port 4), on while Linux holds the slot's power "
+        "and reset lines released; its data through a -nic of model rm520n");
     object_class_property_add_bool(oc, "hdmi", flipper_one_get_hdmi,
                                    flipper_one_set_hdmi);
     object_class_property_set_description(oc, "hdmi",

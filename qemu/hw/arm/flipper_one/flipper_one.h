@@ -263,6 +263,11 @@ void iqs7211e_touch(struct I2CSlave *dev, bool touching, int x, int y, int p);
 struct USBDevice;
 void mt7921_power(struct USBDevice *dev, bool on);
 
+/* the 5G modem in the M.2 slot (rm520n.c): on the hub's port 4 while the
+ * slot's power and reset lines are released */
+#define TYPE_RM520N "rm520n"
+void rm520n_power(struct USBDevice *dev, bool on);
+
 /* ------------------------------------------- the battery, as it is */
 
 /*

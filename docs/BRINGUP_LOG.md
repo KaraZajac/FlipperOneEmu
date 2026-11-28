@@ -3459,3 +3459,63 @@ register headers.
        1.36 with qmicli, libmbim 1.32, and the cdc_mbim, qmi_wwan, cdc_ncm
        and option modules. The M.2 slot's USB is on the board's hub
        (RESEARCH.md).
+
+121. **A 5G modem in the M.2 slot: ModemManager registers it.** Log 120 found
+     FlipCTL's 5G Modem page and status bar written for a QMI modem on USB.
+     - **The slot.** M.2 Key B, its USB on the board's hub, port 4
+       (RESEARCH.md), which the hub's model now has wired. Linux's tree has
+       three lines for it:
+       - `vcc3v3_m2`, the slot's 3.3 V: a fixed regulator on GPIO0_B1,
+         always on;
+       - FULL_CARD_POWER_OFF# (GPIO2_B3) and RESET# (GPIO3_C0), gpio-hogs
+         that hold them released (active low, driven high);
+       - and W_DISABLE1# and 2#, rfkill-gpio's "M.2 WWAN" and "M.2 GNSS".
+
+       The board pulls the first three down: the card off until Linux drives
+       them. The RK3576's GPIO model had every input pulled up, so the lines
+       going high was no change, and the board never heard of it.
+     - **The modem.** `run --modem` (the machine's `modem=on`) puts a Quectel
+       RM520N-GL (2c7c:0801) there, on while all three lines are high. Its
+       one interface is vendor-specific (ff/ff/ff), as the RM520N's QMI one
+       is, and qmi_wwan takes it: cdc-wdm0, and wwan0, which udev renames
+       wwu1u4.
+       - QMI comes as CDC-WDM carries it: a QMUX frame by
+         SEND_ENCAPSULATED_COMMAND. Each answer is queued, announced on the
+         interrupt endpoint, and taken by GET_ENCAPSULATED_RESPONSE.
+       - **CTL:** its services' versions, client IDs, sync.
+       - **DMS:** Quectel, RM520N-GL, its revision (RM520NGLAAR03A07M4G),
+         its IMEI and capabilities (UMTS, LTE, 5G NR), its operating mode,
+         and the SIM's ICCID, IMSI and PIN status.
+       - **UIM:** a USIM ready, its PIN disabled; EF_ICCID, EF_IMSI, EF_SPN
+         and EF_AD (MCC 001, MNC 01: the ITU's test network).
+       - **NAS:** registered at home while online. Serving System; System
+         Info with LTE and EN-DC (an NR cell beside it); Signal Info for LTE
+         and NR; Signal Strength; Cell Location Info (band 3, EARFCN 1850,
+         PCI 101); Home Network; and PLMN Name, FlipperOneEmu.
+       - **WDA:** the data format.
+       - Anything else gets "invalid QMI command", as a modem's firmware
+         answers, and is logged.
+     - **What Flipper OS makes of it.**
+       - ModemManager's quectel plugin, over QMI: enabled, registered home,
+         operator FlipperOneEmu (00101), access technologies `lte, 5gnr`,
+         signal 78 %, packet service attached.
+       - NetworkManager lists cdc-wdm0 as a gsm device.
+       - FlipCTL's status bar shows the signal's bars, but `--` for the
+         technology (OS-06).
+       - Its Network > 5G Modem page shows "FlipperOneEmu", "LTE/5GNR" and
+         "Signal 78% (4/5)", but `--` for TAC, Cell ID, PLMN and PCI
+         (OS-07): it runs qmicli through qmi-proxy as the desktop's user,
+         which the proxy refuses. As root the same qmicli shows them.
+     - **Not yet:** its data (WDS's network interface, raw IP through
+       passt).
+     - **Checked.**
+       - linux_check now boots with `--modem`. It checks the modem on the
+         hub's port 4, qmi_wwan's, registered (FlipperOneEmu, `lte,5gnr`,
+         78 %), and NetworkManager's gsm device.
+       - Its first run failed that check once: mmcli found no ModemManager
+         on the bus, for a minute. That is not understood. In a boot left
+         six minutes, ModemManager stays up (no restart), registered, and
+         the check now prints the unit's state and journal if it happens
+         again.
+       - The second run passed (436 s), as did its U-Boot mode (261 s), its
+         MaskROM mode (16 s) and the smoke test (51 s).

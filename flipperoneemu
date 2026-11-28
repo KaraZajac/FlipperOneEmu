@@ -181,6 +181,10 @@ def cmd_run(args):
             die("--wifi-psk: 8 to 63 characters, no comma")
         cmd += ["-nic", "passt,model=mt7921",
                 "-global", f"mt7921.ap-psk={args.wifi_psk}"]
+    if getattr(args, "modem", False):
+        # a 5G modem in the M.2 slot (a Quectel RM520N-GL's QMI interface, on
+        # the board's hub): ModemManager's
+        cmd += ["-machine", "modem=on"]
     if getattr(args, "lan", False):
         # a cable in the second port, to a socket: a LAN that another VM, or
         # scripts/lan_host.py, joins at the other end (no one there: no link)
@@ -709,6 +713,10 @@ def main():
                                 "open one, FlipperOneEmu-5G, and a WPA3 one, "
                                 "FlipperOneEmu-WPA3; its Wi-Fi finds and joins "
                                 "them")
+            p.add_argument("--modem", action="store_true",
+                           help="a 5G modem in the M.2 slot: a Quectel "
+                                "RM520N-GL (QMI) on the board's USB hub, "
+                                "which ModemManager and FlipCTL take")
             p.add_argument("--wifi-psk", metavar="PASSPHRASE",
                            default="flipperone",
                            help="the WPA2 and WPA3 networks' passphrase (8-63 "

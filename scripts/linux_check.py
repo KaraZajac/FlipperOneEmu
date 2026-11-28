@@ -40,7 +40,8 @@ Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
   answers, its data at 802.11n's MCS 15), then its WPA2 one (the 4-way
   handshake), its 5 GHz one (802.11ax: 80 MHz, HE-MCS 11 both ways) and
   its WPA3 one (SAE, management frames protected; a wrong passphrase
-  refused);
+  refused); the 5G modem in its M.2 slot (`run --modem`) on the hub's port
+  4, qmi_wwan's, ModemManager registering it on its network;
   with its rfkill blocked the chip leaves USB, unblocked it comes back cold;
   each Ethernet port
   has its RTL8211F, and with passt installed port 1 is on this PC's network
@@ -758,6 +759,28 @@ def checks(check, d, out, first_boot, off, net):
         check("... where a wrong passphrase fails (SAE's confirm refused)",
               len(wrong) == 2 and wrong[0] != "0" and wrong[1].isdigit() and
               int(wrong[1]) >= 1, str(wrong))
+    # the 5G modem in the M.2 slot (run --modem): a Quectel RM520N-GL's QMI
+    # interface on the hub's port 4, on once Linux's tree has the slot's
+    # supply up and its power-off and reset lines released; qmi_wwan's;
+    # ModemManager registers it (LTE with an NR cell), NetworkManager lists it
+    modem = con.run(
+        "lsusb -d 2c7c:0801 | grep -c RM520N; basename $(readlink "
+        "/sys/class/usbmisc/cdc-wdm0/device); for i in $(seq 60); do "
+        "mmcli -m 0 2>/dev/null | grep -q 'state: .*registered' && break; "
+        "sleep 1; done; mmcli -L >/dev/null 2>&1 || { systemctl show "
+        "ModemManager -p ActiveState -p SubState -p Result -p NRestarts | "
+        "xargs; sudo journalctl -b -u ModemManager --no-pager | tail -8; }; "
+        "mmcli -m 0 -J | python3 -c \"import json, sys; "
+        "m = json.load(sys.stdin)['modem']; g = m['generic']; "
+        "print(g['state'], m['3gpp']['registration-state'], "
+        "m['3gpp']['operator-name'], ','.join(g['access-technologies']), "
+        "g['signal-quality']['value'])\"; nmcli -t -f DEVICE,TYPE device "
+        "| grep -c '^cdc-wdm0:gsm$'", 150) or []
+    check("the 5G modem in the M.2 slot (run --modem): a Quectel RM520N-GL "
+          "on the hub's port 4, qmi_wwan's, that ModemManager registers "
+          "(FlipperOneEmu, LTE with 5G NR, 78 %) and NetworkManager lists",
+          modem == ["1", "1-1.4:1.0", "registered home FlipperOneEmu lte,5gnr "
+                    "78", "1"], str(modem))
     cycle = con.run("sudo rfkill block wlan; sleep 3; "
                     "lsusb -d 0e8d:7961 | wc -l; ls /sys/class/bluetooth | "
                     "wc -l; sudo rfkill unblock wlan; "
@@ -1578,7 +1601,7 @@ def main():
            "--linux"] + (["--uboot", "--usbip", str(port)] if args.uboot else
                          mask + ["--net"] if args.mcu_update else mask + [
            "--audio", str(d / "audio.wav"), "--mic", str(d / "mic.wav"),
-           "--speaker", str(d / "speaker.sbc"),
+           "--speaker", str(d / "speaker.sbc"), "--modem",
            "--nvme", "--hdmi", "--lan"] +
            (["--net", "--wifi"] if net else []))
     if args.maskrom:                    # (no card: the launcher's blank one)

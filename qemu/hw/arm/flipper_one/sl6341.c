@@ -9,10 +9,11 @@
  * The device tree has them as hub@1 and hub@2 (Linux's onboard hub driver
  * powers them), with the same four ports: 1 the MT7921, on SuperSpeed;
  * 2 the USB-A connector; 3 USB-C2, its SuperSpeed lanes through the
- * HD3SS3220; 4 not connected. A port wired to nothing takes no device
- * here: QEMU's ports are "1.2" and "1.3" on the USB 2.0 hub (USB-A,
- * USB-C2; a device plugged in with no port given goes to the first free,
- * USB-A's), and "2.1" (the MT7921), "2.2" and "2.3" on the SuperSpeed hub.
+ * HD3SS3220; 4 the M.2 slot (Key B: a modem's USB). A port wired to
+ * nothing takes no device here: QEMU's ports are "1.2", "1.3" and "1.4"
+ * on the USB 2.0 hub (USB-A, USB-C2, the M.2 slot; a device plugged in
+ * with no port given goes to the first free, USB-A's), and "2.1" (the
+ * MT7921), "2.2", "2.3" and "2.4" on the SuperSpeed hub.
  *
  * Its ports do what Linux's hub driver asks of them: powered, a
  * connection, a reset that enables, suspend; on the SuperSpeed hub its
@@ -34,7 +35,7 @@
 #include "flipper_one.h"
 
 #define NPORTS          4
-#define PORT_WIRED(n)   ((n) == 1 || (n) == 2 || (n) == 3)
+#define PORT_WIRED(n)   ((n) >= 1 && (n) <= 4)
 
 /* class requests: bmRequestType << 8 | bRequest */
 #define ClearHubFeature  (0x2000 | USB_REQ_CLEAR_FEATURE)

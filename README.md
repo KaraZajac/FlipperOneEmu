@@ -69,19 +69,21 @@ SBC: what it plays to a file, `run --speaker`). With `--wifi` an access point is
 it, on this PC's network (through passt): an open network and a WPA2 one on 2.4 GHz
 (802.11n, 144.4 Mbit/s) and on 5 GHz (802.11ax on 80 MHz, 1200.9 Mbit/s) an open one
 and a WPA3 one (SAE, management frames protected), which the Wi-Fi finds and joins,
-from FlipCTL too; nothing else is ever found (no radio). It also boots as the device
-does, through U-Boot from the card (its boot menu on the Flipper's screen; with KASLR,
-and so KPTI, about two minutes here), and Flipper OS installs onto it as the docs do
-it: in its MaskROM, rockusb's download-boot of the installer's loader
-(`scripts/fo_rockusb.py`, over USB/IP); the installer provisions the UFS, installs
-Flipper OS and updates the MCU's firmware over I2C, and the boot ROM then boots the
-UFS. Flipper OS updates the MCU's firmware as on the device, and Rockusb's Loader mode
-(a Rockchip loader's usbplug, or U-Boot's rockusb) reads and writes the UFS or the card
-from the PC. The RK3576's DisplayPort (over the USB-C port) and more come next.
-[RESEARCH.md](RESEARCH.md) is the survey this starts from: the device, what Flipper
-Devices publishes, and what emulating it takes. [PLAN.md](PLAN.md) is the order of
-work; the MCU comes first. [docs/BRINGUP_LOG.md](docs/BRINGUP_LOG.md) is what was found
-on the way.
+from FlipCTL too; nothing else is ever found (no radio). With `--modem` a 5G modem is
+in its M.2 slot, a Quectel RM520N-GL's QMI interface on the board's hub: ModemManager
+registers it on a network of its own (LTE with an NR cell), and FlipCTL's 5G Modem page
+shows it. It also boots as the device does, through U-Boot from the card (its boot menu
+on the Flipper's screen; with KASLR, and so KPTI, about two minutes here), and Flipper
+OS installs onto it as the docs do it: in its MaskROM, rockusb's download-boot of the
+installer's loader (`scripts/fo_rockusb.py`, over USB/IP); the installer provisions the
+UFS, installs Flipper OS and updates the MCU's firmware over I2C, and the boot ROM then
+boots the UFS. Flipper OS updates the MCU's firmware as on the device, and Rockusb's
+Loader mode (a Rockchip loader's usbplug, or U-Boot's rockusb) reads and writes the UFS
+or the card from the PC. The RK3576's DisplayPort (over the USB-C port) and more come
+next. [RESEARCH.md](RESEARCH.md) is the survey this starts from: the device, what
+Flipper Devices publishes, and what emulating it takes. [PLAN.md](PLAN.md) is the order
+of work; the MCU comes first. [docs/BRINGUP_LOG.md](docs/BRINGUP_LOG.md) is what was
+found on the way.
 
 ## Trying it
 
@@ -151,6 +153,9 @@ scripts/fetch_os.py                  # a Flipper OS build: its kernel, initrd an
                                      # sound needs pipewire-devel when QEMU is configured)
 ./flipperoneemu run --linux --mic FILE.wav ...  # ... and what its internal microphone
                                      # hears: a WAV file (16-bit PCM), looped
+./flipperoneemu run --linux --modem ...  # ... and a 5G modem in the M.2 slot (a Quectel
+                                     # RM520N-GL, QMI, on the hub's port 4), which
+                                     # ModemManager registers on its network
 ./flipperoneemu run --linux --speaker FILE.sbc ...  # ... what the Bluetooth speaker
                                      # near it plays (A2DP), raw SBC: ffmpeg -f sbc -i
                                      # FILE.sbc out.wav
