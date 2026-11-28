@@ -1,9 +1,10 @@
 /*
  * The RP2350's TIMER0 and TIMER1
  *
- * A 64-bit count of microseconds: the virtual clock's, from the TICKS
- * block's 1 MHz tick (which the model does not wait for: the count runs
- * from reset).  TIMEHW then TIMELW set it; reading TIMELR latches the high
+ * A 64-bit count of microseconds: the virtual clock's, while the TICKS
+ * block's tick for it runs (1 µs, as the boot ROM and the SDK start it:
+ * from a reset the count stands still until then).  TIMEHW then TIMELW
+ * set it; reading TIMELR latches the high
  * word for TIMEHR; TIMERAWH and TIMERAWL read it as it is.  Four alarms
  * fire when the count's low word reaches them: INTR, the interrupt
  * (TIMER0_IRQ_0..3 = 0..3, TIMER1's = 4..7), ARMED cleared.  PAUSE stops
@@ -22,9 +23,15 @@
 #define T_INTE      (0x40 / 4)
 #define T_INTF      (0x44 / 4)
 
+/* the count standing still: PAUSE, or its tick not running */
+static bool timer_stopped(RP2Timer *t)
+{
+    return (t->regs.regs[T_PAUSE] & 1) || !t->ticking;
+}
+
 static uint64_t timer_now(RP2Timer *t)
 {
-    if (t->regs.regs[T_PAUSE] & 1) {
+    if (timer_stopped(t)) {
         return t->paused_at;
     }
     return qemu_clock_get_us(QEMU_CLOCK_VIRTUAL) + t->offset;
@@ -45,7 +52,7 @@ static void timer_arm(RP2Timer *t, int n)
 {
     uint32_t delta;
 
-    if (!(t->regs.regs[T_ARMED] & (1u << n)) || (t->regs.regs[T_PAUSE] & 1)) {
+    if (!(t->regs.regs[T_ARMED] & (1u << n)) || timer_stopped(t)) {
         timer_del(t->alarm[n]);
         return;
     }
@@ -140,6 +147,20 @@ static void timer_write(RP2Block *b, hwaddr reg, uint32_t value)
     }
 }
 
+/* TICKS: the timer's tick (TIMER@i's) started or stopped */
+void rp2350_timer_tick(RP2350State *s, int i, bool running)
+{
+    RP2Timer *t = &s->timer[i];
+    uint64_t now = timer_now(t);
+
+    t->ticking = running;
+    t->paused_at = now;
+    t->offset = now - qemu_clock_get_us(QEMU_CLOCK_VIRTUAL);
+    for (int n = 0; n < 4; n++) {
+        timer_arm(t, n);
+    }
+}
+
 void rp2350_timer_realize(RP2350State *s)
 {
     static QEMUTimerCB *const fire[4] = {
@@ -169,6 +190,7 @@ void rp2350_timer_reset(RP2350State *s)
         t->offset = -qemu_clock_get_us(QEMU_CLOCK_VIRTUAL);
         t->write_hi = t->latched_hi = 0;
         t->paused_at = 0;
+        t->ticking = false;                         /* (TICKS: stopped) */
         for (int n = 0; n < 4; n++) {
             timer_del(t->alarm[n]);
         }

@@ -3707,3 +3707,34 @@ register headers.
          U-Boot 285 s. No failures.
        - By hand: a restart keeps the provisioned layout and what was
          written to it, and a device from before comes up as it was.
+
+125. **TICKS: the timers and the watchdog on their ticks.** PLAN's M1 had
+     "TICKS to come". The RP2350's tick generators were an unimplemented
+     block, and TIMER0, TIMER1 and the watchdog counted from the reset.
+     - **What starts them.** From the boot ROM's source
+       (third_party/pico-bootrom-rp2350):
+       - a reboot through the watchdog starts the watchdog's tick if it
+         does not run ("we probably got here from a cold boot"), at 12
+         cycles of clk_ref (the ROSC, about 12 MHz);
+       - BOOTSEL's USB boot starts TIMER0's and the watchdog's at 24 cycles
+         (clk_ref at 24 MHz from the USB PLL).
+
+       And from the MCU firmware, with unimp logged across a reset: the SDK
+       starts all six at its start, CYCLES 12 (the XOSC's 12 MHz) and then
+       ENABLE, in tick_gen_num_t's order. Nothing reads RUNNING.
+     - **The model.**
+       - TICKS' six generators: CTRL (ENABLE, and RUNNING read only),
+         CYCLES (kept) and COUNT. They are stopped from a reset.
+       - A generator ticks every 1 µs while it runs. Every path sets
+         CYCLES for that (clk_ref's MHz), so CYCLES is not acted on.
+       - TIMER0 and TIMER1 count only while their tick runs, stopped as
+         PAUSE stops them.
+       - The watchdog runs down only while it is enabled and its tick
+         runs, and its TIME holds while it does not. It used to read back
+         LOAD's value then.
+     - **Checked.**
+       - On a running MCU: all six generators read ENABLE and RUNNING with
+         CYCLES 12, and TIMER0 counts from its tick's start.
+       - The regression: smoke test 52 s, MaskROM 16 s, Linux 421 s,
+         U-Boot 289 s. And linux_check's MCU update (203 s), whose boots go
+         through the boot ROM's watchdog reboot. No failures.

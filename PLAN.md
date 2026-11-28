@@ -24,9 +24,11 @@ screen and its CLI.
 - ☑ The firmware's settings (its key-value store in the flash's NVM partition):
       written through the boot ROM's program and erase, kept across restarts
       (2026-11-24)
-- ◐ Clocks, resets, PSM, XOSC, PLLs, ROSC, TRNG, SHA-256, POWMAN, watchdog, SIO
+- ☑ Clocks, resets, PSM, XOSC, PLLs, ROSC, TRNG, SHA-256, POWMAN, watchdog, SIO
       (GPIO, FIFOs, spinlocks, doorbells), BOOTRAM's locks, TIMER0/1, the ADC, DWT's
-      cycle counter answer; PADS keeps what is written; TICKS to come
+      cycle counter answer; PADS keeps what is written; TICKS: its generators, stopped
+      from a reset, and TIMER0/1 and the watchdog counting only while theirs runs
+      (2026-11-28, log 125)
 - ◐ PIO (three blocks, the RP2350's instructions; the firmware's log UART decoded
       from GPIO41 to devices/NAME/mcu.log, 2026-11-23); the pins and IO_BANK0's
       interrupts; DMA (16 channels) and HSTX (2026-11-23); PWM's duty (2026-11-23)

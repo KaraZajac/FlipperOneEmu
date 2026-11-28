@@ -128,9 +128,16 @@ typedef struct RP2QMI {
 } RP2QMI;
 
 /* TIMER0 and TIMER1: microseconds of the virtual clock, four alarms each */
+/* the TICKS block's tick generators (the SDK's tick_gen_num_t) */
+enum {
+    RP2_TICK_PROC0, RP2_TICK_PROC1, RP2_TICK_TIMER0, RP2_TICK_TIMER1,
+    RP2_TICK_WATCHDOG, RP2_TICK_RISCV, RP2_TICKS
+};
+
 typedef struct RP2Timer {
     RP2Block regs;                      /* first: its functions get this */
     int index;
+    bool ticking;                       /* its tick (TICKS') runs */
     QEMUTimer *alarm[4];
     int64_t offset;                     /* TIME = virtual clock's us + this */
     uint32_t write_hi, latched_hi;
@@ -336,6 +343,7 @@ struct RP2350State {
 
     /* rp2350_sys.c */
     RP2Block resets, rosc, trng, sha256, powman, watchdog, otp, accessctrl;
+    RP2Block ticks;
     RP2Block xosc, pll_sys, pll_usb, clocks, psm, bootram_regs, adc;
     uint16_t adc_mv[9];         /* AIN0-7 (GPIO40-47), the temperature sensor */
     RP2SHA sha;
@@ -394,6 +402,8 @@ struct RP2350State {
     uint32_t watchdog_reason;   /* ... TIMER (1) or FORCE (2) */
     QEMUTimer *watchdog_timer;  /* its count running down */
     int64_t watchdog_due;       /* ... to 0 then (ns) */
+    uint32_t watchdog_left;     /* ... where it stands while it does not */
+    bool tick_running[RP2_TICKS];   /* TICKS' generators that run */
     bool core1_held;            /* PSM FRCE_OFF.PROC1: core 1 held off */
     bool core1_cycled;          /* ... since it last started: restart it */
     bool core1_work;            /* its power work queued, not yet run */
@@ -429,6 +439,7 @@ void rp2350_sio_reset(RP2350State *s);
 /* rp2350_timer.c */
 void rp2350_timer_realize(RP2350State *s);
 void rp2350_timer_reset(RP2350State *s);
+void rp2350_timer_tick(RP2350State *s, int i, bool running);
 
 /* rp2350_gpio.c */
 void rp2350_gpio_realize(RP2350State *s);

@@ -11,8 +11,15 @@
  *             the SDK swap them themselves)
  *   POWMAN    registers that want the password 0x5afe in their top half
  *             (scratch and boot registers aside); a power-on reset
+ *   TICKS     its six tick generators (the cores', TIMER0's and 1's, the
+ *             watchdog's, RISC-V's), stopped from a reset; ENABLE starts
+ *             one, RUNNING says so. Each ticks every 1 µs, what the boot
+ *             ROM and the SDK set CYCLES for (clk_ref's MHz): CYCLES is
+ *             kept, not acted on. The timers and the watchdog count only
+ *             while their tick runs
  *   WATCHDOG  LOAD a count of 1 µs ticks (the SDK's and the boot ROM's
- *             tick); with ENABLE it runs down (CTRL's TIME), and at 0 the
+ *             tick); with ENABLE, its tick running, it runs down (CTRL's
+ *             TIME; held while it does not), and at 0 the
  *             chip resets, as TRIGGER resets it at once: keeping the
  *             watchdog's scratch registers and POWMAN's boot ones (where
  *             the boot ROM and the firmware leave the next start's kind: a
@@ -419,26 +426,97 @@ static void watchdog_expired(void *opaque)
     watchdog_reset_chip(opaque, 0x1);               /* REASON: TIMER */
 }
 
+/* its count runs down: enabled, and its tick (TICKS') running */
+static bool watchdog_running(RP2350State *s)
+{
+    return (s->watchdog.regs[0] & WD_ENABLE) &&
+           s->tick_running[RP2_TICK_WATCHDOG];
+}
+
 /* what is left of the count, in its 1 µs ticks */
 static uint32_t watchdog_time(RP2350State *s)
 {
     int64_t left = s->watchdog_due - qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 
-    if (!(s->watchdog.regs[0] & WD_ENABLE)) {
-        return s->watchdog.regs[1] & WD_TIME;       /* (as loaded) */
+    if (!watchdog_running(s)) {
+        return s->watchdog_left;                    /* (held) */
     }
     return MAX(left, 0) / 1000;
 }
 
 static void watchdog_run(RP2350State *s, uint32_t count)
 {
+    s->watchdog_left = count;
     s->watchdog_due = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                       (int64_t)count * 1000;
-    if (s->watchdog.regs[0] & WD_ENABLE) {
+    if (watchdog_running(s)) {
         timer_mod(s->watchdog_timer, s->watchdog_due);
     } else {
         timer_del(s->watchdog_timer);
     }
+}
+
+/* ---------------------------------------------------------------- TICKS */
+
+#define TICK_ENABLE         0x1u
+#define TICK_RUNNING        0x2u
+
+static uint32_t ticks_read(RP2Block *b, hwaddr reg)
+{
+    int g = reg / 12;
+
+    if (g >= RP2_TICKS) {
+        return 0;
+    }
+    switch (reg % 12) {
+    case 0x0:                                       /* CTRL */
+        return (b->regs[reg / 4] & TICK_ENABLE) |
+               (b->soc->tick_running[g] ? TICK_RUNNING : 0);
+    case 0x4:                                       /* CYCLES */
+        return b->regs[reg / 4];
+    default:                                        /* COUNT */
+        return 0;
+    }
+}
+
+/* a generator started or stopped: what counts on its tick, told */
+static void ticks_set(RP2350State *s, int g, bool running)
+{
+    uint32_t left;
+
+    if (s->tick_running[g] == running) {
+        return;
+    }
+    if (g == RP2_TICK_TIMER0 || g == RP2_TICK_TIMER1) {
+        s->tick_running[g] = running;
+        rp2350_timer_tick(s, g - RP2_TICK_TIMER0, running);
+    } else if (g == RP2_TICK_WATCHDOG) {
+        left = watchdog_time(s);
+        s->tick_running[g] = running;
+        watchdog_run(s, left);
+    } else {
+        s->tick_running[g] = running;
+    }
+}
+
+static void ticks_write(RP2Block *b, hwaddr reg, uint32_t value)
+{
+    int g = reg / 12;
+
+    if (g >= RP2_TICKS) {
+        return;
+    }
+    switch (reg % 12) {
+    case 0x0:                                       /* CTRL: ENABLE */
+        b->regs[reg / 4] = value & TICK_ENABLE;
+        break;
+    case 0x4:                                       /* CYCLES */
+        b->regs[reg / 4] = value & 0x1ff;
+        break;
+    default:                                        /* COUNT: read only */
+        return;
+    }
+    ticks_set(b->soc, g, (b->regs[g * 3] & TICK_ENABLE) && b->regs[g * 3 + 1]);
 }
 
 static uint32_t watchdog_read(RP2Block *b, hwaddr reg)
@@ -689,6 +767,8 @@ void rp2350_sys_realize(RP2350State *s)
                    powman_read, powman_write);
     rp2_block_init(s, &s->watchdog, "rp2350.watchdog", 0x400d8000,
                    watchdog_read, watchdog_write);
+    rp2_block_init(s, &s->ticks, "rp2350.ticks", 0x40108000,
+                   ticks_read, ticks_write);
     s->watchdog_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, watchdog_expired, s);
     rp2_block_init(s, &s->xosc, "rp2350.xosc", 0x40048000, xosc_read, NULL);
     rp2_block_init(s, &s->pll_sys, "rp2350.pll_sys", 0x40050000,
@@ -753,6 +833,9 @@ void rp2350_sys_reset(RP2350State *s)
     }
     s->powman.regs[0x38 / 4] = 0xf;                 /* STATE */
     timer_del(s->watchdog_timer);                   /* stopped: ENABLE 0 */
+    s->watchdog_left = 0;
+    memset(s->ticks.regs, 0, sizeof(s->ticks.regs));    /* TICKS: stopped */
+    memset(s->tick_running, 0, sizeof(s->tick_running));
     memset(s->xosc.regs, 0, sizeof(s->xosc.regs));
     s->xosc.regs[0xc / 4] = 0xc4;                   /* STARTUP */
     for (int i = 0; i < 2; i++) {
