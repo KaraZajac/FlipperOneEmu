@@ -3412,3 +3412,50 @@ register headers.
          same code).
        - PLAN's milestones M1, M2 and M5 still said not started. They are
          now marked as under way.
+
+120. **Where a boot's time goes now; FlipCTL's networks and its modem
+     page.** No change to the emulator. These are notes for what comes next.
+     - **systemd-analyze, a direct boot on patches 0028 and 0029.** 19.6 s in
+       the kernel and 53.2 s in userspace: 72.8 s (log 111: 28 + 69 = 97 s).
+       multi-user.target is reached 48.7 s into userspace.
+       - The critical chain waits 11.2 s for the root partition's device
+         unit (26.6 s in log 111), the udev event for mmcblk0p3 behind the
+         others of the coldplug.
+       - Then sysinit, the USB gadget (5.1 s), NetworkManager (3.4 s), and
+         smbd (17.0 s). Of smbd's 17 s, 15.5 pass before smbd's own main():
+         its ExecStartPre's, `update-apparmor-samba-profile` (a shell script
+         that reads smb.conf) and `nft`. That is Flipper OS's own work,
+         slow under TCG.
+       - The profile (log 119) has the vCPUs halted 95 % of the boot, so
+         the boot is now bound by latency, not by the vCPUs.
+     - **The SD card.** 4 KiB direct reads take 2.4-2.7 ms each, and 1 MiB
+       ones run at 57 MB/s. The model completes a command and its data at
+       once, and log 111 found an mmc request at 0.25 ms. The rest is the
+       guest's own path: the system call, the block layer, dw_mmc's three
+       commands (CMD23, CMD18, the automatic CMD12) with their interrupts,
+       each with MMIO under the BQL, and dd's wake-up. Log 119's throwaway
+       patch, a TLB kept across ASID changes, improved this by only 8 %.
+     - **FlipCTL and the four networks.** Network > Wi-Fi > See visible
+       networks lists all four: FlipperOneEmu-WPA2 (WPA2), FlipperOneEmu,
+       FlipperOneEmu-WPA3 (WPA3), FlipperOneEmu-5G. Picking FlipperOneEmu-5G
+       joins it ("Connected to: FlipperOneEmu-5G", the Wi-Fi icon in the
+       status bar). Passphrases are left to nmcli, as in log 103: the panel
+       link has no text, and FlipCTL's keyboard is a grid.
+     - **FlipCTL's modem.** Network > 5G Modem shows "Modem: Not available".
+       FlipCTL (6c8c74e, `crates/flipper-ui/src/sysinfo.rs` and `status.rs`)
+       asks:
+       - NetworkManager for a device of type gsm, cdma or wwan;
+       - ModemManager (`mmcli -m N -J`, then the bearer's `-b`) for the
+         model, operator, state, access technologies, signal quality, and
+         the bearer's IPv4 address and interface;
+       - and the modem itself through qmicli (`--device-open-proxy`): the
+         serving system, the cell location and the signal strength (cell
+         ID, TAC, MCC, MNC, PCI, EARFCN, band, RSRP, RSRQ, SINR).
+
+       The status bar shows a modem's technology (5G, LTE, ...) and bars,
+       from any interface whose uevent says DEVTYPE=wwan and from mmcli.
+       So the modem it is written for is a QMI one, a Quectel on USB as its
+       comments have it. Flipper OS has ModemManager 1.24 (enabled), libqmi
+       1.36 with qmicli, libmbim 1.32, and the cdc_mbim, qmi_wwan, cdc_ncm
+       and option modules. The M.2 slot's USB is on the board's hub
+       (RESEARCH.md).
