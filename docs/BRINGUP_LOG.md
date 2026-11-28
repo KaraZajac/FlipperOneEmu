@@ -3592,3 +3592,39 @@ register headers.
          MSISDN's NotProvisioned, low-power mode ending the call, and an
          IPv6 call refused.
 
+123. **A restart without the 10 s wait, and the M.2 card's power seen.**
+     - **The card's power.** The board now logs the M.2 slot's card going on
+       and off (qemu.log: "the M.2 slot's card is on", "off"). A reboot takes
+       it, as on the device:
+       - at the RK3576's reset its GPIO banks go back to inputs;
+       - the board's pulls drop the slot's three lines (log 121), and the
+         card is off;
+       - it is on again when Linux's tree drives them (4 s after the
+         restart), and ModemManager registers it again.
+
+       `info usb` could not show this. QEMU lists a device on its port
+       whether it is attached or not.
+     - **A restart took 10 s.** While watching that, QEMU's monitor did not
+       answer for 10 s at the RK3576's restart.
+       - eu-stack sampled the main thread every 0.1 s. All of the time was
+         in fo_rk_power_bh's address_space_write, inside
+         tb_invalidate_phys_page_range__locked.
+       - The cause: a direct boot's restart writes the kernel, its initrd
+         and its tree back as they were loaded (~100 MB). The RAM under
+         them still had the last run's translated code, so every page's
+         blocks were invalidated one by one, with every vCPU paused and
+         the main loop held.
+     - **Now** the boot CPU writes them as safe work
+       (async_safe_run_on_cpu): before it runs again, with every other CPU
+       out of its loop.
+       - It flushes every translated block first
+         (tb_flush__exclusive_or_serial(), which needs that exclusive
+         context), then writes the images, with nothing left to invalidate.
+       - The board's "the M.2 slot's card is off" and "the RK3576 starts
+         again" are now 1 ms apart, where they were 9.7 s.
+     - **Checked.**
+       - The regression: smoke test 45 s, MaskROM 16 s, Linux 411 s (from
+         467 s; it restarts the RK3576 twice, by a reboot and by its power
+         off and on), U-Boot 279 s. No failures.
+       - By hand: after a reboot the modem is on USB again, and
+         ModemManager registers it.

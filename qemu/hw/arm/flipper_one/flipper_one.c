@@ -37,6 +37,8 @@
 #include "hw/arm/boot.h"
 #include "system/address-spaces.h"
 #include "system/cpus.h"
+#include "system/tcg.h"
+#include "exec/tb-flush.h"
 #include "qemu/main-loop.h"
 #include "qemu/log.h"
 #include "target/arm/internals.h"
@@ -123,6 +125,7 @@ struct FlipperOneState {
     bool m2_vcc, m2_power, m2_unreset;  /* the slot's 3.3 V, and its
                                    FULL_CARD_POWER_OFF# and RESET#
                                    released (high) */
+    bool m2_on;                 /* ... all three: the card on */
     bool hdmi;                  /* a monitor in the HDMI port */
     bool hdmi_at_start;         /* ... from the start (property) */
     int ambient_dc;             /* around the device: 0.1 °C */
@@ -709,6 +712,8 @@ static void flipper_one_rk_gpio(void *opaque, int bank, int pin, bool level)
         /* GPIO0_B1, GPIO2_B3, GPIO3_C0: the M.2 slot's 3.3 V (vcc3v3_m2),
          * its FULL_CARD_POWER_OFF# and RESET# (Linux's tree has the supply
          * on, and holds the two released, high) */
+        bool on;
+
         if (bank == 0) {
             s->m2_vcc = level;
         } else if (bank == 2) {
@@ -716,9 +721,13 @@ static void flipper_one_rk_gpio(void *opaque, int bank, int pin, bool level)
         } else {
             s->m2_unreset = level;
         }
-        if (s->rm520n) {
-            rm520n_power(s->rm520n,
-                         s->m2_vcc && s->m2_power && s->m2_unreset);
+        on = s->m2_vcc && s->m2_power && s->m2_unreset;
+        if (s->rm520n && on != s->m2_on) {
+            s->m2_on = on;
+            qemu_log("flipper-one: %" PRId64 " ms: the M.2 slot's card is "
+                     "%s\n", qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL),
+                     on ? "on" : "off");
+            rm520n_power(s->rm520n, on);
         }
         return;
     }
@@ -818,6 +827,20 @@ static void fo_rk_restore_images(FlipperOneState *s)
                             MEMTXATTRS_UNSPECIFIED, s->rk_images[i].data,
                             s->rk_images[i].len);
     }
+}
+
+/*
+ * ... at a restart: the boot CPU's safe work (every other CPU out of its
+ * loop), which it does before it runs again. Every translated block goes
+ * first: they are the last run's, and the images written over them (~100
+ * MB) invalidated them page by page, 10 s with the main loop held.
+ */
+static void fo_rk_restore_work(CPUState *cpu, run_on_cpu_data data)
+{
+    if (tcg_enabled()) {
+        tb_flush__exclusive_or_serial();
+    }
+    fo_rk_restore_images(data.host_ptr);
 }
 
 /*
@@ -1410,7 +1433,8 @@ static void fo_rk_power_bh(void *opaque)
         if (!s->rk_nimages) {
             fo_rk_save_images(s);               /* the first start: as loaded */
         } else {
-            fo_rk_restore_images(s);
+            async_safe_run_on_cpu(CPU(&s->rk3576.cpu[0]), fo_rk_restore_work,
+                                  RUN_ON_CPU_HOST_PTR(s));
         }
         /* (the DDR blob's words, which the device has at any boot and
          * Linux's DFI reads; the blob's ATAG is U-Boot's alone) */

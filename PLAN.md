@@ -228,7 +228,10 @@ screen and its CLI.
       a process starts 2.5 to 4 times quicker, linux_check 447 s from 481-520,
       its U-Boot mode 293 s from 403-435) (2026-11-27, log 117); exceptions and
       interrupts taken without the BQL when it guards nothing (patch 0029: a
-      boot's busy vCPU time halved) (2026-11-27, log 119)
+      boot's busy vCPU time halved) (2026-11-27, log 119); a restart's kernel and
+      initrd written back by the boot CPU, its translations flushed first: the
+      RK3576 restarts at once, where the main loop was held 10 s (2026-11-28, log
+      123)
 - ☑ Wi-Fi (the MT7921 on USB, its Bluetooth there too, log 99): mt7921u on its
       interface 3, its real firmware through the emulated MCU, the interface
       NetworkManager's and FlipCTL's, scans that complete (2026-11-26, log 101); an
@@ -251,7 +254,8 @@ screen and its CLI.
       (2026-11-27, log 121); its data: WDS's call, raw IP on the bulk endpoints, through
       passt (the modem's addresses passt's, by DHCP), IPv4 (an IPv6 call refused), its
       rates and counters; a call dropped when the modem goes off line (2026-11-27,
-      log 122); one card in the slot: `--nvme` or `--modem` (log 122). Not modelled:
+      log 122); one card in the slot: `--nvme` or `--modem` (log 122); a reset takes
+      the card's power, and Linux's tree gives it back (2026-11-28, log 123). Not modelled:
       its SMS, voice and GNSS, and its serial ports (AT, NMEA)
 
 ## Not planned
