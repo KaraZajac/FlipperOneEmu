@@ -14,7 +14,8 @@ does the same for the Flipper Zero.
 with FlipCTL on the screen, and Flipper OS installs onto it as the docs do it.** The
 RP2350's own boot ROM verifies the flash's partition table and starts the MCU firmware
 on the emulated chip, whose OTP each device has as a chip leaves the factory (its own
-random ID: the firmware's hardware UID). The firmware starts FreeRTOS, logs through its PIO UART, draws on
+random ID: the firmware's hardware UID), and which the firmware programs (`otp
+whitelabel`: BOOTSEL's USB then as the label has it). The firmware starts FreeRTOS, logs through its PIO UART, draws on
 the screen in the window (over HSTX and DMA to the emulated JD9853 panel), lights the
 backlight, answers on its CLI, and takes the window's buttons (through the control
 bus's I2C expander) and touchpad (through its IQS7211E): its desktop, menus and

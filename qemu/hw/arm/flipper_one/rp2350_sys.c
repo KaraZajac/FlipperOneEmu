@@ -220,7 +220,15 @@ static void accessctrl_write(RP2Block *b, hwaddr reg, uint32_t value)
  * get_sys_info and BOOTSEL's USB serial number give) and RANDID0-7
  * random, NUM_GPIOS (48: the QFN80's), INFO_CRC0/1 over them, each with
  * its ECC (the boot ROM's Hamming code). Its oscillators' calibrations
- * are left blank; programming (SBPI) is not modelled.
+ * are left blank.
+ *
+ * Programming, as the boot ROM's otp_access does it (raw, its ECC its
+ * own), through SBPI: an instruction (SBPI_INSTR, EXEC) writes or reads a
+ * byte of a target's registers (the DAP's: the row in CQ0-1, its 24 bits
+ * in DR0, DR1 and ECC; the PMC's: CTRL_STATUS, never busy) or gives the PMC
+ * a command; START programs the row, its bits ORed in (a fuse is only
+ * ever set), and the image keeps it. Each instruction is done at once
+ * (SBPI_STATUS: INSTR_DONE, cleared by writing 1s).
  */
 #define OTP_ROWS            4096
 
@@ -344,10 +352,60 @@ bool rp2350_otp_realize(RP2350State *s, Error **errp)
     memory_region_add_subregion(&s->bus, 0x40130000, &s->otp_data);
     return true;
 }
+#define OTP_TARGET_DAP      0x02
+#define OTP_TARGET_PMC      0x3a
+#define SBPI_INSTR_DONE     0x10
+#define SBPI_RDATA_VLD      0x01
+
+static void otp_row_save(RP2350State *s, int row)
+{
+    uint8_t b[4];
+
+    stl_le_p(b, s->otp_rows[row]);
+    if (s->otp_fd >= 0 && pwrite(s->otp_fd, b, 4, row * 4) != 4) {
+        qemu_log_mask(LOG_GUEST_ERROR, "rp2350: OTP row 0x%03x not kept\n",
+                      row);
+    }
+}
+
+/* an SBPI instruction, done at once */
+static void otp_sbpi(RP2350State *s, uint32_t instr)
+{
+    uint8_t target = instr >> 16, cmd = instr >> 8, wdata = instr;
+    bool wr = instr & (1u << 29), payload = instr & (1u << 28);
+    uint8_t *regs = target == OTP_TARGET_DAP ? s->otp_dap :
+                    target == OTP_TARGET_PMC ? s->otp_pmc : NULL;
+    uint32_t *status = &s->otp.regs[0x124 / 4];
+
+    if (regs && payload && wr && (cmd & 0xc0) == 0xc0) {   /* a write */
+        regs[cmd & 0x3f] = wdata;
+    } else if (regs && payload && !wr && (cmd & 0xc0) == 0x80) {
+        s->otp.regs[0x114 / 4] =                            /* a read */
+            target == OTP_TARGET_PMC && (cmd & 0x3f) == 0x3f ? 0
+                                                    : regs[cmd & 0x3f];
+        *status |= SBPI_RDATA_VLD;
+    } else if (target == OTP_TARGET_PMC && !payload && cmd == 0x01) {
+        uint32_t row = s->otp_dap[0x3c] | (s->otp_dap[0x3d] & 0x0f) << 8;
+        uint32_t data = s->otp_dap[0x00] | s->otp_dap[0x01] << 8 |
+                        s->otp_dap[0x20] << 16;
+
+        s->otp_rows[row] |= data;                   /* START: programmed */
+        otp_row_save(s, row);
+    }
+    *status |= SBPI_INSTR_DONE;
+}
+
 static void otp_write(RP2Block *b, hwaddr reg, uint32_t value)
 {
     if (reg < 0x100) {
         b->regs[reg / 4] |= value & 0xf;            /* SW_LOCK0 ... 63 */
+    } else if (reg == 0x100) {                      /* SBPI_INSTR */
+        b->regs[reg / 4] = value & ~(1u << 30);
+        if (value & (1u << 30)) {                   /* EXEC */
+            otp_sbpi(b->soc, value);
+        }
+    } else if (reg == 0x124) {                      /* SBPI_STATUS: W1C */
+        b->regs[reg / 4] &= ~value;
     } else if (reg < RP2_REGS * 4) {
         b->regs[reg / 4] = value;
     }
@@ -939,6 +997,8 @@ void rp2350_sys_reset(RP2350State *s)
     s->rosc.regs[0] = 0xaa0;                        /* CTRL */
     memset(s->trng.regs, 0, sizeof(s->trng.regs));
     memset(s->otp.regs, 0, sizeof(s->otp.regs));
+    memset(s->otp_dap, 0, sizeof(s->otp_dap));
+    memset(s->otp_pmc, 0, sizeof(s->otp_pmc));
     accessctrl_reset_values(&s->accessctrl);
     memset(s->sha256.regs, 0, sizeof(s->sha256.regs));
     s->sha256.regs[0] = SHA_CSR_KEEP;               /* BSWAP, DMA_SIZE 2 */

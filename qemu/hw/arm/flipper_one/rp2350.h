@@ -414,6 +414,8 @@ struct RP2350State {
     int otp_fd;                 /* ... written back (-1: not) */
     uint32_t otp_rows[4096];    /* ... each 24 bits: data, ECC, BRP */
     MemoryRegion otp_data;      /* ... its four read windows */
+    uint8_t otp_dap[64];        /* ... its SBPI targets' registers: the */
+    uint8_t otp_pmc[64];        /*     DAP's, the PMC's (programming) */
 };
 
 /* rp2350_coproc.c */

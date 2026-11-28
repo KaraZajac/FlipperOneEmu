@@ -3860,3 +3860,40 @@ register headers.
          device its own).
        - The regression: smoke test 47 s (52 s with the new check),
          MaskROM 16 s, Linux 426 s, U-Boot 274 s. No failures.
+
+129. **The MCU's OTP programmed: the firmware's white label.** Log 128's
+     OTP could be read but not written. The boot ROM programs it for any
+     writer (its otp_access: the firmware, PICOBOOT's OTP writes) through
+     SBPI, the OTP controller's serial bus to its macro
+     (third_party/pico-bootrom-rp2350, varm_otp.c):
+     1. an instruction (SBPI_INSTR, EXEC) writes a byte to a target's
+        register, reads one back (SBPI_RDATA), or gives a command;
+     2. the DAP's registers take the row (CQ0-1) and its 24 bits (DR0, DR1,
+        ECC: the boot ROM computes the ECC itself and programs raw);
+     3. the PMC's START programs the row, and its CTRL_STATUS is polled
+        until it is no longer busy.
+     - **The model.** Each instruction is done at once (SBPI_STATUS's
+       INSTR_DONE, cleared by writing 1s). The DAP's and the PMC's
+       registers keep their bytes, and the PMC is never busy. START ORs the
+       DAP's 24 bits into the row, since a fuse is only ever set, and the
+       device's image keeps it.
+     - **The firmware's white label.** `otp whitelabel 1 2 3` (FIRMWARE_ID,
+       BODY_ID, CONNECTIVITY_ID): "Programming USB white label in OTP with
+       F1B2C3 … written to OTP successfully". It programmed:
+       - USB_BOOT_FLAGS (rows 0x59-0x5b, three copies);
+       - USB_WHITE_LABEL_ADDR (0x5c: 0x400);
+       - the label itself at rows 0x400-0x459: VID 0x37c1, PID 0xf102 and
+         its strings.
+
+       Started with BOOTSEL held, the boot ROM's USB boot is now
+       `37c1:f102 "Flipper FZCO" "Flipper One MCU Bootloader" (serial
+       F4AA2432B926A5BE)`, the serial being the chip's CHIPID. It was
+       Raspberry Pi's 2e8a:000f with a serial of zeros. A Flipper One is
+       presumably labelled so at the factory, but its IDs are not known
+       here, so a new device's OTP is left unlabelled.
+     - **Checked.**
+       - The smoke test now has its device's firmware write the label, then
+         starts it with BOOTSEL held and expects the boot ROM's USB as the
+         label has it, its serial the chip's ID.
+       - The regression: smoke test 50 s, MaskROM 17 s, Linux 429 s,
+         U-Boot 281 s. No failures.

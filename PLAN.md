@@ -17,13 +17,14 @@ screen and its CLI.
       IDAU; PSM powers core 1, which waits in its ROM (2026-11-23)
 - ☑ The coprocessors: GPIO (CP0), double-precision (CP4 and CP5, the DCP, 2026-11-24),
       redundancy (CP7, the boot ROM's). QEMU patch 0001 lets a machine have them
-- ◐ Boot: the boot ROM verifies the partition table and starts the firmware from
+- ☑ Boot: the boot ROM verifies the partition table and starts the firmware from
       partition A (QMI direct mode, the flash, ATRANS, SHA-256); try-before-you-buy:
       the flash-update boot of partition B and the image's buy, as an update from
       Flipper OS makes them (2026-11-25); the OTP as the chip leaves the factory,
       the device's own: its IDs (CHIPID: the MCU's hardware UID, BOOTSEL's USB
       serial), random per device, its GPIOs, their CRC (2026-11-28, log 128); its
-      programming (SBPI) not yet
+      programming through SBPI, as the boot ROM's otp_access does it: the firmware's
+      `otp whitelabel`, BOOTSEL's USB as the white label has it (2026-11-28, log 129)
 - ☑ The firmware's settings (its key-value store in the flash's NVM partition):
       written through the boot ROM's program and erase, kept across restarts
       (2026-11-24)

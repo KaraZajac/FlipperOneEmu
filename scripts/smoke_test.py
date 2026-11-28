@@ -37,8 +37,10 @@ Boots a throwaway device, devices/smoke-PID (removed at the end unless
 - the charger's power switch: `power reboot` (its system power reset: the
   board off a moment, and the firmware starting again), `power ship` (off
   until a charger is plugged in);
-- the same device again with BOOTSEL held: the RP2350's boot ROM's own USB
-  boot, which the computer enumerates.
+- the firmware programs a white label in the OTP (`otp whitelabel`); then
+  the same device again with BOOTSEL held: the RP2350's boot ROM's own USB
+  boot, which the computer enumerates as the label has it, its serial the
+  chip's ID.
 
 Exit status 0 = pass. Screenshots go to --out.
 """
@@ -750,7 +752,17 @@ def log_checks(check, d):
 
 
 def bootsel(check, name, d):
-    """the same device again, BOOTSEL held: the boot ROM's own USB boot"""
+    """the white label the firmware writes to the OTP (`otp whitelabel`, the
+    boot ROM's otp_access over SBPI); then the same device again, BOOTSEL
+    held: the boot ROM's own USB boot, as the label has it, its serial the
+    chip's ID (its OTP's CHIPID)"""
+    text = cli(d, "otp whitelabel 1 2 3", r"OTP successfully|[Ff]ail|[Ee]rror",
+               20)
+    check("otp whitelabel: the firmware programs the white label in the OTP",
+          "written to OTP successfully" in text, text[-200:])
+    otp = (d / "mcu-otp.bin").read_bytes()
+    chipid = "".join(f"{struct.unpack_from('<I', otp, 4 * r)[0] & 0xffff:04X}"
+                     for r in (3, 2, 1, 0))
     subprocess.run([sys.executable, str(LAUNCHER), "stop", "-n", name],
                    stdout=subprocess.DEVNULL)
     if subprocess.run([sys.executable, str(LAUNCHER), "run", "-n", name,
@@ -768,10 +780,13 @@ def bootsel(check, name, d):
     if not check("BOOTSEL: the panel link is there", panel is not None):
         return
     panel.s.sendall(b"usb 2\n")
-    found = until(lambda: "flipper-one: USB: 2e8a:000f" in
+    want = ('flipper-one: USB: 37c1:f102 "Flipper FZCO" "Flipper One MCU '
+            f'Bootloader" (serial {chipid})')
+    found = until(lambda: want in
                   (d / "qemu.out").read_text(errors="replace"), 15)
-    check("BOOTSEL: a computer enumerates the boot ROM's USB boot (2E8A:000F)",
-          found)
+    check("BOOTSEL: a computer enumerates the boot ROM's USB boot as the "
+          "white label has it (37C1:F102, \"Flipper One MCU Bootloader\"), "
+          "its serial the chip's ID", found)
 
 
 if __name__ == "__main__":
