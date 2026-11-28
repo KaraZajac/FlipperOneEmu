@@ -16,9 +16,12 @@ Boots a throwaway device with Flipper OS on its RK3576, devices/linux-PID
   Flipper's screen (its frames over the display SPI, through the MCU), and
   a key pressed on the panel reaches it, through the MCU and the I2C link;
 - Linux reads the main board's chips over the bus it shares with the MCU:
-  the INA219 on VSYS, the five INA4230s; its root is the microSD card, and
-  its UFS is provisioned as the Flipper OS installer's scheme has it (its
-  LUs, boot LUs A and B, bBootLunEn); an NVMe in the M.2 slot (PCIe0, `run --nvme`)
+  the INA219 on VSYS, the five INA4230s; its root is the microSD card; its
+  UFS comes as its maker ships it (`run --ufs-factory`: one LU, its boot
+  feature off) and is provisioned as the Flipper OS installer does it
+  (scripts/ufs_provision.py: the installer's configuration descriptor
+  written, fDeviceInit, a rescan), to its scheme (its LUs, boot LUs A and B,
+  bBootLunEn); an NVMe in the M.2 slot (PCIe0, `run --nvme`)
   is a 256 GB one, and 4 MiB written to it read back the same; a monitor
   in the HDMI port (`run --hdmi`) lights at 1280x720 with the console on
   it, the Flipper's screen still fb0, its picture not black, a 10-bit
@@ -422,6 +425,27 @@ def sbc_tone(path):
     return round(crossings / 2 / (len(seg) / 48000), 1), round(len(seg) / 48000, 2)
 
 
+def ufs_scheme():
+    """The configuration descriptor the Flipper OS installer writes to this
+    UFS (its config/flipperos-ufs.toml for the device's geometry; its own run
+    on a factory-fresh one wrote these bytes, log 124): LU 0 the rest, boot
+    LUs A and B and recovery in enhanced1, data reliability and thin
+    provisioning for all, its boot feature on, a shared WriteBooster buffer"""
+    c = bytearray(0xe6)
+    c[0], c[1], c[3], c[5], c[6] = 0xe6, 0x01, 1, 1, 0x7f
+    c[0x10], c[0x11] = 1, 1
+    struct.pack_into(">I", c, 0x12, 0x400)
+    for i, (boot, mem, units) in enumerate([(0, 0, 15218), (1, 3, 4),
+                                            (2, 3, 4), (0, 3, 32)]):
+        p = 0x16 + i * 0x1a
+        c[p], c[p + 1], c[p + 3] = 1, boot, mem
+        struct.pack_into(">I", c, p + 4, units)
+        c[p + 8], c[p + 9], c[p + 0xa] = 1, 0x0c, 2
+    for i in range(4, 8):
+        c[0x16 + i * 0x1a + 9] = 0x0c
+    return c.hex()
+
+
 def guest_uptime(con):
     """the guest's uptime, the host's time halfway through reading it, and
     how long the reading took; or None"""
@@ -493,19 +517,41 @@ def checks(check, d, out, first_boot, off, net):
     root = con.run("findmnt -no SOURCE /")
     check("its root is the microSD card",
           bool(root) and "mmcblk0" in root[-1], str(root))
-    # its UFS, provisioned as the Flipper OS installer's scheme has it: by
-    # LUN (the disks' names follow the SCSI scan), its 512-byte sectors and
-    # its unit descriptor's boot LU; and the device's bBootLunEn (A)
-    ufs = con.run("for d in /sys/block/sd*; do echo $(basename "
-                  "$(readlink -f $d/device) | cut -d: -f4) $(cat $d/size) "
-                  "$(cat $d/device/unit_descriptor/boot_lun_id); done | sort; "
-                  "cat /sys/bus/platform/devices/2a2d0000.ufshc/attributes/"
-                  "boot_lun_enabled")
+    # its UFS: by LUN (the disks' names follow the SCSI scan), its 512-byte
+    # sectors and its unit descriptor's boot LU; the device's bBootEnable,
+    # and its bBootLunEn. As its maker ships it (run --ufs-factory): one LU,
+    # all of it, its boot feature off
+    hc = "/sys/bus/platform/devices/2a2d0000.ufshc"
+    lus = ("for d in /sys/block/sd*; do echo $(basename "
+           "$(readlink -f $d/device) | cut -d: -f4) $(cat $d/size) "
+           "$(cat $d/device/unit_descriptor/boot_lun_id); done | sort; "
+           f"cat {hc}/device_descriptor/boot_enable "
+           f"{hc}/attributes/boot_lun_enabled")
+    ufs = con.run(lus)
+    check("its UFS as its maker ships it (run --ufs-factory): one LU, all of "
+          "it (64.0 GB), its boot feature off",
+          [u.strip() for u in ufs or []] == ["0 124993536 0x00", "0x00",
+                                             "0x00000000"], str(ufs))
+    # ... provisioned as the Flipper OS installer does it (its "Reprovision
+    # UFS", scripts/ufs_provision.py sent in): the configuration descriptor
+    # written, bBootLunEn A, fDeviceInit (the device applies it), the data
+    # LUs rescanned
+    blob = base64.b64encode((ROOT / "scripts" / "ufs_provision.py")
+                            .read_bytes()).decode()
+    con.run("rm -f /tmp/ufs.b64", 30)
+    for k in range(0, len(blob), 2000):
+        con.run(f"echo {blob[k:k + 2000]} >> /tmp/ufs.b64", 30)
+    prov = con.run("base64 -d /tmp/ufs.b64 > /tmp/ufs_provision.py && sudo "
+                   f"python3 /tmp/ufs_provision.py provision {ufs_scheme()} 1 "
+                   "&& sudo udevadm settle", 120)
+    ufs = con.run(lus)
     want = ["0 124665856 0x00", "1 32768 0x01", "2 32768 0x02",
-            "3 262144 0x00", "0x00000001"]
-    check("its UFS provisioned as the installer's scheme: LU 0 (63.8 GB), "
-          "boot LUs A and B (16 MiB), recovery (128 MiB); boot LU A enabled",
-          [u.strip() for u in ufs or []] == want, str(ufs))
+            "3 262144 0x00", "0x01", "0x00000001"]
+    check("... provisioned as the installer does it, to its scheme: LU 0 "
+          "(63.8 GB), boot LUs A and B (16 MiB), recovery (128 MiB); its "
+          "boot feature on, boot LU A enabled",
+          prov == ["provisioned"] and
+          [u.strip() for u in ufs or []] == want, f"{prov} {ufs}")
     # PCIe0: the NVMe in the M.2 slot (`run --nvme`), behind the root port,
     # a 256 GB disk; 4 MiB through it and back (its DMA, its MSI-X)
     dev = "/sys/bus/pci/devices/0000:01:00.0"
@@ -1628,7 +1674,7 @@ def main():
                          if args.uboot else
                          mask + ["--net"] if args.mcu_update else mask + [
            "--audio", str(d / "audio.wav"), "--mic", str(d / "mic.wav"),
-           "--speaker", str(d / "speaker.sbc"),
+           "--speaker", str(d / "speaker.sbc"), "--ufs-factory",
            "--nvme", "--hdmi", "--lan"] +
            (["--net", "--wifi"] if net else []))
     if args.maskrom:                    # (no card: the launcher's blank one)

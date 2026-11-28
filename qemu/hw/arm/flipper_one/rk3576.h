@@ -555,9 +555,13 @@ struct RK3576State {
     void *saradc_in_opaque;
     I2CBus *i2c2_bus;                   /* I2C2's bus, if it is shared */
     /* the UFS device as the board's was provisioned: bBootEnable, and a
-     * drive for its own state (bBootLunEn), both the board's to give */
+     * drive for its own state (bBootLunEn, its configuration), both the
+     * board's to give; its capacity (bytes), and whether it is as its maker
+     * ships it until it is provisioned (patch 0030) */
     bool ufs_boot_enable;
     BlockBackend *ufs_nvram;
+    uint64_t ufs_capacity;
+    bool ufs_factory;
     bool start_on;                      /* CPU 0 runs from the start (a
                                            kernel given), else all are off */
 };

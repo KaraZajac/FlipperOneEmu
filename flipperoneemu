@@ -98,6 +98,9 @@ def cmd_run(args):
         die(f"{args.name} is running already (pid {pid_of(d)})")
     if getattr(args, "modem", False) and getattr(args, "nvme", None) is not None:
         die("the M.2 slot holds one card: --nvme or --modem")
+    if getattr(args, "ufs_factory", False) and (d / "ufs-nv.img").exists():
+        die(f"--ufs-factory: for a new device ({args.name}'s UFS has its own "
+            "state: its ufs-nv.img)")
     d.mkdir(parents=True, exist_ok=True)
     if args.uf2 or not (d / "flash.bin").exists():
         make_flash(d, args.uf2)
@@ -109,6 +112,8 @@ def cmd_run(args):
         machine += ",bootsel=on"
     if getattr(args, "hdmi", False):            # a monitor from the start
         machine += ",hdmi=on"
+    if getattr(args, "ufs_factory", False):     # its UFS as its maker's
+        machine += ",ufs-factory=on"
     cmd = [str(QEMU), "-M", machine,
            "-chardev", f"file,id=mculog,path={d / 'mcu.log'}",
            "-bios", str(BOOTROM), "-display", "none",
@@ -515,29 +520,31 @@ def device_disks(d, info):
             with open(card, "wb"):
                 pass
         os.truncate(card, 8 << 30)
-    # the UFS, provisioned as the Flipper OS installer's scheme has it (the
-    # machine's LUs): LU 0, the system's, what the 64 GB leave in whole 4 MiB
-    # allocation units (its image the device's 64 GB, sparse); boot LUs A and
-    # B (16 MiB) and recovery (128 MiB), each an image of its own; and the
-    # device's own state (bBootLunEn)
+    # the UFS: its LUs 0-7 each an image (sparse), which the device sizes
+    # as its configuration has them (the machine's: provisioned as the
+    # Flipper OS installer's scheme has it, until the device keeps one of its
+    # own): LU 0, the system's; boot LUs A and B; recovery; four more,
+    # disabled. And the device's own state (bBootLunEn, its configuration)
     disks = ["-drive", f"if=sd,format=raw,file={card}"]
-    au = 4 << 20
-    luns = [("ufs", "ufs.img", 64 * 10**9), ("ufs1", "ufs-boot-a.img", 16 << 20),
-            ("ufs2", "ufs-boot-b.img", 16 << 20),
-            ("ufs3", "ufs-recovery.img", 128 << 20),
-            ("ufsnv", "ufs-nv.img", 4096)]
-    for i, (name, f, size) in enumerate(luns):
+    luns = [("ufs", "ufs.img"), ("ufs1", "ufs-boot-a.img"),
+            ("ufs2", "ufs-boot-b.img"), ("ufs3", "ufs-recovery.img")] + \
+        [(f"ufs{n}", f"ufs-lu{n}.img") for n in range(4, 8)]
+    for name, f in luns:
         path = d / f
         if not path.exists():
             with open(path, "wb"):
                 pass
-            os.truncate(path, size)
-        view = (size - 160 * (1 << 20)) // au * au if i == 0 else size
         # (what is discarded or written as zeros leaves a hole: the
         # installer clears the whole system LU, which would otherwise take
-        # the image's 64 GB of this PC's disk)
+        # the device's 64 GB of this PC's disk)
         disks += ["-drive", f"if=none,id={name},format=raw,file={path},"
-                            f"size={view},discard=unmap,detect-zeroes=unmap"]
+                            "discard=unmap,detect-zeroes=unmap"]
+    nv = d / "ufs-nv.img"
+    if not nv.exists():
+        with open(nv, "wb"):
+            pass
+        os.truncate(nv, 4096)
+    disks += ["-drive", f"if=none,id=ufsnv,format=raw,file={nv},size=4096"]
     return disks
 
 
@@ -695,6 +702,11 @@ def main():
                                 "first time); its boot menu on the Flipper's "
                                 "screen (up, down, OK), the boot entry's own "
                                 "options (the machine plays SPL and TF-A)")
+            p.add_argument("--ufs-factory", action="store_true",
+                           help="a new device's UFS as its maker ships it: "
+                                "one LU, all of it, its boot feature off, "
+                                "for the installer to provision (else as "
+                                "the installer's scheme has it)")
             p.add_argument("--installer", metavar="FIT",
                            help="start the RK3576 at the Flipper OS installer "
                                 "(its installer-falcon.itb), as rockusb's "

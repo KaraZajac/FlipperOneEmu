@@ -116,7 +116,7 @@ screen and its CLI.
       cores draw follows their clocks and the OPP tables' voltages, so cpufreq's
       cooling cools; the temperature around the device from the panel link and the
       window, the battery's too (2026-11-24)
-- ◐ Storage: microSD (dw-mshc, QEMU's SD card) with the published image: Flipper OS
+- ☑ Storage: microSD (dw-mshc, QEMU's SD card) with the published image: Flipper OS
       boots to its login (2026-11-24), the card's data a block at a time (patch
       0014: 48 MB/s, as the UFS) (2026-11-25); the 64 GB UFS, blank (QEMU's UFS host on a PCI
       bus the kernel does not see, patches 0008-0010) (2026-11-24); U-Boot from the image
@@ -131,8 +131,11 @@ screen and its CLI.
       log 88); the MCU's update within the installer's 180 s: 55 s, the I2C
       link at about its real speed (2026-11-26, log 89); the UFS as the Flipper
       One's: UFS 2.2 on an HS-G3 link, new by its health descriptor (patch 0025,
-      2026-11-27, log 108); a UFS reprovisioned (LUs carved by a written
-      Configuration Descriptor)
+      2026-11-27, log 108); a UFS as its maker ships it (`run --ufs-factory`: one LU,
+      its boot feature off) that the installer provisions, its own "Reprovision UFS":
+      the configuration descriptor written, applied at fDeviceInit, its LUs carved anew
+      (each LU's drive sized to its allocation units), kept in the device's own state
+      (patch 0030, 2026-11-28, log 124)
 - ◐ The MCU powers it: `VCC5V0_SYS_S5_EN` (the main expander's pin 12) switches it on
       and off, and Linux's PSCI SYSTEM_OFF and SYSTEM_RESET are its own (QEMU patch
       0005) (2026-11-24); `MASKROM_EN` (BOOT0): the RK3576 waits in its MaskROM when

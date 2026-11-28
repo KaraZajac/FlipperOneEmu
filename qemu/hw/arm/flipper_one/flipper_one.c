@@ -121,6 +121,8 @@ struct FlipperOneState {
     DeviceState *codec;         /* ... its mic on the NAU8822's RMICP */
     struct USBDevice *mt7921;   /* Wi-Fi and Bluetooth, on USB1 */
     bool modem;                 /* a 5G modem in the M.2 slot (property) */
+    bool ufs_factory;           /* its UFS as its maker ships it, until it
+                                   is provisioned (property) */
     struct USBDevice *rm520n;   /* ... it, on the hub's port 4 */
     bool m2_vcc, m2_power, m2_unreset;  /* the slot's 3.3 V, and its
                                    FULL_CARD_POWER_OFF# and RESET#
@@ -146,6 +148,10 @@ struct FlipperOneState {
 };
 
 #define FO_REV_DEFAULT  "f0b0c1"
+
+/* its UFS: 64 GB, in whole allocation units of 4 MiB (15258) */
+#define FO_UFS_AU       (4 * MiB)
+#define FO_UFS_AUS      ((uint32_t)(64000000000ULL / FO_UFS_AU))
 
 /*
  * The front panel's buttons, on the expander's pins (pressed: low), and its
@@ -934,20 +940,38 @@ static bool fo_bootable(BlockBackend *blk)
            !memcmp(magic, "RKNS", 4);
 }
 
-/* the UFS's enabled boot LU: bBootLunEn, as the device's own state keeps
- * it (patch 0017's nvram: A until something switches it) */
+/*
+ * The UFS's enabled boot LU: bBootLunEn, as the device's own state keeps
+ * it (patch 0017's nvram: A until something switches it), and the LU its
+ * configuration gives that boot LUN ID (patch 0030's, kept beside it);
+ * none while its boot feature is off (bBootEnable), as a device ships
+ */
 static BlockBackend *fo_ufs_boot_lu(void)
 {
     BlockBackend *nv = blk_by_name("ufsnv");
-    uint8_t buf[16];
-    int lun = 1;
+    uint8_t buf[512];
+    int en = 1;
 
     if (nv && blk_pread(nv, 0, sizeof(buf), buf, 0) >= 0 &&
         !memcmp(buf, "QUFSNV01", 8)) {
-        lun = buf[8];
+        en = buf[8];
+        if (!memcmp(buf + 16, "QUFSCF01", 8)) {
+            const uint8_t *cfg = buf + 24;
+
+            for (int i = 0; i < 8 && cfg[3] && en; i++) {
+                const uint8_t *p = cfg + 0x16 + i * 0x1a;
+                g_autofree char *id = i ? g_strdup_printf("ufs%d", i)
+                                        : g_strdup("ufs");
+
+                if (p[0] && p[1] == en) {
+                    return blk_by_name(id);
+                }
+            }
+            return NULL;
+        }
     }
-    return lun == 1 ? blk_by_name("ufs1") : lun == 2 ? blk_by_name("ufs2")
-                                                     : NULL;
+    return en == 1 ? blk_by_name("ufs1") : en == 2 ? blk_by_name("ufs2")
+                                                   : NULL;
 }
 
 /* the medium the boot ROM boots (boot_blk): false if none has an image,
@@ -1611,9 +1635,12 @@ static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
 {
     object_initialize_child(OBJECT(ms), "rk3576", &s->rk3576, TYPE_RK3576);
     s->rk3576.uart4_chr = flipper_one_uart_link(s, 0);
-    /* its UFS's own state (patch 0017): -drive if=none,id=ufsnv */
+    /* its UFS's own state (patch 0017): -drive if=none,id=ufsnv; the
+     * Flipper One's 64 GB in whole 4 MiB allocation units (patch 0030) */
     s->rk3576.ufs_nvram = blk_by_name("ufsnv");
     s->rk3576.ufs_boot_enable = true;
+    s->rk3576.ufs_capacity = FO_UFS_AUS * FO_UFS_AU;
+    s->rk3576.ufs_factory = s->ufs_factory;
     s->rk3576.saradc_in = flipper_one_saradc;
     s->rk3576.saradc_in_opaque = s;
     qdev_prop_set_bit(DEVICE(&s->rk3576), "start-on",
@@ -1664,17 +1691,26 @@ static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
     /*
      * The UFS, provisioned as the Flipper OS installer's scheme has it (as if
      * it had done it once: a factory-fresh one it would provision first),
-     * each LU its own drive (-drive if=none,id=ufsN, the launcher's):
-     * LU 0, the system's, what the others leave; LU 1 and 2, boot LUs A and
-     * B (enhanced1, 16 MiB), which the boot ROM loads from, bBootLunEn
-     * picking one; LU 3, recovery (enhanced1, 128 MiB). Each with its data
-     * protected against a power failure and thin provisioning, as the
-     * scheme asks
+     * LU 0-7 each on its own drive (-drive if=none,id=ufsN, the launcher's),
+     * which the device sizes as its configuration has it: LU 0, the
+     * system's, what the others leave; LU 1 and 2, boot LUs A and B
+     * (enhanced1, 16 MiB), which the boot ROM loads from, bBootLunEn picking
+     * one; LU 3, recovery (enhanced1, 128 MiB); the others disabled. Each
+     * with its data protected against a power failure and thin
+     * provisioning, as the scheme asks. Once the device keeps a
+     * configuration (its nvram), that is what it has; one written to it
+     * (as the installer does on a factory-fresh one) takes effect at its
+     * next initialisation (patch 0030)
      */
     {
-        static const struct { const char *id; uint8_t boot, mem; } lus[] = {
-            { "ufs", 0, 0 }, { "ufs1", 1, 3 }, { "ufs2", 2, 3 },
-            { "ufs3", 0, 3 },
+        static const struct {
+            const char *id;
+            uint8_t boot, mem;
+            uint32_t units;
+        } lus[] = {
+            { "ufs", 0, 0, FO_UFS_AUS - 40 }, { "ufs1", 1, 3, 4 },
+            { "ufs2", 2, 3, 4 }, { "ufs3", 0, 3, 32 }, { "ufs4" },
+            { "ufs5" }, { "ufs6" }, { "ufs7" },
         };
 
         for (int i = 0; i < ARRAY_SIZE(lus); i++) {
@@ -1687,6 +1723,8 @@ static void flipper_one_rk3576(FlipperOneState *s, MachineState *ms)
             lu = qdev_new("ufs-lu");
             qdev_prop_set_drive_err(lu, "drive", blk, &error_fatal);
             qdev_prop_set_uint8(lu, "lun", i);
+            qdev_prop_set_bit(lu, "enabled", lus[i].units != 0);
+            qdev_prop_set_uint32(lu, "alloc-units", lus[i].units);
             qdev_prop_set_uint8(lu, "boot-lun-id", lus[i].boot);
             qdev_prop_set_uint8(lu, "memory-type", lus[i].mem);
             qdev_prop_set_uint8(lu, "data-reliability", 1);
@@ -2046,6 +2084,16 @@ static void flipper_one_set_hdmi(Object *obj, bool value, Error **errp)
     FLIPPER_ONE(obj)->hdmi_at_start = value;
 }
 
+static bool flipper_one_get_ufs_factory(Object *obj, Error **errp)
+{
+    return FLIPPER_ONE(obj)->ufs_factory;
+}
+
+static void flipper_one_set_ufs_factory(Object *obj, bool value, Error **errp)
+{
+    FLIPPER_ONE(obj)->ufs_factory = value;
+}
+
 static bool flipper_one_get_modem(Object *obj, Error **errp)
 {
     return FLIPPER_ONE(obj)->modem;
@@ -2164,6 +2212,13 @@ static void flipper_one_class_init(ObjectClass *oc, const void *data)
         "tree, in a direct boot or SPL's Falcon mode: the device's tree as "
         "it is. QEMU's PSCI runs them as a WFI; without them Linux idles "
         "with WFI, and spares itself their way in and out");
+    object_class_property_add_bool(oc, "ufs-factory",
+                                   flipper_one_get_ufs_factory,
+                                   flipper_one_set_ufs_factory);
+    object_class_property_set_description(oc, "ufs-factory",
+        "Its UFS as its maker ships it, until it is provisioned: one LU, all "
+        "of it, its boot feature off (the device's own state decides once it "
+        "has one: a new device's)");
     object_class_property_add_bool(oc, "modem", flipper_one_get_modem,
                                    flipper_one_set_modem);
     object_class_property_set_description(oc, "modem",

@@ -1,0 +1,617 @@
+From: FlipperOneEmu
+Subject: [PATCH] hw/ufs: a written configuration, applied at the device's initialisation
+
+A UFS device is divided into logical units by its configuration
+descriptor, and one written takes effect when the device next
+initialises (fDeviceInit), destructively: the device rebuilds its
+mapping. The Flipper OS installer provisions a factory-fresh device so
+(its "Reprovision UFS": the descriptor written, bBootLunEn set,
+fDeviceInit set and waited for, the LUs rescanned), as Rockchip's
+USB-plug loader does from the mask ROM. Patch 0017's device took a
+written configuration only when it asked for its LUs as they were.
+
+A configuration written is now checked against what the device has
+(LUs there, 4 KiB blocks, normal or enhanced1 memory, its allocation
+units and enhanced1's ceiling, a shared WriteBooster buffer that keeps
+user space), and it reads back as written until fDeviceInit applies
+it: its header to the device descriptor, each LU to its unit
+descriptor, its drive cut to the capacity its allocation units give
+(what it held gone: truncated to nothing, then grown). An LU disabled
+no longer answers: REPORT LUNS leaves it out, and a command to it is
+answered as one to an LU that is not there.
+
+The device keeps its configuration in its nvram, beside bBootLunEn,
+and its LUs take it as they come up. With none kept, they come up as
+their properties say (enabled; alloc-units, their drives sized to it),
+and the device keeps that. A device can have a capacity of its own
+(capacity: its geometry's, which its LUs no longer add up to), and can
+come as its maker ships it until it is provisioned (factory: one LU,
+all of it, normal memory, its boot feature off, no WriteBooster
+buffer, as the Flipper One's Foresee part reads).
+
+---
+--- a/hw/ufs/ufs.h	2026-11-28 00:35:21.742745637 -0500
++++ b/hw/ufs/ufs.h	2026-11-28 00:37:18.363047160 -0500
+@@ -74,14 +74,27 @@
+ struct UfsLu;
+ typedef UfsReqResult (*UfsScsiOp)(struct UfsLu *, UfsRequest *);
+ 
++/*
++ * The configuration descriptor (UFS 3.1's layout): a header, then eight
++ * LUs' parameters (an index: LUs 8 * index on)
++ */
++#define UFS_CONFIG_DESC_LEN (0x16 + 8 * 0x1a)
++#define UFS_CONFIG_HDR_LEN  0x16
++#define UFS_CONFIG_UNIT_LEN 0x1a
++
+ typedef struct UfsLu {
+     DeviceState qdev;
+     uint8_t lun;
+-    /* how the device was provisioned for it: its unit descriptor's */
++    /*
++     * How the device was provisioned for it, its unit descriptor's, until
++     * the device's own state (the configuration it keeps) says otherwise
++     */
++    bool enabled;               /* bLUEnable */
+     uint8_t boot_lun_id;        /* 1: boot LU A, 2: B */
+     uint8_t memory_type;        /* 3: enhanced1 */
+     uint8_t data_reliability;
+     uint8_t provisioning_type;  /* 2: thin */
++    uint32_t alloc_units;       /* dNumAllocUnits (0: its drive's size) */
+     UnitDescriptor unit_desc;
+     SCSIBus bus;
+     SCSIDevice *scsi_dev;
+@@ -106,7 +119,10 @@
+     uint8_t life_time_est_b; /* ... bDeviceLifeTimeEstB */
+     bool boot_enable; /* bBootEnable, as the device was provisioned */
+     uint8_t boot_lun_en; /* bBootLunEn when nvram has none yet */
+-    BlockBackend *nvram; /* the device's own state: bBootLunEn */
++    BlockBackend *nvram; /* the device's own state: bBootLunEn, and the
++                            configuration it was provisioned with */
++    uint64_t capacity; /* bytes, its geometry's (0: what its LUs add up to) */
++    bool factory; /* until it is provisioned: as its maker ships it */
+ } UfsParams;
+ 
+ /*
+@@ -175,6 +191,16 @@
+     Attributes attributes;
+     Flags flags;
+ 
++    /*
++     * The configuration it keeps (index 0: LUs 0-7), which its LUs take as
++     * they come up when there is one (config_kept); and one written, until
++     * fDeviceInit applies it (config_written)
++     */
++    uint8_t config[UFS_CONFIG_DESC_LEN];
++    bool config_kept;
++    uint8_t config_new[UFS_CONFIG_DESC_LEN];
++    bool config_written;
++
+     qemu_irq irq;
+     QEMUBH *doorbell_bh;
+     QEMUBH *complete_bh;
+@@ -317,4 +343,8 @@
+ void ufs_wb_update_avail_buffer(UfsHc *u);
+ void ufs_init_wlu(UfsLu *wlu, uint8_t wlun);
+ UfsReqResult ufs_missing_lu_scsi_cmd(UfsRequest *req);
++uint64_t ufs_alloc_unit_bytes(UfsHc *u);
++void ufs_config_keep(UfsHc *u);
++bool ufs_lu_configure(UfsLu *lu, UfsHc *u, const uint8_t *p, bool erase,
++                      Error **errp);
+ #endif /* HW_UFS_UFS_H */
+--- a/hw/ufs/lu.c	2026-11-28 00:35:21.746010052 -0500
++++ b/hw/ufs/lu.c	2026-11-28 00:37:04.556038405 -0500
+@@ -222,7 +222,7 @@
+     len += 8;
+ 
+     for (uint8_t lun = 0; lun < UFS_MAX_LUS; ++lun) {
+-        if (u->lus[lun]) {
++        if (u->lus[lun] && u->lus[lun]->unit_desc.lu_enable) {
+             if (len + 8 > outbuf_len) {
+                 break;
+             }
+@@ -443,6 +443,8 @@
+ static const Property ufs_lu_props[] = {
+     DEFINE_PROP_DRIVE("drive", UfsLu, conf.blk),
+     DEFINE_PROP_UINT8("lun", UfsLu, lun, 0),
++    DEFINE_PROP_BOOL("enabled", UfsLu, enabled, true),
++    DEFINE_PROP_UINT32("alloc-units", UfsLu, alloc_units, 0),
+     DEFINE_PROP_UINT8("boot-lun-id", UfsLu, boot_lun_id, 0),
+     DEFINE_PROP_UINT8("memory-type", UfsLu, memory_type, 0),
+     DEFINE_PROP_UINT8("data-reliability", UfsLu, data_reliability, 0),
+@@ -456,6 +458,10 @@
+     uint64_t raw_dev_cap =
+         be64_to_cpu(u->geometry_desc.total_raw_device_capacity);
+ 
++    if (u->params.capacity) {                   /* (the device's own) */
++        brdv_len = 0;
++    }
++
+     if (u->device_desc.number_lu >= UFS_MAX_LUS) {
+         error_setg(errp, "ufs host controller has too many logical units.");
+         return false;
+@@ -467,7 +473,7 @@
+     }
+ 
+     u->lus[lu->lun] = lu;
+-    u->device_desc.number_lu++;
++    u->device_desc.number_lu += !!lu->unit_desc.lu_enable;
+     raw_dev_cap += (brdv_len >> UFS_GEOMETRY_CAPACITY_SHIFT);
+     u->geometry_desc.total_raw_device_capacity = cpu_to_be64(raw_dev_cap);
+     return true;
+@@ -487,7 +493,7 @@
+     memset(&lu->unit_desc, 0, sizeof(lu->unit_desc));
+     lu->unit_desc.length = sizeof(UnitDescriptor);
+     lu->unit_desc.descriptor_idn = UFS_QUERY_DESC_IDN_UNIT;
+-    lu->unit_desc.lu_enable = 0x01;
++    lu->unit_desc.lu_enable = lu->enabled;
+     lu->unit_desc.boot_lun_id = lu->boot_lun_id;
+     lu->unit_desc.memory_type = lu->memory_type;
+     lu->unit_desc.data_reliability = lu->data_reliability;
+@@ -500,6 +506,70 @@
+     lu->scsi_op = &ufs_process_scsi_cmd;
+ }
+ 
++/*
++ * The LU's drive at @bytes: what was on it gone when @erase (a device
++ * provisioned again rebuilds its mapping), else only grown or cut to it
++ */
++static bool ufs_lu_resize(UfsLu *lu, uint64_t bytes, bool erase, Error **errp)
++{
++    BlockBackend *blk = lu->scsi_dev ? lu->scsi_dev->conf.blk : lu->conf.blk;
++    BlockDriverState *bs = blk_bs(blk);
++    BlockBackend *rb;
++    int ret = 0;
++
++    if (!erase && blk_getlength(blk) == bytes) {
++        return true;
++    }
++    rb = blk_new_with_bs(bs, BLK_PERM_RESIZE, BLK_PERM_ALL, errp);
++    if (!rb) {
++        return false;
++    }
++    bdrv_drained_begin(bs);
++    if (erase) {
++        ret = blk_truncate(rb, 0, false, PREALLOC_MODE_OFF, 0, errp);
++    }
++    if (ret >= 0) {
++        ret = blk_truncate(rb, bytes, false, PREALLOC_MODE_OFF, 0, errp);
++    }
++    bdrv_drained_end(bs);
++    blk_unref(rb);
++    return ret >= 0;
++}
++
++/*
++ * The LU as a configuration descriptor's parameters for it (@p: a unit's)
++ * have it: its unit descriptor, and its drive at the capacity its
++ * allocation units give (an enhanced memory type's at its capacity
++ * adjustment factor)
++ */
++bool ufs_lu_configure(UfsLu *lu, UfsHc *u, const uint8_t *p, bool erase,
++                      Error **errp)
++{
++    uint64_t au = ufs_alloc_unit_bytes(u);
++    uint64_t units = p[0] ? ldl_be_p(&p[4]) : 0;
++    uint16_t adj = p[3] == 3 ?
++                   be16_to_cpu(u->geometry_desc.enhanced_1_cap_adj_fac) : 256;
++    uint64_t bytes = adj ? QEMU_ALIGN_DOWN(units * au * 256 / adj,
++                                           UFS_BLOCK_SIZE) : 0;
++
++    if (!ufs_lu_resize(lu, bytes, erase, errp)) {
++        return false;
++    }
++    lu->unit_desc.lu_enable = p[0];
++    lu->unit_desc.boot_lun_id = p[1];
++    lu->unit_desc.lu_write_protect = p[2];
++    lu->unit_desc.memory_type = p[3];
++    lu->unit_desc.data_reliability = p[8];
++    lu->unit_desc.logical_block_size = UFS_BLOCK_SIZE_SHIFT;
++    lu->unit_desc.provisioning_type = p[0xa];
++    memcpy(&lu->unit_desc.context_capabilities, &p[0xb], 2);
++    memcpy(&lu->unit_desc.lu_num_write_booster_buffer_alloc_units, &p[0x16],
++           4);
++    lu->unit_desc.logical_block_count =
++        cpu_to_be64(bytes >> UFS_BLOCK_SIZE_SHIFT);
++    return true;
++}
++
+ static bool ufs_lu_check_constraints(UfsLu *lu, Error **errp)
+ {
+     if (!lu->conf.blk) {
+@@ -576,11 +646,38 @@
+     }
+ 
+     ufs_init_lu(lu);
++    /*
++     * Its part of the configuration the device keeps, if it has one; else
++     * as its properties provisioned it (its allocation units: its drive
++     * at their capacity)
++     */
++    if (lu->lun < 8 && u->config_kept) {
++        if (!ufs_lu_configure(lu, u, u->config + UFS_CONFIG_HDR_LEN +
++                              lu->lun * UFS_CONFIG_UNIT_LEN, false, errp)) {
++            return;
++        }
++    } else if (lu->alloc_units || !lu->enabled) {
++        uint8_t p[UFS_CONFIG_UNIT_LEN] = { 0 };
++
++        p[0] = lu->enabled;
++        p[1] = lu->boot_lun_id;
++        p[3] = lu->memory_type;
++        stl_be_p(&p[4], lu->alloc_units);
++        p[8] = lu->data_reliability;
++        p[9] = UFS_BLOCK_SIZE_SHIFT;
++        p[0xa] = lu->provisioning_type;
++        if (!ufs_lu_configure(lu, u, p, false, errp)) {
++            return;
++        }
++    }
+     if (!ufs_add_lu(u, lu, errp)) {
+         return;
+     }
+ 
+     ufs_init_scsi_device(lu, blk, errp);
++    if (!u->config_kept) {
++        ufs_config_keep(u);             /* (the device's own from now on) */
++    }
+ }
+ 
+ static void ufs_lu_unrealize(DeviceState *dev)
+--- a/hw/ufs/ufs.c	2026-11-28 00:35:21.739383598 -0500
++++ b/hw/ufs/ufs.c	2026-11-28 00:40:08.352613639 -0500
+@@ -24,6 +24,7 @@
+ #include "qemu/osdep.h"
+ #include "qapi/error.h"
+ #include "qemu/log.h"
++#include "qemu/error-report.h"
+ #include "system/block-backend.h"
+ #include "migration/vmstate.h"
+ #include "scsi/constants.h"
+@@ -1103,8 +1104,12 @@
+ 
+     trace_ufs_exec_scsi_cmd(req->slot, lun, req->req_upiu.sc.cdb[0]);
+ 
+-    if (!is_wlun(lun) && (lun >= UFS_MAX_LUS || u->lus[lun] == NULL)) {
+-        /* no logical unit there: the device's answer, not a failed transfer */
++    if (!is_wlun(lun) && (lun >= UFS_MAX_LUS || u->lus[lun] == NULL ||
++                          !u->lus[lun]->unit_desc.lu_enable)) {
++        /*
++         * no logical unit there (or one not enabled): the device's answer,
++         * not a failed transfer
++         */
+         trace_ufs_err_scsi_cmd_invalid_lun(lun);
+         return ufs_missing_lu_scsi_cmd(req);
+     }
+@@ -1195,6 +1200,8 @@
+     return UFS_QUERY_RESULT_SUCCESS;
+ }
+ 
++static void ufs_config_apply(UfsHc *u);
++
+ static uint32_t ufs_read_flag_value(UfsHc *u, uint8_t idn)
+ {
+     switch (idn) {
+@@ -1236,6 +1243,13 @@
+ {
+     switch (idn) {
+     case UFS_QUERY_FLAG_IDN_FDEVICEINIT:
++        /*
++         * the device initialises: a configuration written takes effect
++         * (ufs_config_apply), and it is done at once
++         */
++        if (u->config_written) {
++            ufs_config_apply(u);
++        }
+         u->flags.device_init = 0;
+         break;
+     case UFS_QUERY_FLAG_IDN_PERMANENT_WPE:
+@@ -1725,21 +1739,31 @@
+ }
+ 
+ /*
+- * The device's own state that outlives a power cycle (the nvram drive):
+- * bBootLunEn, after a magic, in its first sector
++ * The device's own state that outlives a power cycle (the nvram drive), in
++ * its first sector: bBootLunEn, after a magic; and the configuration it is
++ * provisioned with (index 0), after one of its own, at 16
+  */
+ #define UFS_NVRAM_MAGIC "QUFSNV01"
++#define UFS_NVRAM_CONFIG_MAGIC "QUFSCF01"
++#define UFS_NVRAM_CONFIG 16
+ 
+ static void ufs_nvram_load(UfsHc *u)
+ {
+     uint8_t buf[512];
+ 
+     u->attributes.boot_lun_en = u->params.boot_lun_en;
+-    if (u->params.nvram &&
+-        blk_pread(u->params.nvram, 0, sizeof(buf), buf, 0) >= 0 &&
+-        !memcmp(buf, UFS_NVRAM_MAGIC, 8) && buf[8] <= 2) {
++    if (!u->params.nvram ||
++        blk_pread(u->params.nvram, 0, sizeof(buf), buf, 0) < 0) {
++        return;
++    }
++    if (!memcmp(buf, UFS_NVRAM_MAGIC, 8) && buf[8] <= 2) {
+         u->attributes.boot_lun_en = buf[8];
+     }
++    if (!memcmp(buf + UFS_NVRAM_CONFIG, UFS_NVRAM_CONFIG_MAGIC, 8) &&
++        buf[UFS_NVRAM_CONFIG + 8] == UFS_CONFIG_DESC_LEN) {
++        memcpy(u->config, buf + UFS_NVRAM_CONFIG + 8, UFS_CONFIG_DESC_LEN);
++        u->config_kept = true;
++    }
+ }
+ 
+ static void ufs_nvram_save(UfsHc *u)
+@@ -1749,6 +1773,11 @@
+     if (u->params.nvram) {
+         memcpy(buf, UFS_NVRAM_MAGIC, 8);
+         buf[8] = u->attributes.boot_lun_en;
++        if (u->config[0] == UFS_CONFIG_DESC_LEN) {
++            memcpy(buf + UFS_NVRAM_CONFIG, UFS_NVRAM_CONFIG_MAGIC, 8);
++            memcpy(buf + UFS_NVRAM_CONFIG + 8, u->config,
++                   UFS_CONFIG_DESC_LEN);
++        }
+         blk_pwrite(u->params.nvram, 0, sizeof(buf), buf, 0);
+     }
+ }
+@@ -1974,15 +2003,17 @@
+     return desc;
+ }
+ 
+-#define UFS_CONFIG_DESC_LEN (0x16 + 8 * 0x1a)
+-#define UFS_CONFIG_HDR_LEN  0x16
+-#define UFS_CONFIG_UNIT_LEN 0x1a
++/* an allocation unit's bytes (the geometry's segments) */
++uint64_t ufs_alloc_unit_bytes(UfsHc *u)
++{
++    return (uint64_t)u->geometry_desc.allocation_unit_size *
++           be32_to_cpu(u->geometry_desc.segment_size) * 512;
++}
+ 
+ /* an LU's size in allocation units, as its configuration gives it */
+ static uint32_t ufs_lu_alloc_units(UfsHc *u, UfsLu *lu)
+ {
+-    uint64_t au = (uint64_t)u->geometry_desc.allocation_unit_size *
+-                  be32_to_cpu(u->geometry_desc.segment_size) * 512;
++    uint64_t au = ufs_alloc_unit_bytes(u);
+     uint64_t bytes = be64_to_cpu(lu->unit_desc.logical_block_count) <<
+                      lu->unit_desc.logical_block_size;
+     uint16_t adj = lu->unit_desc.memory_type == 3 ?
+@@ -1996,7 +2027,7 @@
+  * provisioning left it: its header from the device descriptor, each LU's
+  * parameters from its unit descriptor, LUs that are not there disabled
+  */
+-static void ufs_config_desc(UfsHc *u, uint8_t index, uint8_t *d)
++static void ufs_config_now(UfsHc *u, uint8_t index, uint8_t *d)
+ {
+     DeviceDescriptor *dd = &u->device_desc;
+ 
+@@ -2035,10 +2066,72 @@
+     }
+ }
+ 
++/* ... as read: one written reads as written, until fDeviceInit applies it */
++static void ufs_config_desc(UfsHc *u, uint8_t index, uint8_t *d)
++{
++    if (index == 0 && u->config_written) {
++        memcpy(d, u->config_new, UFS_CONFIG_DESC_LEN);
++        return;
++    }
++    ufs_config_now(u, index, d);
++}
++
++/* the configuration the device has now, as its own: kept (nvram) */
++void ufs_config_keep(UfsHc *u)
++{
++    ufs_config_now(u, 0, u->config);
++    ufs_nvram_save(u);
++}
++
++/* a configuration's header: the device descriptor's part of it */
++static void ufs_config_header(UfsHc *u, const uint8_t *d)
++{
++    DeviceDescriptor *dd = &u->device_desc;
++
++    dd->boot_enable = d[3];
++    dd->descr_access_en = d[4];
++    dd->init_power_mode = d[5];
++    dd->high_priority_lun = d[6];
++    dd->secure_removal_type = d[7];
++    dd->init_active_icc_level = d[8];
++    memcpy(&dd->periodic_rtc_update, &d[9], 2);
++    dd->write_booster_buffer_preserve_user_space_en = d[0x10];
++    dd->write_booster_buffer_type = d[0x11];
++    memcpy(&dd->num_shared_write_booster_buffer_alloc_units, &d[0x12], 4);
++}
++
++/*
++ * The configuration a device ships with from its maker, before it is
++ * provisioned (the Flipper One's Foresee part reads so): one LU, LU 0,
++ * all of it, normal memory; its boot feature off; no WriteBooster buffer
++ */
++static void ufs_config_factory(UfsHc *u)
++{
++    uint8_t *d = u->config;
++    uint64_t au = ufs_alloc_unit_bytes(u);
++    uint64_t bytes =
++        be64_to_cpu(u->geometry_desc.total_raw_device_capacity) <<
++        UFS_GEOMETRY_CAPACITY_SHIFT;
++
++    memset(d, 0, UFS_CONFIG_DESC_LEN);
++    d[0] = UFS_CONFIG_DESC_LEN;
++    d[1] = UFS_QUERY_DESC_IDN_CONFIGURATION;
++    d[5] = 0x01;                                /* Active Mode */
++    d[6] = 0x7f;                                /* (no LU first) */
++    for (int i = 0; i < 8; i++) {
++        d[UFS_CONFIG_HDR_LEN + i * UFS_CONFIG_UNIT_LEN + 9] =
++            UFS_BLOCK_SIZE_SHIFT;
++    }
++    d[UFS_CONFIG_HDR_LEN] = 0x01;
++    stl_be_p(&d[UFS_CONFIG_HDR_LEN + 4], au ? bytes / au : 0);
++    u->config_kept = true;
++}
++
+ /*
+- * A configuration descriptor written: the device's LUs are fixed here (each
+- * its own drive), so one that asks for them as they are is taken (its
+- * provisioning done), and any other answered as a device that cannot
++ * A configuration descriptor written: taken if the device can be so
++ * provisioned, and applied when it next initialises (fDeviceInit), as a
++ * device does. Its LUs 8 on (indexes 1-3) are not there: those only as all
++ * disabled. Else refused, with a log line of why.
+  */
+ static QueryRespCode ufs_write_config_desc(UfsRequest *req)
+ {
+@@ -2046,7 +2139,13 @@
+     uint8_t index = req->req_upiu.qr.index;
+     uint16_t length = be16_to_cpu(req->req_upiu.qr.length);
+     const uint8_t *w = req->req_upiu.qr.data;
+-    uint8_t now[UFS_CONFIG_DESC_LEN];
++    uint64_t au = ufs_alloc_unit_bytes(u);
++    uint64_t total = au ? (be64_to_cpu(
++        u->geometry_desc.total_raw_device_capacity) <<
++        UFS_GEOMETRY_CAPACITY_SHIFT) / au : 0;
++    uint64_t units = 0, enhanced = 0, wb_lu = 0;
++    bool boot[3] = { false, false, false };
++    const char *why = NULL;
+ 
+     if (u->attributes.config_descr_lock) {
+         return UFS_QUERY_RESULT_NOT_WRITEABLE;
+@@ -2054,16 +2153,93 @@
+     if (index > 3 || length != UFS_CONFIG_DESC_LEN) {
+         return UFS_QUERY_RESULT_INVALID_LENGTH;
+     }
+-    ufs_config_desc(u, index, now);
+-    if (memcmp(w + 3, now + 3, UFS_CONFIG_DESC_LEN - 3)) {
+-        qemu_log_mask(LOG_UNIMP, "ufs: a configuration descriptor (index %u) "
+-                      "that changes the logical units: this device's are "
+-                      "fixed, each its own drive\n", index);
+-        return UFS_QUERY_RESULT_GENERAL_FAILURE;
++    for (int i = 0; i < 8 && !why; i++) {
++        const uint8_t *p = w + UFS_CONFIG_HDR_LEN + i * UFS_CONFIG_UNIT_LEN;
++        uint32_t n = ldl_be_p(&p[4]);
++
++        if (!p[0]) {
++            continue;
++        }
++        if (p[0] != 0x01) {
++            why = "bLUEnable";
++        } else if (index || !u->lus[i]) {
++            why = "an LU that is not there";
++        } else if (p[1] > 2 || (p[1] && boot[p[1]])) {
++            why = "bBootLunID";
++        } else if (p[3] != 0 && p[3] != 3) {
++            why = "bMemoryType: normal or enhanced1";
++        } else if (!n) {
++            why = "an LU of no allocation units";
++        } else if (p[9] != UFS_BLOCK_SIZE_SHIFT) {
++            why = "bLogicalBlockSize: 4 KiB";
++        } else if (p[0xa] != 0 && p[0xa] != 2 && p[0xa] != 3) {
++            why = "bProvisioningType";
++        } else {
++            boot[p[1]] = true;
++            units += n;
++            enhanced += p[3] == 3 ? n : 0;
++            wb_lu += ldl_be_p(&p[0x16]);
++        }
++    }
++    if (why) {
++        /* (the unit's question, above) */
++    } else if (w[3] > 1) {
++        why = "bBootEnable";
++    } else if (units > total) {
++        why = "more allocation units than the device has";
++    } else if (enhanced >
++               be32_to_cpu(u->geometry_desc.enhanced_1_max_n_alloc_u)) {
++        why = "more enhanced1 allocation units than the device has";
++    } else if (wb_lu || (ldl_be_p(&w[0x12]) &&
++                         (w[0x10] != 0x01 || w[0x11] != 0x01))) {
++        why = "a WriteBooster buffer other than shared, user space kept";
++    } else if (ldl_be_p(&w[0x12]) >
++               be32_to_cpu(
++                   u->geometry_desc.write_booster_buffer_max_n_alloc_units)) {
++        why = "a WriteBooster buffer larger than the device's";
++    }
++    if (why) {
++        qemu_log_mask(LOG_GUEST_ERROR, "ufs: a configuration descriptor "
++                      "(index %u) refused: %s\n", index, why);
++        return UFS_QUERY_RESULT_INVALID_VALUE;
++    }
++    if (index == 0) {
++        memcpy(u->config_new, w, UFS_CONFIG_DESC_LEN);
++        u->config_written = true;
+     }
+     return UFS_QUERY_RESULT_SUCCESS;
+ }
+ 
++/*
++ * A configuration written, applied as the device initialises again
++ * (fDeviceInit), and kept: each LU as it says, with nothing of what it
++ * held (the device's mapping rebuilt); an LU it disables no longer answers
++ */
++static void ufs_config_apply(UfsHc *u)
++{
++    Error *err = NULL;
++    int n = 0;
++
++    u->config_written = false;
++    ufs_config_header(u, u->config_new);
++    for (int i = 0; i < 8; i++) {
++        if (u->lus[i] &&
++            !ufs_lu_configure(u->lus[i], u, u->config_new +
++                              UFS_CONFIG_HDR_LEN + i * UFS_CONFIG_UNIT_LEN,
++                              true, &err)) {
++            error_report_err(err);
++            err = NULL;
++        }
++    }
++    for (int i = 0; i < UFS_MAX_LUS; i++) {
++        n += u->lus[i] && u->lus[i]->unit_desc.lu_enable;
++    }
++    u->device_desc.number_lu = n;
++    memcpy(u->config, u->config_new, UFS_CONFIG_DESC_LEN);
++    u->config_kept = true;
++    ufs_nvram_save(u);
++}
++
+ static QueryRespCode ufs_read_desc(UfsRequest *req)
+ {
+     UfsHc *u = req->hc;
+@@ -2894,12 +3070,27 @@
+     ufs_init_state(u);
+     ufs_init_hc(u);
+     ufs_init_pci(u, pci_dev);
++    if (u->params.capacity) {
++        u->geometry_desc.total_raw_device_capacity =
++            cpu_to_be64(u->params.capacity >> UFS_GEOMETRY_CAPACITY_SHIFT);
++    }
+     if (u->params.nvram &&
+         blk_set_perm(u->params.nvram, BLK_PERM_CONSISTENT_READ |
+                      BLK_PERM_WRITE, BLK_PERM_ALL, errp) < 0) {
+         return;
+     }
+     ufs_nvram_load(u);
++    /*
++     * the configuration the device keeps, which its LUs take as they come
++     * up; or, never provisioned, its maker's, if it is one as shipped
++     */
++    if (!u->config_kept && u->params.factory && u->params.capacity) {
++        ufs_config_factory(u);
++        ufs_nvram_save(u);
++    }
++    if (u->config_kept) {
++        ufs_config_header(u, u->config);
++    }
+ 
+     ufs_init_wlu(&u->report_wlu, UFS_UPIU_REPORT_LUNS_WLUN);
+     ufs_init_wlu(&u->dev_wlu, UFS_UPIU_UFS_DEVICE_WLUN);
+@@ -2955,6 +3146,8 @@
+     DEFINE_PROP_BOOL("boot-enable", UfsHc, params.boot_enable, false),
+     DEFINE_PROP_UINT8("boot-lun-en", UfsHc, params.boot_lun_en, 0),
+     DEFINE_PROP_DRIVE("nvram", UfsHc, params.nvram),
++    DEFINE_PROP_UINT64("capacity", UfsHc, params.capacity, 0),
++    DEFINE_PROP_BOOL("factory", UfsHc, params.factory, false),
+ };
+ 
+ static const VMStateDescription ufs_vmstate = {

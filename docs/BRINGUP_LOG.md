@@ -3628,3 +3628,82 @@ register headers.
          off and on), U-Boot 279 s. No failures.
        - By hand: after a reboot the modem is on USB again, and
          ModemManager registers it.
+
+124. **A UFS as its maker ships it, provisioned by the installer.** PLAN's
+     last storage item: a UFS reprovisioned.
+     - **What the installer does.** Its source is public
+       (github.com/flipperdevices/flipperos-installer: src/core/provision.rs,
+       ufs.rs). It compares the device's configuration descriptor with its
+       scheme (config/flipperos-ufs.toml). Its "Reprovision UFS…" then:
+       1. writes the descriptor (index 0, after any index holding LUs 8-31)
+          and `bBootLunEn` (A);
+       2. sets `fDeviceInit` and waits for the device to clear it. "The
+          device only rebuilds them when it next initialises", as Rockchip's
+          USB-plug loader also does it from the mask ROM;
+       3. deletes the data LUs' SCSI devices and rescans the host.
+
+       Its tests carry the real parts' descriptors. The Foresee 64 GB ships
+       with one LU covering all of it (15260 allocation units) and its boot
+       feature off.
+     - **Patch 0030 (hw/ufs).**
+       - A configuration written is checked against the device:
+         - its LUs (LUs 0-7 have drives);
+         - 4 KiB blocks;
+         - normal or enhanced1 memory;
+         - the allocation units it has, and enhanced1's ceiling;
+         - a shared WriteBooster buffer that keeps user space.
+
+         It reads back as written until `fDeviceInit` applies it.
+       - Applying it:
+         - the header goes to the device descriptor (`bBootEnable` and the
+           rest);
+         - each LU goes to its unit descriptor, and its drive is cut to
+           the capacity its allocation units give. What it held is gone,
+           as when the device rebuilds its mapping: the drive is truncated
+           to nothing, then grown, by QEMU's own block_resize recipe;
+         - a disabled LU no longer answers. REPORT LUNS leaves it out, and
+           a command to it is answered as one to an LU that is not there.
+       - The device keeps its configuration in its nvram, beside
+         `bBootLunEn`, and its LUs take it as they come up. With none kept,
+         they take their properties (`enabled`, `alloc-units`), and the
+         device keeps that.
+       - The device has a capacity of its own (its geometry's: QEMU's added
+         its LUs up). With `factory` it comes as its maker ships it.
+     - **The machine.**
+       - LUs 0-7 sit on drives ufs and ufs1-ufs7: the launcher's images,
+         sparse, which the device sizes.
+       - The scheme's LUs are set by their allocation units: LU 0 15218,
+         the boot LUs 4, recovery 32. These are the same sizes as before.
+         LUs 4-7 are disabled.
+       - `ufs-factory` is the launcher's `run --ufs-factory`, for a new
+         device.
+       - The boot ROM reads the configuration kept: the LU whose boot LUN ID
+         is `bBootLunEn`'s, and none while the boot feature is off.
+     - **A device from before.** Its images are as the old launcher made
+       them: LU 0's 64 GB seen through a smaller view, and no configuration
+       kept. The device sizes LU 0 to its allocation units (the same view)
+       and keeps the configuration. Its data and `bBootLunEn` stay.
+     - **The installer itself.** Its newest build (#85, installer 45facd5),
+       on a factory device:
+       - Target device lists "/dev/sda [UFS] … 59.6 GiB" and "Reprovision
+         UFS… unprovisioned".
+       - Its prompt: "LU 0: 59.6 GiB → 59.4 GiB; LU 1: absent → 16.0 MiB
+         boot A; LU 2: absent → 16.0 MiB boot B; LU 3: absent → 128.0 MiB.
+         The boot feature is off, so the board cannot boot. Active boot LU:
+         none → A".
+       - Confirmed: "/dev/sda … 59.4 GiB", "Reprovision UFS… ok".
+       - What it wrote: LU 0 15218 units, boot LUs 4 each and recovery 32
+         (enhanced1), its boot feature on, a shared WriteBooster buffer of
+         1024. These are the bytes linux_check now writes.
+     - **scripts/ufs_provision.py.** The installer's steps over the BSG
+       node: descriptors, attributes, flags, and `provision`. Standard
+       library only, sent in over the console.
+     - **Checked.**
+       - linux_check's default mode now starts its UFS as its maker ships
+         it, and provisions it as the installer does. It sees one LU of
+         64.0 GB with its boot feature off (at 76.8 s), and the scheme's
+         four LUs, boot LU A enabled, 12 s later.
+       - The regression: smoke test 47 s, MaskROM 16 s, Linux 410 s,
+         U-Boot 285 s. No failures.
+       - By hand: a restart keeps the provisioned layout and what was
+         written to it, and a device from before comes up as it was.

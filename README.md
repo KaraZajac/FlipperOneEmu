@@ -41,7 +41,9 @@ passes on over their I2C link). Its CPU clusters' clocks come from TF-A's SCMI
 its cores run, its SARADC reads the boot-order strap, the MCU's BOOT1 and the board's
 revision (which U-Boot tells the board by), and its 64 GB UFS (UFS 2.2 on an HS-G3
 link, new), provisioned as the Flipper OS installer has it (a system LU, boot LUs A and
-B, recovery), is blank until something is installed on it. Its two Ethernet ports have
+B, recovery), is blank until something is installed on it; or it comes as its maker
+ships it (`run --ufs-factory`: one LU, its boot feature off), and the installer
+provisions it, as on the device. Its two Ethernet ports have
 their PHYs, and with `--net` the first is on this PC's network: DHCP, DNS, and the
 internet through NAT. Its USB controllers come up, the second with the board's USB hub
 on it (a CoreChips SL6341: its USB 2.0 and SuperSpeed hubs, the MT7921 at SuperSpeed on
@@ -180,6 +182,9 @@ scripts/fetch_os.py                  # a Flipper OS build: its kernel, initrd an
                                      # image on the device's microSD (devices/NAME/sd.img);
                                      # its UFS (devices/NAME/ufs*.img: LU 0, the boot LUs,
                                      # recovery) blank until the installer fills it
+./flipperoneemu run --linux --ufs-factory ...  # ... a new device's UFS as its maker
+                                     # ships it: one LU, its boot feature off, until the
+                                     # installer provisions it (its Reprovision UFS)
 ./flipperoneemu run --linux --cpus 4 ...  # ... on four of its eight cores (the device has
                                      # eight; here both boot to the login in some 70-110 s,
                                      # since QEMU patches 0019-0022)
@@ -312,6 +317,7 @@ yet.
 | 0027 | target/arm: the generic timer at its frequency exactly (QEMU counts a tick each whole ns: at 24 MHz each 41 ns, 1.6 % fast; NTP stepped Flipper OS's clock back at each poll), and WFIT/WFET/WFE's timer armed in ns, not ticks |
 | 0028 | accel/tcg: broadcast TLB flushes without stopping every CPU (each TLBI ...IS was an exclusive section that woke every halted vCPU, the MCU's too: some 290 for each process a shell starts; now the running CPUs flush between two TBs and the others before they next run: a process starts 2.5 to 4 times quicker) |
 | 0029 | accel/tcg, target/arm: exceptions and interrupts without the BQL (each system call, abort and interrupt took it, then again to clear EXITTB: in a boot a third of the vCPUs' busy time waited for it; now half the busy time) |
+| 0030 | hw/ufs: a written configuration, applied at the device's initialisation (fDeviceInit): its LUs carved anew, their drives sized to their allocation units, LUs disabled; the configuration kept in the device's own state; a capacity of its own, and a device as its maker ships it (the installer's Reprovision UFS) |
 
 ## Layout
 
