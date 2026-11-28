@@ -15,7 +15,8 @@ Boots a throwaway device, devices/smoke-PID (removed at the end unless
   raises at its start, behind CPU_INT, which reading it lets go; the CPU
   state; a frame over the display SPI, on the panel pixel for pixel; an LED
   from its colour register; the haptic register running the motor;
-- its CLI: the firmware's own unit tests pass, and `power show` reads the
+- its CLI: the firmware's own unit tests pass, `device_info` gives the chip's
+  ID (its OTP's CHIPID, the device's own), and `power show` reads the
   gauge, the charger and the current meter as the battery model has them,
   and the battery's temperature as the panel link's `ambient` sets it;
 - the buttons and the touchpad: `input dump` sees a key and a touch sent on
@@ -459,6 +460,15 @@ def body(check, name, d, out, port):
     text = cli(d, "unit_tests", r"Status: (PASSED|FAILED)", 60)
     check("the firmware's unit tests pass", "Status: PASSED" in text,
           text[-300:])
+    # its chip's ID, as the boot ROM reads it from the OTP (CHIPID0-3, which
+    # the machine made as the chip leaves the factory): the device's own
+    text = cli(d, "device_info", r"hardware_uid\s*:\s*[0-9a-f]{16}", 10)
+    uid = re.findall(r"rp2350_hardware_uid\s*:\s*([0-9a-f]+)", text)
+    otp = (d / "mcu-otp.bin").read_bytes()
+    chipid = "".join(f"{struct.unpack_from('<I', otp, 4 * r)[0] & 0xffff:04x}"
+                     for r in (3, 2, 1, 0))
+    check("device_info: its hardware UID, the chip's ID in its OTP "
+          f"({chipid})", uid == [chipid] and chipid != "0" * 16, str(uid))
     # it draws its page again and again: a few times over, then Ctrl-C
     text = cli(d, "power show", None, 2.5, ctrl_c=True)
 

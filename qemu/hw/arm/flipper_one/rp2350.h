@@ -410,6 +410,10 @@ struct RP2350State {
 
     char *bootrom;              /* the boot ROM's image, 32 KiB */
     char *flash;                /* the flash's image, up to 16 MiB */
+    char *otp_path;             /* the OTP's image: its 4096 rows, raw */
+    int otp_fd;                 /* ... written back (-1: not) */
+    uint32_t otp_rows[4096];    /* ... each 24 bits: data, ECC, BRP */
+    MemoryRegion otp_data;      /* ... its four read windows */
 };
 
 /* rp2350_coproc.c */
@@ -428,6 +432,7 @@ void rp2350_sys_reset(RP2350State *s);
 
 /* rp2350_qmi.c */
 bool rp2350_qmi_realize(RP2350State *s, Error **errp);
+bool rp2350_otp_realize(RP2350State *s, Error **errp);
 void rp2350_qmi_reset(RP2350State *s);
 
 /* rp2350_sio.c */

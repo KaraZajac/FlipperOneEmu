@@ -107,7 +107,14 @@ def cmd_run(args):
     for sock in ("panel.sock", "monitor.sock", "cli.sock", "host.sock",
                  "usb.sock", "linux.sock", "linux4.sock", "lan.sock"):
         (d / sock).unlink(missing_ok=True)
-    machine = f"flipper-one,flash={d / 'flash.bin'},log=mculog"
+    # the MCU's OTP: blank the first time, which the machine makes as the
+    # chip leaves the factory (its IDs), the device's own from then on
+    otp = d / "mcu-otp.bin"
+    if not otp.exists():
+        with open(otp, "wb") as f:
+            f.truncate(16 << 10)
+    machine = (f"flipper-one,flash={d / 'flash.bin'},otp={otp},"
+               "log=mculog")
     if args.bootsel:
         machine += ",bootsel=on"
     if getattr(args, "hdmi", False):            # a monitor from the start

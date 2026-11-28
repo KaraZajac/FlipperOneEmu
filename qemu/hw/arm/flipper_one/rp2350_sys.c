@@ -35,6 +35,9 @@
 #include "qemu/bswap.h"
 #include "qemu/guest-random.h"
 #include "qemu/log.h"
+#include "qemu/error-report.h"
+#include "qapi/error.h"
+#include <zlib.h>
 #include "rp2350.h"
 
 /* ------------------------------------------------------ register blocks */
@@ -205,9 +208,142 @@ static void accessctrl_write(RP2Block *b, hwaddr reg, uint32_t value)
  * OTP's registers: the 64 pages' software locks (SW_LOCKn: SEC in bits 1:0,
  * NSEC in 3:2; a write is ORed in, a lock only tightens), which the boot
  * ROM sets from the OTP's page settings and reads back before its USB boot.
- * The rest keep what is written. The OTP itself reads as blank
- * (otp_data, unimplemented).
+ * The rest keep what is written.
+ *
+ * The OTP itself: 4096 rows of 24 bits, the device's own (the "otp" file:
+ * each row's raw value, 32-bit little-endian), read through its four
+ * windows (OTP_DATA_*): ECC reads (a row's 16 data bits, at 2 bytes a row;
+ * its bit-repair-by-polarity bits both set: the row inverted) and raw ones
+ * (its 24 bits, at 4 bytes a row), each also guarded. A blank one is
+ * manufactured when the device first starts, as the factory leaves a
+ * chip: CHIPID0-3 (its public 64-bit ID, which the boot ROM's
+ * get_sys_info and BOOTSEL's USB serial number give) and RANDID0-7
+ * random, NUM_GPIOS (48: the QFN80's), INFO_CRC0/1 over them, each with
+ * its ECC (the boot ROM's Hamming code). Its oscillators' calibrations
+ * are left blank; programming (SBPI) is not modelled.
  */
+#define OTP_ROWS            4096
+
+/* a row's 22 bits from its 16 data bits: the boot ROM's ECC */
+static uint32_t otp_ecc(uint16_t x)
+{
+    static const uint32_t parity[6] = {
+        0x0ad5b, 0x0366d, 0x0c78e, 0x007f0, 0x0f800, 0x1fffff,
+    };
+    uint32_t p = x;
+
+    for (int i = 0; i < 6; i++) {
+        p |= (ctpop32(p & parity[i]) & 1) << (16 + i);
+    }
+    return p;
+}
+
+static uint16_t otp_row_data(RP2350State *s, int row)
+{
+    uint32_t r = s->otp_rows[row % OTP_ROWS] & 0xffffff;
+
+    return (r >> 22) == 3 ? ~r : r;             /* (BRP: inverted) */
+}
+
+static uint64_t otp_data_read(void *opaque, hwaddr addr, unsigned size)
+{
+    RP2350State *s = opaque;
+    uint64_t v = 0;
+
+    for (unsigned i = 0; i < size; i++) {
+        hwaddr a = (addr + i) & 0x3fff;
+        uint8_t byte;
+
+        if (!(((addr + i) >> 14) & 1)) {        /* ECC: 2 bytes a row */
+            byte = a < 2 * OTP_ROWS ? otp_row_data(s, a / 2) >> (a & 1) * 8
+                                    : 0;
+        } else {                                /* raw: 4 bytes a row */
+            byte = (s->otp_rows[a / 4] & 0xffffff) >> (a & 3) * 8;
+        }
+        v |= (uint64_t)byte << (i * 8);
+    }
+    return v;
+}
+
+static void otp_data_write(void *opaque, hwaddr addr, uint64_t value,
+                           unsigned size)
+{
+    qemu_log_mask(LOG_GUEST_ERROR, "rp2350: OTP data written at 0x%04x: "
+                  "it is programmed through SBPI\n", (unsigned)addr);
+}
+
+static const MemoryRegionOps otp_data_ops = {
+    .read = otp_data_read,
+    .write = otp_data_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 4,
+};
+
+/* as a chip leaves the factory: its IDs, its GPIOs, their CRC */
+static void otp_manufacture(RP2350State *s)
+{
+    uint16_t info[0x36] = { 0 };
+    uint8_t bytes[sizeof(info)];
+    uint32_t crc;
+
+    qemu_guest_getrandom_nofail(info, 12 * sizeof(info[0]));  /* CHIPID,
+                                                                 RANDID */
+    info[0x18] = 48;                            /* NUM_GPIOS: the QFN80 */
+    for (int r = 0; r < 0x36; r++) {            /* (rows 0-0x35, as the */
+        stw_le_p(bytes + 2 * r, info[r]);       /* ECC window has them) */
+    }
+    crc = crc32(0, bytes, sizeof(bytes));
+    for (int r = 0; r < 0x36; r++) {
+        s->otp_rows[r] = info[r] ? otp_ecc(info[r]) : 0;
+    }
+    s->otp_rows[0x36] = otp_ecc(crc & 0xffff);  /* INFO_CRC0, 1 */
+    s->otp_rows[0x37] = otp_ecc(crc >> 16);
+}
+
+bool rp2350_otp_realize(RP2350State *s, Error **errp)
+{
+    uint8_t buf[OTP_ROWS * 4];
+    bool blank = true;
+
+    memset(s->otp_rows, 0, sizeof(s->otp_rows));
+    s->otp_fd = -1;
+    if (s->otp_path) {
+        ssize_t n;
+
+        s->otp_fd = open(s->otp_path, O_RDWR);
+        if (s->otp_fd < 0) {
+            error_setg_errno(errp, errno, "rp2350: otp %s", s->otp_path);
+            return false;
+        }
+        memset(buf, 0, sizeof(buf));
+        n = pread(s->otp_fd, buf, sizeof(buf), 0);
+        if (n < 0) {
+            error_setg_errno(errp, errno, "rp2350: otp %s", s->otp_path);
+            return false;
+        }
+        for (int r = 0; r < OTP_ROWS; r++) {
+            s->otp_rows[r] = ldl_le_p(buf + 4 * r) & 0xffffff;
+        }
+    }
+    for (int r = 0; r < 4; r++) {
+        blank &= !s->otp_rows[r];               /* (CHIPID: none yet) */
+    }
+    if (blank) {
+        otp_manufacture(s);
+        for (int r = 0; r < OTP_ROWS; r++) {
+            stl_le_p(buf + 4 * r, s->otp_rows[r]);
+        }
+        if (s->otp_fd >= 0 &&
+            pwrite(s->otp_fd, buf, sizeof(buf), 0) != sizeof(buf)) {
+            warn_report("rp2350: otp %s: not written", s->otp_path);
+        }
+    }
+    memory_region_init_io(&s->otp_data, OBJECT(s), &otp_data_ops, s,
+                          "rp2350.otp_data", 0x10000);
+    memory_region_add_subregion(&s->bus, 0x40130000, &s->otp_data);
+    return true;
+}
 static void otp_write(RP2Block *b, hwaddr reg, uint32_t value)
 {
     if (reg < 0x100) {

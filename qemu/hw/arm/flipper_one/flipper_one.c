@@ -143,6 +143,7 @@ struct FlipperOneState {
     Chardev *uart_link[2];      /* the UART between the chips: UART4's
                                    end, the MCU's UART0's (uart_link.c) */
     char *flash;
+    char *otp;                  /* the MCU's OTP's image */
     char *log_id;
     bool bootsel;
 };
@@ -1861,6 +1862,9 @@ static void flipper_one_init(MachineState *ms)
     if (s->flash) {
         qdev_prop_set_string(mcu, "flash", s->flash);
     }
+    if (s->otp) {
+        qdev_prop_set_string(mcu, "otp", s->otp);
+    }
     qdev_prop_set_bit(mcu, "bootsel", s->bootsel);
     qdev_connect_clock_in(mcu, "sysclk", s->mcu_clk);
     sysbus_realize(SYS_BUS_DEVICE(mcu), &error_fatal);
@@ -2016,6 +2020,19 @@ static void flipper_one_set_flash(Object *obj, const char *value, Error **errp)
 
     g_free(s->flash);
     s->flash = g_strdup(value);
+}
+
+static char *flipper_one_get_otp(Object *obj, Error **errp)
+{
+    return g_strdup(FLIPPER_ONE(obj)->otp);
+}
+
+static void flipper_one_set_otp(Object *obj, const char *value, Error **errp)
+{
+    FlipperOneState *s = FLIPPER_ONE(obj);
+
+    g_free(s->otp);
+    s->otp = g_strdup(value);
 }
 
 static char *flipper_one_get_log(Object *obj, Error **errp)
@@ -2174,6 +2191,11 @@ static void flipper_one_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(oc, "flash",
         "The image of the MCU's 16 MiB QSPI flash (raw; scripts/uf2.py "
         "writes one from a recovery .uf2)");
+    object_class_property_add_str(oc, "otp", flipper_one_get_otp,
+                                  flipper_one_set_otp);
+    object_class_property_set_description(oc, "otp",
+        "The image of the MCU's OTP (its 4096 rows, raw, 16 KiB), which a "
+        "blank one becomes as the chip leaves the factory: its IDs");
     object_class_property_add_str(oc, "log", flipper_one_get_log,
                                   flipper_one_set_log);
     object_class_property_set_description(oc, "log",

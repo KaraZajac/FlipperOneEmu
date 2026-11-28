@@ -354,6 +354,10 @@ static void rp2350_realize(DeviceState *dev, Error **errp)
     if (!rp2350_qmi_realize(s, errp)) {
         return;
     }
+    /* the OTP: its image, as the chip left the factory if it is blank */
+    if (!rp2350_otp_realize(s, errp)) {
+        return;
+    }
 
     /* the boot ROM works in the USB controller's RAM too */
     if (!memory_region_init_ram(&s->xip_sram, obj, "rp2350.xip-sram",
@@ -475,6 +479,7 @@ static void rp2350_reset_hold(Object *obj, ResetType type)
 static const Property rp2350_properties[] = {
     DEFINE_PROP_STRING("bootrom", RP2350State, bootrom),
     DEFINE_PROP_STRING("flash", RP2350State, flash),
+    DEFINE_PROP_STRING("otp", RP2350State, otp_path),
     DEFINE_PROP_BOOL("bootsel", RP2350State, bootsel, false),
 };
 

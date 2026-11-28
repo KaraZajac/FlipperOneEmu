@@ -3821,3 +3821,42 @@ register headers.
          Linux 431 s after one fix. Its first run printed the console
          shell's job-control lines into the check's output; the playback
          now runs in a subshell.
+
+128. **The MCU's OTP, as the chip leaves the factory.** The RP2350's OTP
+     read as blank (unimplemented), so the MCU firmware's `device_info`
+     gave `rp2350_hardware_uid: 0000000000000000` on every device. A real
+     chip leaves the factory with rows programmed (the SDK's otp_data.h):
+     - CHIPID0-3, a random 64-bit public ID. The boot ROM copies it to its
+       own RAM at each boot, and its get_sys_info gives it, which is the
+       SDK's unique board ID; BOOTSEL's USB serial number is made from it;
+     - RANDID0-7, a random 128-bit private one;
+     - the oscillators' measured frequencies; NUM_GPIOS (48 on the QFN80);
+     - INFO_CRC0/1, a CRC32 of rows 0x00-0x35.
+
+     Each is written with ECC: 16 data bits, 6 Hamming parity bits and 2
+     bits of "bit repair by polarity".
+     - **The model.**
+       - The OTP is the device's own: devices/NAME/mcu-otp.bin, its 4096
+         rows raw, which the launcher creates blank.
+       - A blank one is manufactured as the device first starts: CHIPID and
+         RANDID random (QEMU's guest random source, which -seed makes
+         repeat), NUM_GPIOS 48 and the INFO CRC. Each row gets the boot
+         ROM's ECC (its parity table, from third_party/pico-bootrom-rp2350)
+         and is written back.
+       - The oscillators' calibrations stay blank: there is no measured
+         value to give them.
+       - Its four windows answer: OTP_DATA, ECC reads, 2 bytes a row
+         (both BRP bits set: the row inverted); OTP_DATA_RAW, 4 bytes a
+         row; and the guarded twins of each.
+       - Programming (SBPI, the boot ROM's otp_access writes, the
+         firmware's `otp whitelabel`) is not modelled yet.
+     - **Seen.** `device_info`: `rp2350_hardware_uid: f4aa2432b926a5be`,
+       CHIPID's rows a5be b926 2432 f4aa in the SDK's order, the same after
+       a restart. NUM_GPIOS reads 48, and the INFO CRC checks out (zlib's
+       CRC32 over the rows).
+     - **Checked.**
+       - The smoke test now reads `device_info` and checks its UID against
+         the OTP image's CHIPID (56dab19c8e682238 in its run: each new
+         device its own).
+       - The regression: smoke test 47 s (52 s with the new check),
+         MaskROM 16 s, Linux 426 s, U-Boot 274 s. No failures.
