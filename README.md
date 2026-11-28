@@ -56,8 +56,8 @@ Flipper OS runs reaches the RK3576, as on the device (the MCU switches the port'
 to it with its rail), and enumerates Flipper OS's USB gadget at high speed: its serial
 port's login on `devices/NAME/usb.sock`, and over USB/IP the whole gadget on this PC:
 its network (NCM, with a DHCP server on Flipper OS's side), MTP and the serial port.
-Its sound card (the NAU8822 codec on SAI2) plays, at 48 kHz: to a WAV file, or nowhere
-(`run --audio`); its microphones (the internal one, and a headset's in the jack) hear a
+Its sound card (the NAU8822 codec on SAI2) plays, at 48 kHz: to a WAV file, to this PC's
+own sound, live (PipeWire), or nowhere (`run --audio`); its microphones (the internal one, and a headset's in the jack) hear a
 WAV file (`run --mic`). An NVMe SSD can be put in its M.2 slot (`run --nvme`), on
 PCIe0, or a 5G modem (`run --modem`, below): the slot holds one card. A monitor can
 be put in its HDMI port (`run --hdmi`): Linux lights it at 1280x720 with
@@ -155,8 +155,10 @@ scripts/fetch_os.py                  # a Flipper OS build: its kernel, initrd an
                                      # (the LAN's DHCP server and gateway, or with
                                      # --client a DHCP client of the Flipper's)
 ./flipperoneemu run --linux --audio FILE.wav ...  # ... the sound Flipper OS plays, into
-                                     # a WAV file (or a driver this QEMU has: this PC's
-                                     # sound needs pipewire-devel when QEMU is configured)
+                                     # a WAV file (or a driver this QEMU has)
+./flipperoneemu run --linux --audio pc ...  # ... or on this PC's sound, live: its
+                                     # PipeWire (pw-play, scripts/fo_sound.py), with no
+                                     # audio driver in QEMU
 ./flipperoneemu run --linux --mic FILE.wav ...  # ... and what its internal microphone
                                      # hears: a WAV file (16-bit PCM), looped
 ./flipperoneemu run --linux --modem ...  # ... and a 5G modem in the M.2 slot (a Quectel

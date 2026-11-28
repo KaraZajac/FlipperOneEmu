@@ -214,9 +214,21 @@ def cmd_run(args):
                 "server=on,wait=off",
                 "-global", "flipper-one-usb-host.usbip=usbip"]
     # the audio codec's sound (Flipper OS plays at 48 kHz): nowhere, a WAV
-    # file, or this PC's sound through a driver QEMU was built with
+    # file, this PC's sound through a driver QEMU was built with, or "pc":
+    # this PC's PipeWire, live, with no driver in QEMU (its wav backend
+    # writes to a FIFO, which scripts/fo_sound.py plays through pw-play;
+    # the FIFO is held open here, so that QEMU's open of it never waits)
     audio = (f"wav,path={os.path.abspath(args.audio)}"
              if args.audio.endswith(".wav") else args.audio)
+    sound_fd = None
+    if args.audio == "pc":
+        if not shutil.which("pw-play"):
+            die("--audio pc: no pw-play (PipeWire's) on this PC")
+        fifo = d / "audio.fifo"
+        fifo.unlink(missing_ok=True)
+        os.mkfifo(fifo)
+        sound_fd = os.open(fifo, os.O_RDWR)
+        audio = f"wav,path={fifo}"
     cmd += ["-audiodev", f"{audio},id=snd0,out.frequency=48000",
             "-global", "nau8822.audiodev=snd0"]
     # the HDMI port's picture (QEMU's first graphic console), live, to a VNC
@@ -252,6 +264,7 @@ def cmd_run(args):
             p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=out,
                                  stderr=subprocess.STDOUT, start_new_session=True)
         (d / "qemu.pid").write_text(f"{p.pid}\n")
+        sound(d, sound_fd, p.pid)
         for _ in range(50):                     # its sockets, before we go
             if (d / "panel.sock").exists() or p.poll() is not None:
                 break
@@ -262,11 +275,24 @@ def cmd_run(args):
         return 0
     p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL)
     (d / "qemu.pid").write_text(f"{p.pid}\n")
+    sound(d, sound_fd, p.pid)
     try:
         return p.wait()
     except KeyboardInterrupt:
         p.send_signal(signal.SIGTERM)
         return p.wait()
+
+
+def sound(d, fd, qemu_pid):
+    """--audio pc: the FIFO's player, for as long as QEMU runs"""
+    if fd is None:
+        return
+    with open(d / "sound.log", "wb") as log:
+        subprocess.Popen([sys.executable, str(ROOT / "scripts" / "fo_sound.py"),
+                          str(fd), str(qemu_pid)], pass_fds=(fd,),
+                         stdin=subprocess.DEVNULL, stdout=log,
+                         stderr=subprocess.STDOUT, start_new_session=True)
+    os.close(fd)
 
 
 def monitor(d, line):
@@ -759,9 +785,10 @@ def main():
                                 "the boot entry's")
             p.add_argument("--audio", metavar="WHERE", default="none",
                            help="where the audio codec's sound goes: none "
-                                "(the default), FILE.wav, or an audio driver "
-                                "this QEMU has (qemu-system-aarch64 "
-                                "-audiodev help)")
+                                "(the default), FILE.wav, pc (this PC's "
+                                "PipeWire, live, through pw-play), or an "
+                                "audio driver this QEMU has "
+                                "(qemu-system-aarch64 -audiodev help)")
             p.add_argument("--mic", metavar="FILE.wav",
                            help="what the board's internal microphone hears: "
                                 "a WAV file (16-bit PCM), looped; silence "

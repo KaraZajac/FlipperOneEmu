@@ -202,10 +202,11 @@ screen and its CLI.
       plays to a file (`run --speaker`) (2026-11-27, log 115); its remote
       control: AVRCP's target, an amplifier's, its volume PipeWire's to set
       while it plays (absolute volume), logged (2026-11-28, log 127)
-- ◐ Audio: the SAIs (0, 2, 6) and the NAU8822: Flipper OS's sound card plays, out of
+- ☑ Audio: the SAIs (0, 2, 6) and the NAU8822: Flipper OS's sound card plays, out of
       QEMU's audio (`run --audio`) (2026-11-25); the internal and the headset's
       microphones, from a WAV file (`run --mic`) (2026-11-25); this PC's own
-      sound (QEMU with a PipeWire backend)
+      sound, live, with no audio driver in QEMU: its wav backend into a FIFO,
+      PipeWire's pw-play (`run --audio pc`) (2026-11-28, log 130)
 - ◐ PCIe0 and the M.2 slot, HDMI: QEMU's DesignWare host with Rockchip's registers, an
       NVMe in the slot (`run --nvme`) (2026-11-25); HDMI: the VOP2, its IOMMU, the
       transmitter and a monitor (`run --hdmi`, `shot --hdmi`), Flipper OS's console

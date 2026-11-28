@@ -3897,3 +3897,29 @@ register headers.
          label has it, its serial the chip's ID.
        - The regression: smoke test 50 s, MaskROM 17 s, Linux 429 s,
          U-Boot 281 s. No failures.
+
+130. **The Flipper's sound on this PC's, live.** `run --audio` had a WAV
+     file or a driver QEMU was built with. This QEMU has none for this
+     PC's sound (its configure found no libpulse, alsa, libpipewire or
+     sdl2; installing their development packages is the PC owner's call),
+     so the sound could only be heard afterwards.
+     - **`run --audio pc`:**
+       - QEMU's wav backend writes into a FIFO (devices/NAME/audio.fifo).
+         The launcher holds the FIFO open, so QEMU's open of it never
+         waits for a reader.
+       - scripts/fo_sound.py takes that descriptor, skips the WAV header,
+         and plays the rest through PipeWire's pw-play (raw, 48 kHz,
+         stereo, s16) as it comes.
+       - It always drains the FIFO. What the player cannot take at once is
+         dropped, in whole frames, so QEMU never waits on it.
+       - It ends when QEMU does; its counts go to devices/NAME/sound.log.
+       - FO_SOUND_VOLUME sets the player's volume, which let the check run
+         silent.
+     - **Seen.** At volume 0, two tones of 3 s from Flipper OS (aplay on
+       its NAU8822): pw-play read 574 KB for the second, which is 3 s of
+       48 kHz 16-bit stereo. After the stop: "QEMU ended; 1145736 bytes
+       played, 0 dropped", and the helper gone. QEMU's wav backend writes
+       only while the codec plays, so a silent device costs nothing.
+     - **Checked.** The smoke test (45 s) and linux_check (402 s), whose
+       runs all go through the launcher's changed start; no failures. The
+       regression does not use `--audio pc`: it plays sound on the PC.
