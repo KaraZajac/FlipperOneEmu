@@ -3738,3 +3738,48 @@ register headers.
        - The regression: smoke test 52 s, MaskROM 16 s, Linux 421 s,
          U-Boot 289 s. And linux_check's MCU update (203 s), whose boots go
          through the boot ROM's watchdog reboot. No failures.
+
+126. **Where an SD read's time goes; two experiments not kept.** No change
+     to the emulator. These are notes for what comes next.
+     - **The boot now.** systemd-analyze: 18.6 s in the kernel and 43.3 s in
+       userspace, 61.9 s in all.
+       - In the kernel's log, /init starts at 8.4 s, and the root's systemd
+         at about 18.6 s.
+       - journalctl stamps the kernel's messages 28.86 s later than dmesg
+         does. The guest's own clocks agree with each other (printk,
+         /proc/uptime and the timer list read the same), so that offset is
+         journald's.
+     - **4 KiB random reads** (fio, an idle guest): the microSD card does 145
+       IOPS, 6.7 ms each; the UFS 841, 1.14 ms each. A real UHS-I card does
+       over 1500.
+     - **The SD host's interrupt is not the cost.** Timed in the model, from
+       the line raised to the guest's handler reading MINTSTS:
+       - in a boot, of 3,500 interrupts 97 % were handled within 0.5 ms,
+         and one took over 5 ms;
+       - in 300 reads of 4 KiB (6.4 ms each), still mostly within 0.5 ms.
+
+       Flipper's dw_mmc still warns now and then ("Interrupt latency, state
+       1 (watched 0x1)"): its watchdog, about 10 ms, found CMD_DONE latched
+       and not yet handled.
+     - **What is.** The read's path across the guest's CPUs, from a trace of
+       the block, mmc and IPI events and the reader's wake-ups:
+       1. a kworker on the reader's CPU issues the request;
+       2. the interrupt and the completion run on CPU 0 (dw-mci's affinity,
+          about 2.2 interrupts a read);
+       3. the block layer sends the completion back to the submitting CPU
+          by IPI;
+       4. the reader is woken.
+
+       Each hop wakes a vCPU thread that has gone to sleep. On this host
+       (the powersave governor, C-states down to C9 at 480 µs) that costs
+       from a fraction of a millisecond to several. With the guest busier,
+       traced, the same read took 3 ms.
+     - **Two experiments, not kept.**
+       - A halted vCPU polling for 150 µs before it sleeps, in TCG's thread
+         loop: the card 5.6 ms a read, the UFS worse (1.69 ms: the polling
+         threads take the host's cores from QEMU's own), the boot 64 s.
+       - The host's cores kept awake by 16 low-priority spinning processes:
+         the boot took 3 min 34 s. They took the cores from QEMU, so this
+         measured nothing about C-states.
+     - **So** a boot is bound by these hops' latency, which is the host's,
+       and the host's power settings are not the emulator's to change.
