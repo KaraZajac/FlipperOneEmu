@@ -3350,3 +3350,65 @@ register headers.
        - linux_check passes (370 s, the login at 61.9 s), as do its U-Boot
          mode (240 s), its MaskROM mode (17 s) and the smoke test (44 s).
        - The Wi-Fi bullet in PLAN is now done.
+
+119. **Exceptions and interrupts without the BQL (QEMU patch 0029); a
+     context switch measured.**
+     - **After patch 0028.** A boot was profiled (eu-stack, 100 s from the
+       kernel's start). Of the busy vCPU samples, 32 % waited for the BQL in
+       cpu_exec_loop:
+       - 29 samples where it takes an interrupt (cpu_handle_interrupt);
+       - 25 where it takes an exception (cpu_handle_exception: every system
+         call and every abort).
+
+       Their return addresses tell the two apart. bql_lock_impl tail-calls
+       the mutex, so its own frame is not in the stacks.
+     - **What the BQL guarded there: nothing, for these.**
+       - Arm's do_interrupt, for an SVC, an abort, an undefined instruction
+         or a physical IRQ or FIQ, changes the CPU's own registers.
+       - Its EL change hooks are the PMU's, which do nothing while no
+         counter is enabled (patch 0013's test).
+       - The GIC-400's state is not touched: the guest acknowledges an
+         interrupt through MMIO.
+       - do_interrupt then sets EXITTB, and the next check took the BQL
+         again just to clear it.
+     - **The patch.**
+       - A target may say that an exception (do_interrupt_unlocked) or an
+         interrupt (cpu_exec_interrupt_unlocked) needs no BQL, and cpu_exec
+         then takes none.
+       - EXITTB alone is cleared atomically.
+       - Arm's A profile says so on a CPU without a GICv3 CPU interface,
+         with its hooks idle: for UDEF, SVC, prefetch and data aborts, IRQ
+         and FIQ.
+       - PSCI's HVC and SMC, semihosting and debug keep the BQL. So do the
+         M profile, record and replay, and single-stepping.
+     - **What it gives.**
+       - In the same profile the BQL waits in cpu_exec_loop went from 54
+         samples to 2, and the busy samples from 168 to 79 (of some 1,700):
+         the vCPUs do a boot's work in half the busy time.
+       - The boot itself is no quicker (FlipCTL's first frame at about 70
+         s), and neither is a process start (`/bin/true` 23-24 ms). What is
+         left waits elsewhere.
+     - **A context switch, measured.**
+       - A pipe ping-pong between two processes takes 865 µs a round trip on
+         one core and 959-1,099 µs between two; the write and read without a
+         switch take 26 µs.
+       - `/bin/true` pinned to one core takes 14 ms, and unpinned 31-33 ms.
+       - QEMU flushes its whole TLB and the TB jump cache at each change of
+         ASID, which Linux makes at each switch between processes.
+       - A throwaway patch kept the kernel's entries (those above 2^48),
+         which is right for Linux without KPTI, whose kernel mappings are
+         global. The ping-pong took 464 µs on one core and 307 µs between
+         two.
+       - But `/bin/true` was no quicker (28-29 ms), and nor was the boot. It
+         was not kept. An exact version would need the TLB to keep each
+         entry's nG.
+     - **Checked.**
+       - stress-ng's tlb-shootdown, vm, mmap and memthrash stressors (with
+         `--verify`) pass, as with patch 0028. So do the xz and sort round
+         trips, and dmesg shows nothing.
+       - linux_check passes (461 s, the login at 77.5 s), as do its U-Boot
+         mode (267 s, the login at 93.8 s), its MaskROM mode (17 s) and the
+         smoke test (49 s). Its times vary run to run (370-461 s on much the
+         same code).
+       - PLAN's milestones M1, M2 and M5 still said not started. They are
+         now marked as under way.

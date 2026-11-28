@@ -1,0 +1,215 @@
+From: FlipperOneEmu
+Subject: [PATCH] accel/tcg, target/arm: exceptions and interrupts without the BQL
+
+cpu_exec took the BQL for each exception a vCPU took (a system call, a
+page's abort) to call do_interrupt, and for each interrupt to ask the
+target whether it takes it. Then, since Arm's do_interrupt sets EXITTB
+after either, it took the BQL again at the next check to clear that bit.
+With Flipper OS booting on eight cores, the vCPUs waited for the BQL
+there in a third of their busy time, about as much at each of the two.
+
+A target may now say that it takes an exception without the BQL
+(do_interrupt_unlocked), or an interrupt (cpu_exec_interrupt_unlocked):
+from the CPU's own state alone, a change of that state alone. cpu_exec
+then calls do_interrupt or cpu_exec_interrupt without it. EXITTB alone
+is cleared without it too: cpu_reset_interrupt is atomic. None of this
+in record or replay, nor while single-stepping, nor for DEBUG, HALT or
+RESET.
+
+Arm's A profile says so on a CPU without a GICv3 CPU interface (whose
+registers are the GIC's) while the EL change hooks have nothing to do
+(patch 0013's test): for UDEF, SVC, prefetch and data aborts, IRQ and
+FIQ, and for a physical IRQ or FIQ alone. PSCI's HVC and SMC,
+semihosting and debug keep the BQL, and so does the M profile (its
+NVIC).
+
+---
+--- a/include/accel/tcg/cpu-ops.h	2026-11-27 18:51:17.023581224 -0500
++++ b/include/accel/tcg/cpu-ops.h	2026-11-27 18:51:55.934260761 -0500
+@@ -171,6 +171,12 @@
+ #else
+     /** @do_interrupt: Callback for interrupt handling.  */
+     void (*do_interrupt)(CPUState *cpu);
++    /**
++     * @do_interrupt_unlocked: (optional) true if @do_interrupt may take
++     * cpu->exception_index's exception without the BQL: a change of the
++     * CPU's own state alone. Not asked in record or replay.
++     */
++    bool (*do_interrupt_unlocked)(CPUState *cpu);
+     /** @cpu_exec_interrupt: Callback for processing interrupts in cpu_exec */
+     bool (*cpu_exec_interrupt)(CPUState *cpu, int interrupt_request);
+     /**
+@@ -181,6 +187,14 @@
+      * them. False when it cannot tell (a bit it does not know).
+      */
+     bool (*cpu_exec_interrupt_masked)(CPUState *cpu, int interrupt_request);
++    /**
++     * @cpu_exec_interrupt_unlocked: (optional) true if @cpu_exec_interrupt
++     * may take what @interrupt_request has (or find it masked) without the
++     * BQL: from the CPU's own state alone, a change of that state alone.
++     * Not asked for DEBUG, HALT or RESET (EXITTB is not in it), in record
++     * or replay, nor while single-stepping.
++     */
++    bool (*cpu_exec_interrupt_unlocked)(CPUState *cpu, int interrupt_request);
+     /** @cpu_exec_reset: Callback for reset in cpu_exec.  */
+     void (*cpu_exec_reset)(CPUState *cpu);
+     /**
+--- a/accel/tcg/cpu-exec.c	2026-11-27 18:51:17.029798525 -0500
++++ b/accel/tcg/cpu-exec.c	2026-11-27 18:51:55.934502674 -0500
+@@ -731,10 +731,18 @@
+ #else
+     if (replay_exception()) {
+         const TCGCPUOps *tcg_ops = cpu->cc->tcg_ops;
++        /* (some a target takes without the BQL: do_interrupt_unlocked) */
++        bool unlocked = tcg_ops->do_interrupt_unlocked &&
++                        replay_mode == REPLAY_MODE_NONE &&
++                        tcg_ops->do_interrupt_unlocked(cpu);
+ 
+-        bql_lock();
++        if (!unlocked) {
++            bql_lock();
++        }
+         tcg_ops->do_interrupt(cpu);
+-        bql_unlock();
++        if (!unlocked) {
++            bql_unlock();
++        }
+         cpu->exception_index = -1;
+ 
+         if (unlikely(cpu_single_stepping(cpu))) {
+@@ -831,6 +839,37 @@
+             ops->cpu_exec_interrupt_masked(cpu, pending)) {
+             goto none_to_take;
+         }
++        /*
++         * Only EXITTB, which a target's do_interrupt sets after it has
++         * taken an exception: no chaining across it, and no need for the
++         * BQL to clear it.
++         */
++        if (pending == CPU_INTERRUPT_EXITTB &&
++            replay_mode == REPLAY_MODE_NONE) {
++            cpu_reset_interrupt(cpu, CPU_INTERRUPT_EXITTB);
++            *last_tb = NULL;
++            goto none_to_take;
++        }
++        /*
++         * Interrupts that the target takes without the BQL
++         * (cpu_exec_interrupt_unlocked): as below, without it.
++         */
++        if (ops->cpu_exec_interrupt_unlocked &&
++            replay_mode == REPLAY_MODE_NONE && !cpu_single_stepping(cpu) &&
++            !(pending & (CPU_INTERRUPT_DEBUG | CPU_INTERRUPT_HALT |
++                         CPU_INTERRUPT_RESET)) &&
++            ops->cpu_exec_interrupt_unlocked(cpu,
++                                             pending & ~CPU_INTERRUPT_EXITTB)) {
++            if (ops->cpu_exec_interrupt(cpu, pending)) {
++                cpu->exception_index = -1;
++                *last_tb = NULL;
++            }
++            if (cpu_test_interrupt(cpu, CPU_INTERRUPT_EXITTB)) {
++                cpu_reset_interrupt(cpu, CPU_INTERRUPT_EXITTB);
++                *last_tb = NULL;
++            }
++            goto none_to_take;
++        }
+         bql_lock();
+         if (cpu_test_interrupt(cpu, CPU_INTERRUPT_DEBUG)) {
+             cpu_reset_interrupt(cpu, CPU_INTERRUPT_DEBUG);
+--- a/target/arm/internals.h	2026-11-27 18:51:17.036055236 -0500
++++ b/target/arm/internals.h	2026-11-27 18:51:55.934772990 -0500
+@@ -1315,6 +1315,14 @@
+ bool arm_cpu_exec_interrupt_masked(CPUState *cs, int interrupt_request);
+ 
+ /**
++ * arm_cpu_exec_interrupt_unlocked(), arm_cpu_do_interrupt_unlocked():
++ * Implementations of the cpu_exec_interrupt_unlocked and
++ * do_interrupt_unlocked hooks.
++ */
++bool arm_cpu_exec_interrupt_unlocked(CPUState *cs, int interrupt_request);
++bool arm_cpu_do_interrupt_unlocked(CPUState *cs);
++
++/**
+  * arm_cpu_update_virq: Update CPU_INTERRUPT_VIRQ bit in cs->interrupt_request
+  *
+  * Update the CPU_INTERRUPT_VIRQ bit in cs->interrupt_request, following
+--- a/target/arm/cpu-irq.c	2026-11-27 18:51:17.042314164 -0500
++++ b/target/arm/cpu-irq.c	2026-11-27 18:51:55.934935758 -0500
+@@ -228,6 +228,45 @@
+     return true;
+ }
+ 
++/*
++ * What arm_cpu_do_interrupt() takes as a change of the CPU's own state
++ * alone, without the BQL: on an A profile CPU without a GICv3 CPU
++ * interface (whose registers are the GIC's), when the EL change hooks have
++ * nothing to do (the PMU's, none of its counters enabled), the exceptions
++ * a guest raises all the time (a system call, an abort, an undefined
++ * instruction) and the physical IRQ and FIQ. Not PSCI's HVC or SMC,
++ * semihosting or debug: those are the BQL's.
++ */
++bool arm_cpu_do_interrupt_unlocked(CPUState *cs)
++{
++    ARMCPU *cpu = ARM_CPU(cs);
++
++    switch (cs->exception_index) {
++    case EXCP_UDEF:
++    case EXCP_SWI:
++    case EXCP_PREFETCH_ABORT:
++    case EXCP_DATA_ABORT:
++    case EXCP_IRQ:
++    case EXCP_FIQ:
++        break;
++    default:
++        return false;
++    }
++    return !arm_feature(&cpu->env, ARM_FEATURE_M) && !cpu->env.gicv3state &&
++           arm_el_change_hooks_idle(cpu);
++}
++
++/* ... and so arm_cpu_exec_interrupt() for a physical IRQ or FIQ alone */
++bool arm_cpu_exec_interrupt_unlocked(CPUState *cs, int interrupt_request)
++{
++    ARMCPU *cpu = ARM_CPU(cs);
++
++    return interrupt_request &&
++           !(interrupt_request & ~(CPU_INTERRUPT_HARD | CPU_INTERRUPT_FIQ)) &&
++           !arm_feature(&cpu->env, ARM_FEATURE_M) && !cpu->env.gicv3state &&
++           arm_el_change_hooks_idle(cpu);
++}
++
+ bool arm_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
+ {
+     CPUARMState *env = cpu_env(cs);
+--- a/target/arm/cpu.c	2026-11-27 18:51:17.048357130 -0500
++++ b/target/arm/cpu.c	2026-11-27 18:51:55.935332635 -0500
+@@ -2652,9 +2652,11 @@
+     .pointer_wrap = aprofile_pointer_wrap,
+     .cpu_exec_interrupt = arm_cpu_exec_interrupt,
+     .cpu_exec_interrupt_masked = arm_cpu_exec_interrupt_masked,
++    .cpu_exec_interrupt_unlocked = arm_cpu_exec_interrupt_unlocked,
+     .cpu_exec_halt = arm_cpu_exec_halt,
+     .cpu_exec_reset = cpu_reset,
+     .do_interrupt = arm_cpu_do_interrupt,
++    .do_interrupt_unlocked = arm_cpu_do_interrupt_unlocked,
+     .do_transaction_failed = arm_cpu_do_transaction_failed,
+     .do_unaligned_access = arm_cpu_do_unaligned_access,
+     .adjust_watchpoint_address = arm_adjust_watchpoint_address,
+--- a/target/arm/helper.c	2026-11-27 18:51:17.054535217 -0500
++++ b/target/arm/helper.c	2026-11-27 18:51:55.936495326 -0500
+@@ -9688,11 +9688,12 @@
+ #endif
+ 
+     /*
+-     * Hooks may change global state so BQL should be held, also the
+-     * BQL needs to be held for any modification of
+-     * cs->interrupt_request.
++     * Hooks may change global state so BQL should be held, unless they
++     * have nothing to do for an exception that changes this CPU's own
++     * state alone (arm_cpu_do_interrupt_unlocked); interrupt_request is
++     * changed atomically.
+      */
+-    g_assert(bql_locked());
++    g_assert(bql_locked() || arm_cpu_do_interrupt_unlocked(cs));
+ 
+     arm_call_pre_el_change_hook(cpu);
+ 

@@ -5,7 +5,7 @@ firmware with its own boot ROM, the RK3576 runs Flipper OS, both in one QEMU mac
 with FlipperZeroEmu's debugger-first workflow. Why one machine with both chips:
 RESEARCH.md §8.
 
-## M1: the MCU boots ☐
+## M1: the MCU boots ◐
 The RP2350B and the published MCU firmware (target `f1`, `dev` builds) to its self-check
 screen and its CLI.
 - ☑ QEMU 11.1.3 built for aarch64 (`qemu-system-aarch64` has the M-profile CPUs too),
@@ -47,7 +47,7 @@ screen and its CLI.
       gdb on it with the firmware's symbols, the MCU first and the RK3576's clusters
       as more inferiors (2026-11-25, log 83)
 
-## M2: the MCU's board ☐
+## M2: the MCU's board ◐
 - ☑ The control bus (2026-11-24): PCAL6416 (the buttons), IQS7211E (the touchpad),
       DRV2605L (haptics: the window shakes while its motor runs), TPS62868x (the
       display's supply)
@@ -166,7 +166,7 @@ screen and its CLI.
       UART between the two: UART4 (Flipper OS's ttyS1, OS-05) to the MCU's UART0, which
       its uart_echo answers on; linux4.sock watching (2026-11-27, log 113)
 
-## M5: Flipper OS's hardware ☐
+## M5: Flipper OS's hardware ◐
 - ☑ Ethernet (GMAC, dwmac 4.20a, RTL8211F): both ports and their PHYs; the first on the
       host's network through passt (`run --net`), SSH from the host (`run --ssh PORT`)
       (2026-11-24); the second on a LAN of its own (`run --lan`: a socket that a VM or
@@ -226,7 +226,9 @@ screen and its CLI.
       for each process a shell starts) without stopping every CPU: the running
       ones flush between two TBs, the others before they next run (patch 0028:
       a process starts 2.5 to 4 times quicker, linux_check 447 s from 481-520,
-      its U-Boot mode 293 s from 403-435) (2026-11-27, log 117)
+      its U-Boot mode 293 s from 403-435) (2026-11-27, log 117); exceptions and
+      interrupts taken without the BQL when it guards nothing (patch 0029: a
+      boot's busy vCPU time halved) (2026-11-27, log 119)
 - ☑ Wi-Fi (the MT7921 on USB, its Bluetooth there too, log 99): mt7921u on its
       interface 3, its real firmware through the emulated MCU, the interface
       NetworkManager's and FlipCTL's, scans that complete (2026-11-26, log 101); an
