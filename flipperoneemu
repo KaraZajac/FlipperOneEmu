@@ -32,6 +32,7 @@ import glob
 import json
 import os
 import pathlib
+import shutil
 import signal
 import socket
 import struct
@@ -95,6 +96,8 @@ def cmd_run(args):
         die("no RP2350 boot ROM: run scripts/fetch_firmware.py")
     if pid_of(d):
         die(f"{args.name} is running already (pid {pid_of(d)})")
+    if getattr(args, "modem", False) and getattr(args, "nvme", None) is not None:
+        die("the M.2 slot holds one card: --nvme or --modem")
     d.mkdir(parents=True, exist_ok=True)
     if args.uf2 or not (d / "flash.bin").exists():
         make_flash(d, args.uf2)
@@ -183,8 +186,10 @@ def cmd_run(args):
                 "-global", f"mt7921.ap-psk={args.wifi_psk}"]
     if getattr(args, "modem", False):
         # a 5G modem in the M.2 slot (a Quectel RM520N-GL's QMI interface, on
-        # the board's hub): ModemManager's
+        # the board's hub): ModemManager's; its data through passt, if there
         cmd += ["-machine", "modem=on"]
+        if shutil.which("passt"):
+            cmd += ["-nic", "passt,model=rm520n"]
     if getattr(args, "lan", False):
         # a cable in the second port, to a socket: a LAN that another VM, or
         # scripts/lan_host.py, joins at the other end (no one there: no link)
@@ -716,7 +721,9 @@ def main():
             p.add_argument("--modem", action="store_true",
                            help="a 5G modem in the M.2 slot: a Quectel "
                                 "RM520N-GL (QMI) on the board's USB hub, "
-                                "which ModemManager and FlipCTL take")
+                                "which ModemManager and FlipCTL take; its "
+                                "calls on this PC's network (through passt, "
+                                "if installed)")
             p.add_argument("--wifi-psk", metavar="PASSPHRASE",
                            default="flipperone",
                            help="the WPA2 and WPA3 networks' passphrase (8-63 "

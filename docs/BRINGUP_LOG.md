@@ -3519,3 +3519,76 @@ register headers.
          again.
        - The second run passed (436 s), as did its U-Boot mode (261 s), its
          MaskROM mode (16 s) and the smoke test (51 s).
+
+122. **The modem's data: a call, through passt.** Log 121's modem registered but
+     made no call.
+     - **WDS**, in the model:
+       - Start Network: one call (handle 1). It is IPv4 only. A client
+         whose IP family is 6 is refused with CallFailed and the verbose
+         reason 3GPP 50 ("PDN type IPv4 only allowed"), as on a network
+         without IPv6.
+       - Stop Network.
+       - Packet Service Status, and its indication when the modem goes off
+         line (the call ended: "no service").
+       - Current Settings: address, gateway, mask, DNS, MTU 1500.
+       - Channel Rates: 75 and 600 Mbit/s, at most 550 Mbit/s and
+         3.4 Gbit/s.
+       - Packet Statistics: the call's counts.
+       - Set IP Family (each client's), Indication Register.
+
+       Out of a call, Current Settings, Channel Rates and Packet Statistics
+       answer OutOfCall. Releasing the client that made a call ends it.
+     - **Its data.** Raw IP on the bulk endpoints (WDA's format; qmi_wwan's
+       `raw_ip`), each packet an Ethernet frame to and from its netdev. With
+       `--modem` the launcher adds that netdev, `-nic passt,model=rm520n`,
+       when passt is installed. The modem's addresses are passt's:
+       - as it powers on, it asks passt's DHCP for them (DISCOVER, REQUEST)
+         from a MAC of its own, and again if a call finds none yet;
+       - it answers passt's ARP for its address;
+       - passt gives the host's own address: 10.10.10.124/24 here, gateway
+         and DNS 10.10.10.1;
+       - passt's MTU is 65520, the call's 1500: a bigger packet from passt
+         is dropped (and counted so), not cut.
+     - **Fixed on the way.**
+       - Get MSISDN's error was MissingArgument (0x11); NotProvisioned is
+         0x10 (libqmi's `qmi-errors.h`).
+       - DMS's UIM Get CK Status is answered: no lock on the SIM.
+     - **What Flipper OS makes of it.**
+       - A gsm connection of NetworkManager's (APN `internet`) connects.
+         ModemManager asks for IPv4v6: its IPv6 call is refused
+         (`ipv4-only-allowed`) and its IPv4 one comes up.
+       - wwu1u4 gets 10.10.10.124/24 and a default route (metric 700), and
+         pings to the gateway through it come back (2-7 ms).
+       - mmcli's bearer shows its bytes. As root, qmicli shows the rates.
+       - Low-power mode ends the call: the indication, the bearer
+         disconnected, the address gone. Back online, NetworkManager
+         connects again.
+       - FlipCTL's 5G Modem page shows the address and the model, but `--`
+         for Link (OS-08). It reads the interface's ethtool speed, which
+         qmi_wwan never has: usbnet's link settings come only from an MII.
+         The rates a fix could use are WDS's: as root,
+         `qmicli --wds-get-channel-rates` shows them.
+     - **Still answered as invalid**, which ModemManager passes over:
+       - UIM's Get Slot Status, Refresh Register and Refresh Register All;
+       - NAS's Get Technology Preference and Get Preferred Networks;
+       - DMS's Get Band Capabilities;
+       - WDS's Get Profile List, Get Autoconnect Settings, Get LTE Attach
+         Parameters and Get LTE Attach PDN List.
+     - **One card in the slot.** The board has one M.2 slot, Key B
+       (RESEARCH.md), and the NVMe of `--nvme` was in it too. The launcher
+       now refuses the two together. linux_check's modem checks move to its
+       U-Boot mode, which boots without an NVMe; its default mode keeps the
+       NVMe.
+     - **Checked.**
+       - linux_check, with passt: a call. NetworkManager connects it, an
+         address on wwu1u4, three pings to the gateway through it, and
+         ModemManager `connected`; hung up, `registered`.
+       - The regression, twice: first with the modem and the NVMe in the
+         default mode, then with the modem moved to the U-Boot mode. The
+         second: smoke test 50 s, MaskROM 17 s, Linux 467 s (the NVMe),
+         U-Boot 286 s (the modem: registered at 98 s, its call at 121 s);
+         no failures.
+       - By hand: the rates, the counters and CK status by qmicli as root,
+         MSISDN's NotProvisioned, low-power mode ending the call, and an
+         IPv6 call refused.
+

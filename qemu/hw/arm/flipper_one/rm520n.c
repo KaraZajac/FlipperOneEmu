@@ -14,9 +14,13 @@
  * GET_ENCAPSULATED_RESPONSE. A message it does not know is answered with
  * failure, "invalid QMI command", as a modem's firmware does.
  *
- * Its services so far: CTL (its version list, client IDs, sync); DMS (the
- * device: its maker, model, revisions, IMEI, capabilities, operating
- * mode); WDA (the data format: raw IP).
+ * Its data: WDS's network interface, raw IP on its bulk endpoints (WDA's
+ * data format), through its netdev (a -nic of model rm520n: passt) as
+ * Ethernet frames. Its addresses are the netdev's: the modem asks passt's
+ * DHCP for them as it powers on (from a MAC of its own), and gives them as
+ * WDS's current settings; it answers passt's ARP for that address. Without
+ * a netdev, or before passt has answered, a call fails. IPv4 only: an IPv6
+ * call is refused, as on a network without IPv6.
  *
  * The M.2 slot's power and reset are the board's (FULL_CARD_POWER_OFF#
  * and RESET#, which Linux's tree holds released): the modem is on USB
@@ -34,6 +38,7 @@
 #include "hw/usb/usb.h"
 #include "hw/usb/desc.h"
 #include "net/net.h"
+#include "net/eth.h"
 #include "flipper_one.h"
 
 OBJECT_DECLARE_SIMPLE_TYPE(RM520NState, RM520N)
@@ -51,9 +56,20 @@ enum {
 /* QMI's errors (libqmi's QmiProtocolError) */
 #define QMI_ERR_NONE            0x0000
 #define QMI_ERR_INVALID_ARG     0x0030
-#define QMI_ERR_NOT_PROVISIONED 0x0011
+#define QMI_ERR_NOT_PROVISIONED 0x0010
 #define QMI_ERR_INVALID_CMD     0x0047
 #define QMI_ERR_SIM_FILE_NOT_FOUND 0x0050
+#define QMI_ERR_CALL_FAILED     0x000e
+#define QMI_ERR_OUT_OF_CALL     0x000f
+#define DOWN_MAX        256             /* packets for the host, at most */
+#define CALL_MTU        1500
+
+/* a call's rates, as WDS gives them (bit/s): LTE with NR (EN-DC), and the
+ * RM520N's most in that */
+#define RATE_TX         75000000u
+#define RATE_RX         600000000u
+#define RATE_TX_MAX     550000000u
+#define RATE_RX_MAX     3400000000u
 
 /* its SIM: a USIM, ready, its PIN disabled; on MCC 001, MNC 01 (the ITU's
  * test network) */
@@ -88,8 +104,20 @@ struct RM520NState {
     uint8_t opmode;                     /* DMS's operating mode */
     uint32_t link_layer;                /* WDA's: 1 802.3, 2 raw IP */
 
+    /* its data */
     NICConf conf;
     NICState *nic;
+    USBEndpoint *bulk_in;
+    GQueue down;                        /* IP packets for the host */
+    bool connected;                     /* WDS's call up */
+    uint8_t call_cid;                   /* (the client that made it) */
+    uint8_t family[256];                /* each WDS client's IP family */
+    uint32_t tx_pkts, rx_pkts, rx_dropped;  /* the call's */
+    uint64_t tx_bytes, rx_bytes;
+    bool dhcp_done;                     /* passt's addresses known */
+    uint32_t dhcp_xid;
+    uint8_t peer[6];                    /* passt's MAC */
+    uint32_t ip, gw, mask, dns[2];      /* (network order) */
 };
 
 /* ------------------------------------------------------------ USB side */
@@ -264,7 +292,7 @@ static void qmi_send(RM520NState *s, uint8_t svc, uint8_t cid, uint16_t tid,
     usb_wakeup(s->intr, 0);
 }
 
-/* a request's answer: its result, then @q's TLVs */
+/* a request's answer: its result, then @q's TLVs (a failure's too: why) */
 static void qmi_answer(RM520NState *s, uint8_t svc, uint8_t cid, uint16_t tid,
                        uint16_t msg, uint16_t err, const QBuf *q)
 {
@@ -275,7 +303,7 @@ static void qmi_answer(RM520NState *s, uint8_t svc, uint8_t cid, uint16_t tid,
                       "0x%02x message 0x%04x: not supported\n", svc, msg);
     }
     tlv_result(&a, err);
-    if (q && !err) {
+    if (q) {
         memcpy(a.b + a.n, q->b, q->n);
         a.n += q->n;
     }
@@ -324,6 +352,9 @@ static void qmi_ctl(RM520NState *s, uint8_t tid, uint16_t msg,
         if (!b[1]) {                            /* (0 is no client) */
             b[1] = s->next_cid[v[0]] = 1;
         }
+        if (v[0] == SVC_WDS) {
+            s->family[b[1]] = 0;
+        }
         tlv(&q, 0x01, b, 2);
         qmi_answer(s, SVC_CTL, 0, tid, msg, QMI_ERR_NONE, &q);
         break;
@@ -332,6 +363,9 @@ static void qmi_ctl(RM520NState *s, uint8_t tid, uint16_t msg,
         if (!v || len < 2) {
             qmi_answer(s, SVC_CTL, 0, tid, msg, QMI_ERR_INVALID_ARG, NULL);
             break;
+        }
+        if (v[0] == SVC_WDS && v[1] == s->call_cid) {
+            s->connected = false;               /* (its call goes with it) */
         }
         tlv(&q, 0x01, v, 2);
         qmi_answer(s, SVC_CTL, 0, tid, msg, QMI_ERR_NONE, &q);
@@ -348,6 +382,22 @@ static void qmi_ctl(RM520NState *s, uint8_t tid, uint16_t msg,
         qmi_answer(s, SVC_CTL, 0, tid, msg, QMI_ERR_INVALID_CMD, NULL);
         break;
     }
+}
+
+/* the call ended by the modem (@why: WDS's call end reason): WDS's Packet
+ * Service Status indication, to the client that made it */
+static void wds_drop(RM520NState *s, uint16_t why)
+{
+    QBuf q = { .n = 0 };
+    uint8_t st[2] = { 1, 0 };                   /* disconnected */
+
+    if (!s->connected) {
+        return;
+    }
+    s->connected = false;
+    tlv(&q, 0x01, st, 2);
+    tlv_u16(&q, 0x10, why);
+    qmi_send(s, SVC_WDS, s->call_cid, 0, 0x0022, true, &q);
 }
 
 /* DMS: the device */
@@ -401,6 +451,15 @@ static void qmi_dms(RM520NState *s, uint8_t cid, uint16_t tid, uint16_t msg,
             return;
         }
         s->opmode = v[0];
+        if (s->opmode != 0) {                   /* (no service: no call) */
+            wds_drop(s, 3);
+        }
+        break;
+    case 0x0040:                                /* UIM Get CK Status */
+        b[0] = 0;                               /* (no lock on the SIM) */
+        b[1] = 0;
+        b[2] = 0;
+        tlv(&q, 0x01, b, 3);
         break;
     case 0x003c:                                /* UIM Get ICCID */
         tlv_str(&q, 0x01, SIM_ICCID);
@@ -683,6 +742,322 @@ static void qmi_nas(RM520NState *s, uint8_t cid, uint16_t tid, uint16_t msg,
     qmi_answer(s, SVC_NAS, cid, tid, msg, QMI_ERR_NONE, &q);
 }
 
+static void dhcp_start(RM520NState *s);
+
+/* WDS: one call (its packet data handle 1), on the addresses passt gave;
+ * IPv4 */
+static void qmi_wds(RM520NState *s, uint8_t cid, uint16_t tid, uint16_t msg,
+                    const uint8_t *t, int n)
+{
+    QBuf q = { .n = 0 };
+    const uint8_t *v;
+    uint32_t mask = 0x3ff;
+    uint8_t b[16];
+    int len;
+
+    switch (msg) {
+    case 0x0001:                                /* Set Event Report */
+    case 0x0003:                                /* Indication Register */
+        break;
+    case 0x004d:                                /* Set IP Family */
+        v = tlv_find(t, n, 0x01, &len);
+        if (!v || len < 1) {
+            qmi_answer(s, SVC_WDS, cid, tid, msg, QMI_ERR_INVALID_ARG, NULL);
+            return;
+        }
+        s->family[cid] = v[0];
+        break;
+    case 0x0020:                                /* Start Network */
+        v = tlv_find(t, n, 0x19, &len);         /* (its IP family) */
+        if ((v && len >= 1 && v[0] == 6) ||
+            (!(v && len >= 1) && s->family[cid] == 6)) {
+            /* IPv4 only: an IPv6 call is refused, as by a network that
+             * has none (ESM cause 50: "PDN type IPv4 only allowed") */
+            tlv_u16(&q, 0x10, 1);
+            stw_le_p(b, 6);                     /* (3GPP's) */
+            stw_le_p(b + 2, 50);
+            tlv(&q, 0x11, b, 4);
+            qmi_answer(s, SVC_WDS, cid, tid, msg, QMI_ERR_CALL_FAILED, &q);
+            return;
+        }
+        if (s->opmode != 0 || !s->dhcp_done) {  /* (no service, no uplink) */
+            if (!s->dhcp_done) {
+                dhcp_start(s);                  /* (asked again) */
+            }
+            qmi_answer(s, SVC_WDS, cid, tid, msg, QMI_ERR_CALL_FAILED, NULL);
+            return;
+        }
+        s->connected = true;
+        s->call_cid = cid;
+        s->tx_pkts = s->rx_pkts = s->rx_dropped = 0;
+        s->tx_bytes = s->rx_bytes = 0;
+        tlv_u32(&q, 0x01, 1);
+        break;
+    case 0x0021:                                /* Stop Network */
+        s->connected = false;
+        break;
+    case 0x0022:                                /* Get Packet Service Status */
+        tlv_u8(&q, 0x01, s->connected ? 2 : 1);
+        break;
+    case 0x0023:                                /* Get Channel Rates */
+    case 0x0024:                                /* Get Packet Statistics */
+    case 0x002d:                                /* Get Current Settings */
+        if (!s->connected) {
+            qmi_answer(s, SVC_WDS, cid, tid, msg, QMI_ERR_OUT_OF_CALL, NULL);
+            return;
+        }
+        if (msg == 0x0023) {
+            stl_le_p(b, RATE_TX);
+            stl_le_p(b + 4, RATE_RX);
+            stl_le_p(b + 8, RATE_TX_MAX);
+            stl_le_p(b + 12, RATE_RX_MAX);
+            tlv(&q, 0x01, b, 16);
+        } else if (msg == 0x0024) {             /* (what the mask asks) */
+            v = tlv_find(t, n, 0x01, &len);
+            if (v && len >= 4) {
+                mask = ldl_le_p(v);
+            }
+            for (int i = 0; i < 10; i++) {
+                static const uint8_t type[10] = {
+                    0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x19, 0x1a, 0x1d, 0x1e,
+                };
+                uint64_t val[10] = {
+                    s->tx_pkts, s->rx_pkts, 0, 0, 0, 0,
+                    s->tx_bytes, s->rx_bytes, 0, s->rx_dropped,
+                };
+
+                if (!(mask & (1u << i))) {
+                    continue;
+                }
+                if (i == 6 || i == 7) {
+                    stq_le_p(b, val[i]);
+                    tlv(&q, type[i], b, 8);
+                } else {
+                    tlv_u32(&q, type[i], val[i]);
+                }
+            }
+        } else {
+            tlv_u32(&q, 0x1e, be32_to_cpu(s->ip));
+            tlv_u32(&q, 0x20, be32_to_cpu(s->gw));
+            tlv_u32(&q, 0x21, be32_to_cpu(s->mask));
+            tlv_u32(&q, 0x15, be32_to_cpu(s->dns[0]));
+            if (s->dns[1]) {
+                tlv_u32(&q, 0x16, be32_to_cpu(s->dns[1]));
+            }
+            tlv_u32(&q, 0x29, CALL_MTU);
+            tlv_u8(&q, 0x2b, 4);
+        }
+        break;
+    default:
+        qmi_answer(s, SVC_WDS, cid, tid, msg, QMI_ERR_INVALID_CMD, NULL);
+        return;
+    }
+    qmi_answer(s, SVC_WDS, cid, tid, msg, QMI_ERR_NONE, &q);
+}
+
+/* ------------------------------------------------- its data, and passt */
+
+/* an Ethernet frame for passt: @type's payload, from its own MAC */
+static void eth_out(RM520NState *s, const uint8_t *dst, uint16_t type,
+                    const uint8_t *pl, int n)
+{
+    uint8_t f[1600];
+
+    if (!s->nic || n > (int)sizeof(f) - 14) {
+        return;
+    }
+    memcpy(f, dst, 6);
+    memcpy(f + 6, s->conf.macaddr.a, 6);
+    stw_be_p(f + 12, type);
+    memcpy(f + 14, pl, n);
+    qemu_send_packet(qemu_get_queue(s->nic), f, 14 + n);
+}
+
+static uint16_t ip_csum(const uint8_t *h, int n)
+{
+    uint32_t sum = 0;
+
+    for (int i = 0; i < n; i += 2) {
+        sum += lduw_be_p(h + i);
+    }
+    while (sum >> 16) {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    return ~sum;
+}
+
+/* DHCP to passt, for its addresses: DISCOVER, then REQUEST of what it
+ * offered */
+static void dhcp_send(RM520NState *s, uint8_t type, uint32_t want,
+                      uint32_t server)
+{
+    static const uint8_t bcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
+    uint8_t b[20 + 8 + 300] = { 0 }, *u = b + 20, *d = b + 28;
+    int k = 240;
+
+    d[0] = 1;                                   /* BOOTREQUEST, Ethernet */
+    d[1] = 1;
+    d[2] = 6;
+    stl_be_p(d + 4, s->dhcp_xid);
+    stw_be_p(d + 10, 0x8000);                   /* (answer by broadcast) */
+    memcpy(d + 28, s->conf.macaddr.a, 6);
+    stl_be_p(d + 236, 0x63825363);              /* (the magic cookie) */
+    d[k++] = 53;
+    d[k++] = 1;
+    d[k++] = type;
+    if (type == 3) {
+        d[k++] = 50;                            /* the address offered */
+        d[k++] = 4;
+        memcpy(d + k, &want, 4);
+        k += 4;
+        d[k++] = 54;                            /* by whom */
+        d[k++] = 4;
+        memcpy(d + k, &server, 4);
+        k += 4;
+    }
+    d[k++] = 55;                                /* mask, router, DNS */
+    d[k++] = 3;
+    d[k++] = 1;
+    d[k++] = 3;
+    d[k++] = 6;
+    d[k++] = 255;
+    k = 300;
+    stw_be_p(u, 68);
+    stw_be_p(u + 2, 67);
+    stw_be_p(u + 4, 8 + k);
+    b[0] = 0x45;                                /* IPv4: 0.0.0.0 to all */
+    stw_be_p(b + 2, 20 + 8 + k);
+    b[8] = 64;
+    b[9] = 17;
+    memset(b + 16, 0xff, 4);
+    stw_be_p(b + 10, ip_csum(b, 20));
+    eth_out(s, bcast, ETH_P_IP, b, 20 + 8 + k);
+}
+
+static void dhcp_start(RM520NState *s)
+{
+    s->dhcp_done = false;
+    s->dhcp_xid = g_random_int();
+    if (s->nic && qemu_get_queue(s->nic)->peer) {
+        dhcp_send(s, 1, 0, 0);
+    }
+}
+
+/* passt's answer: an OFFER (then the REQUEST), or the ACK, its addresses */
+static void dhcp_rx(RM520NState *s, const uint8_t *eth, const uint8_t *d,
+                    int n)
+{
+    uint8_t type = 0;
+    uint32_t server = 0, mask = 0, gw = 0, dns[2] = { 0, 0 };
+
+    if (n < 240 || d[0] != 2 || ldl_be_p(d + 4) != s->dhcp_xid ||
+        ldl_be_p(d + 236) != 0x63825363) {
+        return;
+    }
+    for (int k = 240; k + 1 < n && d[k] != 255; ) {
+        uint8_t o = d[k], l;
+
+        if (o == 0) {
+            k++;
+            continue;
+        }
+        l = d[k + 1];
+        if (k + 2 + l > n) {
+            break;
+        }
+        if (o == 53 && l >= 1) {
+            type = d[k + 2];
+        } else if (o == 54 && l >= 4) {
+            memcpy(&server, d + k + 2, 4);
+        } else if (o == 1 && l >= 4) {
+            memcpy(&mask, d + k + 2, 4);
+        } else if (o == 3 && l >= 4) {
+            memcpy(&gw, d + k + 2, 4);
+        } else if (o == 6 && l >= 4) {
+            memcpy(&dns[0], d + k + 2, 4);
+            if (l >= 8) {
+                memcpy(&dns[1], d + k + 6, 4);
+            }
+        }
+        k += 2 + l;
+    }
+    if (type == 2) {                            /* OFFER */
+        uint32_t yi;
+
+        memcpy(&yi, d + 16, 4);
+        dhcp_send(s, 3, yi, server);
+    } else if (type == 5) {                     /* ACK */
+        memcpy(&s->ip, d + 16, 4);
+        s->gw = gw ? gw : server;
+        s->mask = mask ? mask : cpu_to_be32(0xffffff00);
+        s->dns[0] = dns[0] ? dns[0] : s->gw;
+        s->dns[1] = dns[1];
+        memcpy(s->peer, eth + 6, 6);
+        s->dhcp_done = true;
+    }
+}
+
+static bool rm520n_can_receive(NetClientState *nc)
+{
+    return true;
+}
+
+/* passt's frame: DHCP's answer, ARP for its address, or the call's IP */
+static ssize_t rm520n_receive(NetClientState *nc, const uint8_t *buf,
+                              size_t size)
+{
+    RM520NState *s = qemu_get_nic_opaque(nc);
+    uint16_t type;
+
+    if (size < 14) {
+        return size;
+    }
+    type = lduw_be_p(buf + 12);
+    if (type == ETH_P_ARP && size >= 42 && lduw_be_p(buf + 20) == 1 &&
+        s->dhcp_done && !memcmp(buf + 38, &s->ip, 4)) {
+        uint8_t a[28];                          /* (it is here) */
+
+        memcpy(a, buf + 14, 8);
+        stw_be_p(a + 6, 2);
+        memcpy(a + 8, s->conf.macaddr.a, 6);
+        memcpy(a + 14, &s->ip, 4);
+        memcpy(a + 18, buf + 22, 10);
+        eth_out(s, buf + 6, ETH_P_ARP, a, 28);
+        return size;
+    }
+    if (type != ETH_P_IP && type != ETH_P_IPV6) {
+        return size;
+    }
+    if (type == ETH_P_IP && size >= 14 + 20) {  /* DHCP's, to the modem */
+        int ihl = (buf[14] & 0x0f) * 4;
+
+        if (ihl >= 20 && size >= 14 + ihl + 8 + 240 && buf[14 + 9] == 17 &&
+            lduw_be_p(buf + 14 + ihl + 2) == 68) {
+            dhcp_rx(s, buf, buf + 14 + ihl + 8, size - 14 - ihl - 8);
+            return size;
+        }
+    }
+    if (!s->connected) {
+        return size;                            /* (no call: dropped) */
+    }
+    if (size - 14 > CALL_MTU ||                 /* (passt's MTU is more) */
+        g_queue_get_length(&s->down) >= DOWN_MAX) {
+        s->rx_dropped++;
+        return size;
+    }
+    g_queue_push_tail(&s->down, g_byte_array_append(g_byte_array_new(),
+                                                    buf + 14, size - 14));
+    usb_wakeup(s->bulk_in, 0);
+    return size;
+}
+
+static NetClientInfo rm520n_net_info = {
+    .type = NET_CLIENT_DRIVER_NIC,
+    .size = sizeof(NICState),
+    .can_receive = rm520n_can_receive,
+    .receive = rm520n_receive,
+};
+
 /* WDA: the data format, raw IP or 802.3, no aggregation */
 static void qmi_wda(RM520NState *s, uint8_t cid, uint16_t tid, uint16_t msg,
                     const uint8_t *t, int n)
@@ -753,6 +1128,9 @@ static void qmi_rx(RM520NState *s, const uint8_t *b, int n)
     case SVC_NAS:
         qmi_nas(s, cid, tid, msg, b + 13, tn);
         break;
+    case SVC_WDS:
+        qmi_wds(s, cid, tid, msg, b + 13, tn);
+        break;
     default:
         qmi_answer(s, svc, cid, tid, msg, QMI_ERR_INVALID_CMD, NULL);
         break;
@@ -807,11 +1185,41 @@ static void rm520n_handle_data(USBDevice *dev, USBPacket *p)
         usb_packet_copy(p, note, MIN(sizeof(note), p->iov.size));
         return;
     }
-    if (p->pid == USB_TOKEN_IN) {               /* (its data: none yet) */
-        p->status = USB_RET_NAK;
+    if (p->pid == USB_TOKEN_IN) {               /* an IP packet for the host */
+        GByteArray *f = g_queue_pop_head(&s->down);
+
+        if (!f) {
+            p->status = USB_RET_NAK;
+            return;
+        }
+        usb_packet_copy(p, f->data, MIN(f->len, p->iov.size));
+        s->rx_pkts++;
+        s->rx_bytes += f->len;
+        g_byte_array_unref(f);
         return;
     }
-    /* (the host's data: not yet carried) */
+    /* the host's: an IP packet (raw IP; or 802.3's frame, its IP taken:
+     * nothing answers ARP or DHCP there) */
+    {
+        uint8_t b[1600];
+        int n = MIN(p->iov.size, sizeof(b)), off = 0;
+        uint16_t type;
+
+        usb_packet_copy(p, b, n);
+        if (s->link_layer == 1) {
+            off = 14;
+        }
+        if (!s->connected || n <= off || !s->dhcp_done) {
+            return;
+        }
+        type = (b[off] >> 4) == 6 ? ETH_P_IPV6 : ETH_P_IP;
+        if (off && lduw_be_p(b + 12) != type) {
+            return;
+        }
+        s->tx_pkts++;
+        s->tx_bytes += n - off;
+        eth_out(s, s->peer, type, b + off, n - off);
+    }
 }
 
 static void rm520n_flush(RM520NState *s)
@@ -819,6 +1227,9 @@ static void rm520n_flush(RM520NState *s)
     GByteArray *f;
 
     while ((f = g_queue_pop_head(&s->resp))) {
+        g_byte_array_unref(f);
+    }
+    while ((f = g_queue_pop_head(&s->down))) {
         g_byte_array_unref(f);
     }
     s->notify = 0;
@@ -832,6 +1243,7 @@ static void rm520n_handle_reset(USBDevice *dev)
     memset(s->next_cid, 0, sizeof(s->next_cid));
     s->opmode = 0;                              /* online */
     s->link_layer = 1;                          /* 802.3, until told */
+    s->connected = false;
 }
 
 /* the M.2 slot's power and reset: on USB while both are released */
@@ -848,6 +1260,7 @@ void rm520n_power(USBDevice *dev, bool on)
         return;
     }
     rm520n_handle_reset(dev);
+    dhcp_start(RM520N(dev));                    /* (its addresses) */
     usb_device_attach(dev, &err);
     if (err) {
         error_report_err(err);
@@ -860,14 +1273,26 @@ static void rm520n_realize(USBDevice *dev, Error **errp)
 
     usb_desc_init(dev);
     s->intr = usb_ep_get(dev, USB_TOKEN_IN, 1);
+    s->bulk_in = usb_ep_get(dev, USB_TOKEN_IN, 2);
     g_queue_init(&s->resp);
+    g_queue_init(&s->down);
+    qemu_macaddr_default_if_unset(&s->conf.macaddr);
+    s->nic = qemu_new_nic(&rm520n_net_info, &s->conf,
+                          object_get_typename(OBJECT(dev)),
+                          DEVICE(dev)->id, &DEVICE(dev)->mem_reentrancy_guard,
+                          s);
     rm520n_handle_reset(dev);
     dev->auto_attach = false;                   /* (powered by the board) */
 }
 
 static void rm520n_unrealize(USBDevice *dev)
 {
-    rm520n_flush(RM520N(dev));
+    RM520NState *s = RM520N(dev);
+
+    rm520n_flush(s);
+    if (s->nic) {
+        qemu_del_nic(s->nic);
+    }
 }
 
 static const Property rm520n_props[] = {

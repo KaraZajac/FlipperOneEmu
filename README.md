@@ -55,7 +55,8 @@ its network (NCM, with a DHCP server on Flipper OS's side), MTP and the serial p
 Its sound card (the NAU8822 codec on SAI2) plays, at 48 kHz: to a WAV file, or nowhere
 (`run --audio`); its microphones (the internal one, and a headset's in the jack) hear a
 WAV file (`run --mic`). An NVMe SSD can be put in its M.2 slot (`run --nvme`), on
-PCIe0, and a monitor in its HDMI port (`run --hdmi`): Linux lights it at 1280x720 with
+PCIe0, or a 5G modem (`run --modem`, below): the slot holds one card. A monitor can
+be put in its HDMI port (`run --hdmi`): Linux lights it at 1280x720 with
 its console on it, and `shot --hdmi` takes its picture. It reaches its login in about a
 minute and a quarter (TCG emulates eight cores). The MCU switches the RK3576 on and off
 as on the device: Flipper OS's power-off and reboot work, and so does the MCU's own
@@ -71,8 +72,8 @@ it, on this PC's network (through passt): an open network and a WPA2 one on 2.4 
 and a WPA3 one (SAE, management frames protected), which the Wi-Fi finds and joins,
 from FlipCTL too; nothing else is ever found (no radio). With `--modem` a 5G modem is
 in its M.2 slot, a Quectel RM520N-GL's QMI interface on the board's hub: ModemManager
-registers it on a network of its own (LTE with an NR cell), and FlipCTL's 5G Modem page
-shows it. It also boots as the device does, through U-Boot from the card (its boot menu
+registers it on a network of its own (LTE with an NR cell), NetworkManager's calls on it
+reach this PC's network (IPv4, through passt), and FlipCTL's 5G Modem page shows it. It also boots as the device does, through U-Boot from the card (its boot menu
 on the Flipper's screen; with KASLR, and so KPTI, about two minutes here), and Flipper
 OS installs onto it as the docs do it: in its MaskROM, rockusb's download-boot of the
 installer's loader (`scripts/fo_rockusb.py`, over USB/IP); the installer provisions the
@@ -155,7 +156,8 @@ scripts/fetch_os.py                  # a Flipper OS build: its kernel, initrd an
                                      # hears: a WAV file (16-bit PCM), looped
 ./flipperoneemu run --linux --modem ...  # ... and a 5G modem in the M.2 slot (a Quectel
                                      # RM520N-GL, QMI, on the hub's port 4), which
-                                     # ModemManager registers on its network
+                                     # ModemManager registers on its network; its
+                                     # calls through passt
 ./flipperoneemu run --linux --speaker FILE.sbc ...  # ... what the Bluetooth speaker
                                      # near it plays (A2DP), raw SBC: ffmpeg -f sbc -i
                                      # FILE.sbc out.wav
@@ -166,7 +168,8 @@ scripts/fetch_os.py                  # a Flipper OS build: its kernel, initrd an
                                      # viewer at 127.0.0.1:5901
 ./flipperoneemu run --linux --nvme [FILE.img] ...  # ... an NVMe SSD in the M.2 slot,
                                      # its disk a raw image (devices/NAME/nvme.img: a
-                                     # blank 256 GB, sparse, unless told)
+                                     # blank 256 GB, sparse, unless told); not with
+                                     # --modem (one slot)
 ./flipperoneemu run --linux --kernel-args 'ARGS' ...  # ... with more on the kernel's
                                      # command line (systemd.mask=serial-getty@flipserial0.service
                                      # avoids Flipper OS's OS-02, docs/FIRMWARE_BUGS.md)

@@ -35,6 +35,7 @@ keeps its row, with the build that fixed it.
 | OS-05 | The kernel's command line has `console=ttyS4` for the line to the MCU, but the kernel registers four 8250 ports at most (`CONFIG_SERIAL_8250_RUNTIME_UARTS=4`), so there is no ttyS4: UART4 (the tree's `serial4`) is ttyS1, and Linux's console never reaches the MCU | Flipper OS 2501 | the MCU's console line has no console | no |
 | OS-06 | FlipCTL's status bar never names a modem's technology (5G, LTE ...): it reads `mmcli --output-keyvalue`'s `modem.generic.access-technologies`, which mmcli prints as an array (`.length`, `.value[1]` ...), so the key is never there and the label stays `--` | Flipper OS 2501 | a status that never shows | no |
 | OS-07 | FlipCTL's 5G Modem page never shows the cell (TAC, cell ID, PLMN, PCI, channel, band, RSRP ...): it runs qmicli through qmi-proxy as the desktop's user, and qmi-proxy takes no client but root | Flipper OS 2501 | a page's details always empty | no |
+| OS-08 | FlipCTL's 5G Modem page never shows the link's rate (`Link`): it reads `/sys/class/net/IFACE/speed` for the modem's interface, which qmi_wwan, the QMI modem's driver, never has (EINVAL) | Flipper OS 2501 | a row always empty | no |
 
 ### FW-01: the main bus after a NACK, with words still queued
 
@@ -448,3 +449,23 @@ keeps its row, with the build that fixed it.
   is not using it), or take the cell from ModemManager (`mmcli --location-get`, with
   location's 3GPP source enabled, and `--signal-get`).
 - **Log:** entry 121.
+
+### OS-08: the 5G Modem page's Link is always `--`
+
+- **What happens:** Network > 5G Modem, connected (an address on its interface, shown
+  as `IP`), shows `--` for `Link`.
+- **Why:** FlipCTL (`crates/flipper-ui/src/sysinfo.rs`, `modem()` and `link_mbps()`, at
+  6c8c74e) takes the bearer's interface from ModemManager (`wwu1u4`) and reads
+  `/sys/class/net/wwu1u4/speed` for the downlink's and uplink's rate. That interface
+  is qmi_wwan's, and qmi_wwan keeps usbnet's ethtool operations
+  (`drivers/net/usb/usbnet.c`, `usbnet_ethtool_ops`), whose link settings come only
+  from an MII (`usbnet_get_link_ksettings_mii`: `-EOPNOTSUPP` without one). A QMI
+  modem has none, so reading `speed` fails ("Invalid argument") whatever the modem
+  does.
+- **What of the emulator is in its path:** none: the kernel's driver answers.
+- **Seen on:** Flipper OS build 2501 (FlipCTL 6c8c74e, its kernel 7.4.0-rc4), in the
+  emulator. Not tried on a real Flipper One.
+- **A fix, for FlipCTL:** ask the modem: QMI's WDS Get Current Channel Rate
+  (`qmicli --wds-get-channel-rates`, which needs OS-07's fix too) gives the call's
+  rates; or leave the row out for a WWAN interface.
+- **Log:** entry 122.
